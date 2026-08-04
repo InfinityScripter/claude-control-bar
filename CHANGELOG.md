@@ -26,6 +26,16 @@ from, and are kept so the history reads continuously.
 
 ### Fixed
 
+- **The menu says when the app on disk is newer than the app that is running.** Installing over a
+  running copy — a DMG, `brew upgrade --cask` — replaces the bundle, but macOS keeps the old
+  executable image alive until the app restarts. Measured here: 0.5.1 sat in `/Applications` for
+  two hours while a 0.5.0 process drew the menu, and nothing anywhere said so. It is not only
+  cosmetic: a process whose bundle was replaced could no longer write its own preferences, so the
+  daily update check had nowhere to store the latest tag and the "Update to X" line could never
+  appear again either — the app went permanently quiet about updates. There is now a
+  **Restart to finish updating to X** row that quits and comes back as the copy on disk; it waits
+  for the old process to exit first, because two copies of the same bundle path run side by side
+  quite happily.
 - **A green server row no longer hides a failed one of the same name.** Two projects with a
   server called `db` collapsed into one row keyed by name, and whichever was seen first won —
   so a working `db` in one project masked a broken `db` in the one being worked in. The row stays

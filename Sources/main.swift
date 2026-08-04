@@ -769,6 +769,20 @@ final class StatusController: NSObject, NSMenuDelegate {
     // MARK: update check
 
     var currentVersion: String { (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0" }
+    /// The version of the bundle sitting on disk, read fresh from the file rather than from the
+    /// Info.plist the process cached at launch.
+    ///
+    /// A DMG install or `brew upgrade --cask` replaces the bundle under a live process, and macOS
+    /// keeps the running executable image alive until the app is restarted. Measured on the
+    /// development machine: a 0.5.1 bundle in /Applications and a 0.5.0 process in the menu bar,
+    /// for two hours, with nothing anywhere saying so. And it is worse than cosmetic — a process
+    /// whose bundle was replaced could no longer write its own preferences at all, so the update
+    /// check had nowhere to keep the latest tag and the "Update to X" line could never appear
+    /// again either. The one thing that fixes it is a restart, so that is what gets offered.
+    var installedVersion: String? {
+        let plist = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
+        return NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"] as? String
+    }
     let releaseAPIURL = "https://api.github.com/repos/InfinityScripter/claude-control-bar/releases/latest"
     let releasePageURL = "https://github.com/InfinityScripter/claude-control-bar/releases/latest"
     // Homebrew: the cask lags a GitHub release by up to ~a day (autobump), so brew-managed
@@ -831,6 +845,26 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     @objc func openLatestRelease() {
         if let url = URL(string: releasePageURL) { NSWorkspace.shared.open(url) }
+    }
+
+    /// Quit, then come back as the copy on disk.
+    ///
+    /// The relaunch waits for this process to be gone rather than firing alongside it: two copies
+    /// of the SAME bundle path coexist happily — enforceSingleInstance only stands one down when
+    /// the paths differ — so an overlap means two menu bar icons and two backends writing one
+    /// state directory. The quit marker is written for the same reason the Quit item writes it:
+    /// a hook firing in the gap would otherwise race the app back up before `open` runs. The new
+    /// process clears the marker as it starts.
+    @objc func restartIntoInstalledCopy() {
+        let marker = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/quit-intent")
+        FileManager.default.createFile(atPath: marker, contents: nil)
+        let quoted = "'" + Bundle.main.bundlePath.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-c", "while kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null;"
+                          + " do sleep 0.2; done; exec /usr/bin/open \(quoted)"]
+        try? task.run()
+        NSApp.terminate(nil)
     }
 
     // MARK: MCP backend
@@ -1178,7 +1212,17 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Version \(currentVersion)", action: nil, keyEquivalent: ""))
-        if let latest = UserDefaults.standard.string(forKey: "latestVersion"), Self.versionIsNewer(latest, than: currentVersion) {
+        // Checked before the download line and instead of it: when the newer copy is already on
+        // disk there is nothing left to fetch, and offering "Update to 0.5.1" next to a 0.5.1
+        // bundle sends the user to download what they installed an hour ago.
+        if let onDisk = installedVersion, Self.versionIsNewer(onDisk, than: currentVersion) {
+            let it = NSMenuItem(title: "Restart to finish updating to \(onDisk)",
+                                action: #selector(restartIntoInstalledCopy), keyEquivalent: "")
+            it.target = self
+            it.toolTip = "\(onDisk) is already installed. macOS keeps the copy that was running"
+                + " when it was replaced, so this one is still \(currentVersion) until it restarts."
+            menu.addItem(it)
+        } else if let latest = UserDefaults.standard.string(forKey: "latestVersion"), Self.versionIsNewer(latest, than: currentVersion) {
             let width = CGFloat(uiConfig()["boxWidth"] ?? 300)
             let brewVer = UserDefaults.standard.string(forKey: "brewCaskVersion")
             if brewManaged {
