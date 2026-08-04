@@ -221,3 +221,30 @@ test("an empty inherited PATH never searches the working directory", (t) => {
   );
   assert.equal(fs.existsSync(canaryPath), false);
 });
+
+test("a settings.json symlinked into dotfiles stays a symlink", (t) => {
+  // Settings are commonly a symlink into ~/dotfiles. rename() over the link replaces the link
+  // itself with a regular file: the dotfiles original silently stops receiving changes, and the
+  // user loses the sync they set up on purpose without a single error message.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "control-bar-symlink-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+
+  const claudeDir = path.join(home, ".claude");
+  const settingsPath = path.join(claudeDir, "settings.json");
+  const dotfiles = path.join(home, "dotfiles");
+  const target = path.join(dotfiles, "settings.json");
+  fs.mkdirSync(claudeDir, { recursive: true });
+  fs.mkdirSync(dotfiles, { recursive: true });
+  fs.writeFileSync(target, JSON.stringify({ customSetting: true }, null, 2));
+  fs.symlinkSync(target, settingsPath);
+
+  runInstaller(home);
+
+  assert.ok(fs.lstatSync(settingsPath).isSymbolicLink(), "the symlink was replaced by a file");
+  const written = JSON.parse(fs.readFileSync(target, "utf8"));
+  assert.equal(written.customSetting, true);
+  assert.ok(written.hooks, "hooks did not reach the dotfiles original");
+
+  runUninstaller(home);
+  assert.ok(fs.lstatSync(settingsPath).isSymbolicLink(), "uninstall replaced the symlink");
+});

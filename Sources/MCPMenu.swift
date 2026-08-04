@@ -336,6 +336,10 @@ extension StatusController {
         // beside a turning arc reads as two competing statuses. Once nothing is checking, the
         // actionable fact takes over — a re-enabled server is on, but Claude Code assembles a
         // session's server list when the session starts, so an already open one keeps what it had.
+        // A server from a repo's .mcp.json that Claude Code has not been told to trust yet: it
+        // is not switched on and waiting, it is waiting to be allowed at all, and only the user
+        // can answer that — in Claude Code, not here.
+        case "pending" where server.needsApproval: return "approve in Claude Code"
         case "pending": return serverChecking(name) ? "" : "next session"
         // A remote (http/sse) server of a project: there is no probe for it, and claiming
         // either green or red would be inventing. The tooltip carries the explanation.
@@ -360,6 +364,11 @@ extension StatusController {
         ) { [weak self] on in self?.setMCPServer(name, enabled: on) }
         switch server.state {
         case "ok": row.toolTip = server.project.map { "\(name) — project \($0)" } ?? name
+        case "pending" where server.needsApproval:
+            row.toolTip = name + "\nConfigured in this project's .mcp.json, which came with the"
+                + " repository. Claude Code asks once before trusting a server from there, and"
+                + " this app does not start it — or read its tools — until you have said yes."
+                + "\nRun /mcp in that project to decide."
         case "pending":
             row.toolTip = name + "\nSwitched on. Claude Code builds a session's list of servers"
                 + " when the session starts, so one that is already open keeps what it had."

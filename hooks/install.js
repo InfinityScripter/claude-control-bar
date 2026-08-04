@@ -74,9 +74,14 @@ const writeSettingsAtomic = (text, readAt) => {
   }
   let mode;
   try { mode = fs.statSync(settingsPath).mode; } catch {}
-  const tmp = `${settingsPath}.${process.pid}.tmp`;
+  // Resolved first: settings.json is commonly a symlink into ~/dotfiles, and renaming over the
+  // link replaces the link itself with a regular file — the dotfiles original then silently
+  // stops receiving changes and the user's sync is broken without a single error message.
+  let target = settingsPath;
+  try { target = fs.realpathSync(settingsPath); } catch {}
+  const tmp = `${target}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, text, mode === undefined ? undefined : { mode });
-  fs.renameSync(tmp, settingsPath);
+  fs.renameSync(tmp, target);
   return true;
 };
 

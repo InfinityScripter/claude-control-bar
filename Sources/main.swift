@@ -825,13 +825,26 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     /// Any mcpbar.py command: off the main queue, UI updated back on it. Nothing here parses the
     /// script's output — the script writes mcp.json and the model re-reads it.
-    func runBackend(_ arguments: [String]) {
+    ///
+    /// Serial, deliberately. A full check starts every configured MCP server and takes about
+    /// half a minute; on a concurrent queue a toggle during one of those launched a second
+    /// backend over the same servers and the same cache files, and whichever finished first
+    /// cleared mcpBusy while the rest were still running — the menu said "done" mid-flight.
+    let backendQueue = DispatchQueue(
+        label: "io.github.infinityscripter.claude-control-bar.backend")
+    /// Operations handed to the queue and not yet finished. A plain Bool could not survive two
+    /// of them: the first to return cleared it.
+    var backendRunning = 0
+
+    func runBackend(_ arguments: [String], then done: (() -> Void)? = nil) {
         guard !backend.script.isEmpty else {
             NSLog("ClaudeControlBar: no mcpbar.py — the bootstrap hook has not run")
+            done?()
             return
         }
+        backendRunning += 1
         mcpBusy = true
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        backendQueue.async { [weak self] in
             guard let self else { return }
             let task = Process()
             // Absolute paths: a GUI process gets a stripped PATH with no pyenv and no nvm in it.
@@ -843,7 +856,8 @@ final class StatusController: NSObject, NSMenuDelegate {
                 NSLog("ClaudeControlBar: \(self.backend.python) failed: \(error)")
             }
             DispatchQueue.main.async {
-                self.mcpBusy = false
+                self.backendRunning = max(0, self.backendRunning - 1)
+                self.mcpBusy = self.backendRunning > 0
                 self.mcp.reloadIfChanged(force: true)
                 self.notifyMCPChange()
                 // The backend's own answer has to land in the open menu too, not just the
@@ -851,11 +865,21 @@ final class StatusController: NSObject, NSMenuDelegate {
                 // would keep showing as applied.
                 self.refreshCounts()
                 self.evaluate()
+                done?()
             }
         }
     }
 
-    @objc func refreshMCP() { runBackend(["refresh"]) }
+    /// True from the moment a full check is asked for until it has finished.
+    var refreshQueued = false
+
+    /// Refreshes coalesce: a second full check queued behind one still running buys nothing but
+    /// another half-minute of every configured server being started again.
+    @objc func refreshMCP() {
+        guard !refreshQueued else { return }
+        refreshQueued = true
+        runBackend(["refresh"]) { [weak self] in self?.refreshQueued = false }
+    }
 
     /// One usage poll: mcpbar.py reads the account limits from Anthropic's usage endpoint —
     /// the same one /usage in Claude Code asks — and rewrites limits.json; the 0.4s tick picks
@@ -922,6 +946,15 @@ final class StatusController: NSObject, NSMenuDelegate {
         guard let data = FileManager.default.contents(atPath: path),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }
+        // Opting out has to mean the numbers go away, not just that they stop moving. The file
+        // survives the switch (the statusLine capture writes the same one), so the source is
+        // what decides: figures that came from the API are dropped the moment the API is off,
+        // and the section says it has no data — which is what the README promises. Anything
+        // captured from statusLine is the user's own second source and stays.
+        if !oauthLimits, (root["source"] as? String) == "oauth" {
+            limits = nil
+            return
+        }
         // as? Int, deliberately: the statusLine payload reports fractional percentages and
         // hooks/statusline.py rounds them on the way in. If a writer ever forgets, the limits
         // vanish from the menu while limits.json still looks perfectly healthy — so the

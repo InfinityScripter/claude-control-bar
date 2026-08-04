@@ -43,9 +43,12 @@ const writeSettingsAtomic = (text, readAt) => {
   }
   let mode;
   try { mode = fs.statSync(settingsPath).mode; } catch {}
-  const tmp = `${settingsPath}.${process.pid}.tmp`;
+  // See install.js: a settings.json symlinked into ~/dotfiles must keep being a symlink.
+  let target = settingsPath;
+  try { target = fs.realpathSync(settingsPath); } catch {}
+  const tmp = `${target}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, text, mode === undefined ? undefined : { mode });
-  fs.renameSync(tmp, settingsPath);
+  fs.renameSync(tmp, target);
   return true;
 };
 

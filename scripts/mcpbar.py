@@ -18,6 +18,7 @@ MCP-картину ведёт этот скрипт (mcp.json), рисует в�
 """
 
 import glob
+import hashlib
 import json
 import os
 import re
@@ -47,6 +48,7 @@ TTL = int(os.environ.get("CONTROL_BAR_TTL", "600"))
 LOCK_TTL = 120
 
 OK, FAILED, PENDING, AUTH, OFF = "ok", "failed", "pending", "auth", "off"
+UNKNOWN = "unknown"
 
 
 # ──────────────────────────────────────────────────────────── язык
@@ -91,6 +93,8 @@ STRINGS = {
     "server.restart": ("on, from the next session", "включён, со следующей сессии"),
     "server.project": ("project {dir}", "проект {dir}"),
     "server.remote": ("remote, not health-checked", "удалённый, статус не проверяется"),
+    "server.needs_approval": ("from .mcp.json, approve in Claude Code",
+                              "из .mcp.json, одобрить в Claude Code"),
     "open.settings": ("Open settings.json", "Открыть settings.json"),
     "server.muted": ("({n} disabled)", "({n} выключено)"),
     "tools.none": ("— tools", "— инстр."),
@@ -147,18 +151,24 @@ def read_json(path, default=None):
         return default
 
 
-def write_json(path, data, indent=None):
+def write_json(path, data, indent=None, mode=None):
+    # Симлинк разрешается до цели: settings.json часто указывает в ~/dotfiles, а os.replace
+    # заменяет саму ссылку обычным файлом — оригинал в dotfiles остаётся старым, и человек
+    # тихо теряет синхронизацию своих настроек.
+    path = os.path.realpath(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.{os.getpid()}.tmp"
     # Права исходника переезжают на замену. Временный файл рождается с umask процесса,
     # и без этого settings.json с правами 0600 после первого переключателя становился
     # 0644 — а в нём бывают env-значения MCP-серверов.
-    mode = None
-    try:
-        mode = os.stat(path).st_mode & 0o777
-    except OSError:
-        pass
-    with open(tmp, "w") as fh:
+    if mode is None:
+        try:
+            mode = os.stat(path).st_mode & 0o777
+        except OSError:
+            pass
+    # Дескриптор с 0600, а не open() с umask: содержимое попадает на диск раньше chmod,
+    # и в этот промежуток временный файл иначе лежал бы читаемым для всей машины.
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
         json.dump(data, fh, ensure_ascii=False, indent=indent)
         if indent:
             fh.write("\n")
@@ -167,13 +177,55 @@ def write_json(path, data, indent=None):
     os.replace(tmp, path)
 
 
-def write_settings(data):
+def read_settings_for_edit():
+    """Настройки под изменение: `(данные, отпечаток)`, либо `(None, "")` — не трогать.
+
+    read_json() глушит любую ошибку и возвращает None, а вызывающий пишет `or {}` — то есть
+    «файла нет». Для чтения это безобидно, для записи катастрофа: человек правит settings.json
+    руками, между двумя нажатиями файл невалиден, и один клик по переключателю заменял все
+    его настройки единственным правилом deny. Здесь отсутствие файла и битый разбор — разные
+    ответы, и второй означает отказ от операции.
+
+    Отпечаток берётся с байтов и проверяется перед самой заменой: блокировка держит только
+    процессы панели, а Claude Code и редактор человека её не берут.
+    """
+    try:
+        with open(SETTINGS, "rb") as fh:
+            raw = fh.read()
+    except FileNotFoundError:
+        return {}, ""
+    except OSError:
+        return None, ""
+    try:
+        return json.loads(raw), hashlib.sha256(raw).hexdigest()
+    except ValueError:
+        return None, ""
+
+
+def settings_fingerprint():
+    try:
+        with open(SETTINGS, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        return None
+
+
+def write_settings(data, expect=None):
     """settings.json человек правит руками — значит и мы пишем его для человека.
 
     Компактной записью первый же переключатель схлопывал файл пользователя в одну строку:
     ни прочитать, ни сравнить в git. Отступ тот же, что ставит сам Claude Code и hooks/install.js.
+
+    `expect` — отпечаток той версии файла, на основе которой посчитаны данные. Не совпал,
+    значит между чтением и заменой файл изменил кто-то ещё (Claude Code, редактор), и его
+    правку затирать нельзя: возвращаем False, вызывающий отказывается от операции.
     """
+    if expect is not None and settings_fingerprint() != expect:
+        return False
     write_json(SETTINGS, data, indent=2)
+    return True
 
 
 def find_claude():
@@ -548,17 +600,17 @@ def project_server_configs(cwds, global_config):
     projects = (global_config or {}).get("projects") or {}
     found = {}
     for cwd in cwds:
-        for configs in (
-            (projects.get(cwd) or {}).get("mcpServers") or {},
-            (read_json(os.path.join(cwd, ".mcp.json")) or {}).get("mcpServers") or {},
+        for scope, configs in (
+            ("local", (projects.get(cwd) or {}).get("mcpServers") or {}),
+            ("project", (read_json(os.path.join(cwd, ".mcp.json")) or {}).get("mcpServers") or {}),
         ):
             for name, config in configs.items():
                 if isinstance(config, dict):
-                    found.setdefault(name, (config, cwd))
+                    found.setdefault(name, (config, cwd, scope))
     return found
 
 
-def probe_project_server(name, config, cwd):
+def probe_project_server(name, config, cwd, scope):
     """Живая строка для сервера проекта: stdio опрашивается по-настоящему, из каталога
     проекта; удалённый (http/sse) не проверяется — честное «не проверяется» вместо
     выдуманного зелёного кружка."""
@@ -568,8 +620,21 @@ def probe_project_server(name, config, cwd):
         "source": "project", "project": base,
         "toolNames": [], "toolDocs": {}, "toolParams": {}, "tools": None,
     }
+    # .mcp.json лежит в репозитории и написан не обязательно тем, кто его открыл. Claude Code
+    # спрашивает разрешение на такой сервер один раз и до ответа его не запускает; панель к
+    # этому диалогу доступа не имеет, а значит не вправе решать за него — иначе достаточно
+    # склонировать чужой репозиторий и открыть его, чтобы команда из конфига выполнилась на
+    # ближайшей проверке. Строку показываем (сервер существует), команду не трогаем.
+    if scope == "project":
+        entry["state"] = PENDING
+        entry["status"] = t("server.needs_approval") + " · " + t("server.project", dir=base)
+        # Отдельный признак, потому что pending значит две разные вещи: «включён, ждёт новой
+        # сессии» и «ждёт одобрения». Первой строке место в подсказке про сессию, второй — нет,
+        # и без этого поля меню советовало бы открыть новую сессию там, где нужно нажать /mcp.
+        entry["needsApproval"] = True
+        return entry
     if config.get("type", "stdio") != "stdio":
-        entry["state"] = "unknown"
+        entry["state"] = UNKNOWN
         entry["status"] = t("server.remote") + " · " + t("server.project", dir=base)
         return entry
     tools = ask_server_for_tools(name, config, cwd=cwd)
@@ -654,8 +719,15 @@ def backup_settings():
         return None
     stamp = time.strftime("%Y%m%d-%H%M%S")
     path = f"{SETTINGS}.bak-{stamp}"
+    # Копии ещё нет, наследовать режим неоткуда — и при обычном umask 022 она рождалась 0644,
+    # хотя сам settings.json стоит 0600 и хранит env MCP-серверов с токенами. Берём режим
+    # исходника и в любом случае не шире владельца: резервная копия секрета — тот же секрет.
+    try:
+        mode = (os.stat(os.path.realpath(SETTINGS)).st_mode & 0o777) & 0o700
+    except OSError:
+        mode = 0o600
     if not os.path.exists(path):
-        write_json(path, settings)
+        write_json(path, settings, mode=mode)
     # Переключатель дёргают часто — храним десяток последних снимков, остальное чистим.
     ours = sorted(glob.glob(f"{SETTINGS}.bak-2*"), reverse=True)
     for stale in ours[10:]:
@@ -736,7 +808,9 @@ def toggle_server(name, turn_off):
 
 
 def _toggle_server_locked(name, turn_off):
-    settings = read_json(SETTINGS) or {}
+    settings, seen = read_settings_for_edit()
+    if settings is None:
+        return False
     current = settings.get("deniedMcpServers") or []
     kept = [
         d for d in current
@@ -751,8 +825,7 @@ def _toggle_server_locked(name, turn_off):
         settings["deniedMcpServers"] = kept
     else:
         settings.pop("deniedMcpServers", None)
-    write_settings(settings)
-    return True
+    return write_settings(settings, expect=seen)
 
 
 def toggle_tool(rule, turn_off):
@@ -761,7 +834,9 @@ def toggle_tool(rule, turn_off):
 
 
 def _toggle_tool_locked(rule, turn_off):
-    settings = read_json(SETTINGS) or {}
+    settings, seen = read_settings_for_edit()
+    if settings is None:
+        return False
     perms = settings.setdefault("permissions", {})
     current = list(perms.get("deny") or [])
     kept = [r for r in current if r != rule]
@@ -778,8 +853,7 @@ def _toggle_tool_locked(rule, turn_off):
         perms.pop("deny", None)
         if not perms:
             settings.pop("permissions", None)
-    write_settings(settings)
-    return True
+    return write_settings(settings, expect=seen)
 
 
 # ──────────────────────────────────────────────────────── перехват statusLine
@@ -1205,9 +1279,9 @@ def refresh():
     # (её cwd закреплён на корне). Совпадение имени с глобальным сервером — пропуск: это
     # почти наверняка тот же сервер, и одна строка честнее двух неразличимых.
     seen = {s["name"] for s in servers}
-    for name, (server_config, cwd) in project_server_configs(session_cwds(), config).items():
+    for name, (server_config, cwd, scope) in project_server_configs(session_cwds(), config).items():
         if name not in seen:
-            servers.append(probe_project_server(name, server_config, cwd))
+            servers.append(probe_project_server(name, server_config, cwd, scope))
 
     # Таблицу размеров окон держим свежей здесь, хотя сама она нужна не нам, а Node-хуку:
     # выскребается она из бинаря Claude Code (226 МБ) и в хуке, который срабатывает на
@@ -1307,8 +1381,8 @@ def statusline_segment():
         return ""
 
 
-GLYPH = {OK: "●", FAILED: "✗", PENDING: "⏸", AUTH: "◌", OFF: "○"}
-COLOR = {OK: "32", FAILED: "31", PENDING: "33", AUTH: "33", OFF: "2"}
+GLYPH = {OK: "●", FAILED: "✗", PENDING: "⏸", AUTH: "◌", OFF: "○", UNKNOWN: "·"}
+COLOR = {OK: "32", FAILED: "31", PENDING: "33", AUTH: "33", OFF: "2", UNKNOWN: "2"}
 GROUPS = ["user", "claude.ai", "plugin", "project"]
 
 

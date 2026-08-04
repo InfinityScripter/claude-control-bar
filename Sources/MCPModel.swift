@@ -33,6 +33,9 @@ struct MCPServer {
     /// working in that directory — the row has to say which one, or two sessions in different
     /// projects read the menu as contradicting itself.
     let project: String?
+    /// A `.mcp.json` server the user has not approved in Claude Code yet. It shares the pending
+    /// state with "switched on, waiting for a new session", and the two need opposite advice.
+    let needsApproval: Bool
     var status: String
     /// What the server itself reported at startup. Can exceed `tools.count`: the count comes from
     /// the server's own stderr, the names from a separate probe that some servers refuse.
@@ -198,6 +201,7 @@ final class MCPModel {
             state: raw["state"] as? String ?? "failed",
             source: raw["source"] as? String ?? "user",
             project: raw["project"] as? String,
+            needsApproval: raw["needsApproval"] as? Bool ?? false,
             status: raw["status"] as? String ?? "",
             reportedTools: raw["tools"] as? Int,
             tools: tools)

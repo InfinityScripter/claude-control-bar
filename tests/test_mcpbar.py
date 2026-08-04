@@ -5,8 +5,10 @@
 Каждый случай здесь — реальная ошибка, на которую наступили при разработке.
 """
 
+import glob
 import json
 import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -145,11 +147,14 @@ class PatchStateAfterToggle(unittest.TestCase):
                 {"name": "wiki", "state": "ok", "status": "✔ Connected", "source": "user",
                  "tools": 31, "toolNames": ["GetPage", "DeletePage"], "toolDocs": {}},
             ]}, fh)
-        self._settings, self._state = mcpbar.SETTINGS, mcpbar.STATE
+        self._saved = (mcpbar.SETTINGS, mcpbar.STATE, mcpbar.ROOT)
         mcpbar.SETTINGS, mcpbar.STATE = self.settings, self.state
+        # ROOT — тоже подмена: settings_lock() кладёт файл блокировки в ROOT, и без этого
+        # тест писал в настоящий ~/.claude/control-bar.
+        mcpbar.ROOT = os.path.join(self._dir.name, "control-bar")
 
     def tearDown(self):
-        mcpbar.SETTINGS, mcpbar.STATE = self._settings, self._state
+        mcpbar.SETTINGS, mcpbar.STATE, mcpbar.ROOT = self._saved
         self._dir.cleanup()
 
     def read_state(self):
@@ -462,21 +467,158 @@ class ProjectServers(unittest.TestCase):
         # local имеет приоритет над project — как в самом Claude Code.
         self.assertEqual(found["shared"][0]["command"], "local-wins")
         self.assertEqual(found["repo-tool"][1], cwd)
+        # Scope едет вместе с конфигурацией: от него зависит, можно ли эту команду запускать.
+        self.assertEqual(found["repo-tool"][2], "project")
+        self.assertEqual(found["local-tool"][2], "local")
 
     def test_проект_без_конфигурации_даёт_пусто(self):
         self.assertEqual(mcpbar.project_server_configs([tempfile.mkdtemp()], {}), {})
 
     def test_удалённый_сервер_проекта_честно_не_проверен(self):
         entry = mcpbar.probe_project_server(
-            "api", {"type": "http", "url": "https://x/mcp"}, "/tmp/proj")
+            "api", {"type": "http", "url": "https://x/mcp"}, "/tmp/proj", "local")
         self.assertEqual(entry["state"], "unknown")
         self.assertEqual(entry["source"], "project")
         self.assertEqual(entry["project"], "proj")
 
     def test_упавший_stdio_сервер_проекта_помечен_красным(self):
         entry = mcpbar.probe_project_server(
-            "dead", {"command": "/nonexistent-binary-xyz"}, "/tmp/proj")
+            "dead", {"command": "/nonexistent-binary-xyz"}, "/tmp/proj", "local")
         self.assertEqual(entry["state"], mcpbar.FAILED)
+
+    def test_команда_из_mcp_json_не_запускается(self):
+        """Главное правило: .mcp.json лежит в репозитории, который мог написать кто угодно.
+
+        Claude Code спрашивает разрешение на такой сервер один раз и до ответа его не
+        запускает. Панель к этому диалогу доступа не имеет, поэтому не запускает вовсе:
+        достаточно было склонировать репозиторий и открыть его, чтобы команда из чужого
+        конфига выполнилась на ближайшей проверке.
+        """
+        cwd = tempfile.mkdtemp()
+        marker = os.path.join(cwd, "executed")
+        entry = mcpbar.probe_project_server(
+            "evil", {"command": "/usr/bin/touch", "args": [marker]}, cwd, "project")
+        self.assertFalse(os.path.exists(marker), "команда из .mcp.json была выполнена")
+        self.assertEqual(entry["state"], mcpbar.PENDING)
+
+    def test_локальный_сервер_проекта_по_прежнему_опрашивается(self):
+        """Обратная сторона: local-scope пользователь добавил сам, его запускать можно."""
+        cwd = tempfile.mkdtemp()
+        marker = os.path.join(cwd, "executed")
+        mcpbar.probe_project_server(
+            "mine", {"command": "/usr/bin/touch", "args": [marker]}, cwd, "local")
+        self.assertTrue(os.path.exists(marker), "свой же сервер перестал опрашиваться")
+
+
+class SettingsSafety(unittest.TestCase):
+    """settings.json принадлежит человеку: в нём его правила и env MCP-серверов с токенами.
+
+    Каждый случай здесь — способ, которым переключатель мог этот файл испортить.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.settings = os.path.join(self._dir.name, "settings.json")
+        self._saved = (mcpbar.SETTINGS, mcpbar.STATE, mcpbar.ROOT)
+        mcpbar.SETTINGS = self.settings
+        mcpbar.STATE = os.path.join(self._dir.name, "state.json")
+        # ROOT тоже: без него settings_lock() лезет за файлом блокировки в настоящий
+        # ~/.claude/control-bar — тест перестаёт быть герметичным и падает в песочнице.
+        mcpbar.ROOT = os.path.join(self._dir.name, "control-bar")
+
+    def tearDown(self):
+        mcpbar.SETTINGS, mcpbar.STATE, mcpbar.ROOT = self._saved
+        self._dir.cleanup()
+
+    def write(self, text, mode=0o600):
+        with open(self.settings, "w") as fh:
+            fh.write(text)
+        os.chmod(self.settings, mode)
+
+    def read(self):
+        with open(self.settings) as fh:
+            return fh.read()
+
+    def backups(self):
+        return sorted(glob.glob(f"{self.settings}.bak-*"))
+
+    def test_бэкап_не_шире_исходника(self):
+        """0600 у настроек — не украшение: в них лежат env MCP-серверов с токенами.
+
+        Резервная копия создавалась заново, копировать режим было неоткуда, и при обычном
+        umask 022 она рождалась 0644 — секреты становились читаемы всем на машине.
+        """
+        self.write(json.dumps({"env": {"TOKEN": "s3cr3t"}}), mode=0o600)
+        path = mcpbar.backup_settings()
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+
+    def test_битый_json_не_затирается_переключателем(self):
+        """Человек редактирует файл руками; между двумя нажатиями он бывает невалиден.
+
+        read_json() глушила любую ошибку и возвращала None, а вызывающий писал `or {}` —
+        то есть «файла нет». Один клик заменял все настройки одним правилом deny, и
+        резервной копии тоже не оставалось: backup_settings() на нечитаемом файле выходила.
+        """
+        broken = '{ "permissions": { "deny": ["Bash(rm:*)"] }, "apiKeyHelper": "x"\n'
+        self.write(broken)
+        self.assertFalse(mcpbar.toggle_server("wiki", turn_off=True))
+        self.assertEqual(self.read(), broken)
+
+    def test_битый_json_не_затирается_переключателем_инструмента(self):
+        broken = '{ oops\n'
+        self.write(broken)
+        self.assertFalse(mcpbar.toggle_tool("mcp__wiki__DeletePage", turn_off=True))
+        self.assertEqual(self.read(), broken)
+
+    def test_чужая_запись_между_чтением_и_заменой_не_теряется(self):
+        """Блокировка держит только процессы панели. Claude Code и редактор её не берут.
+
+        Чужая правка имитируется из backup_settings() — она и правда вызывается между
+        чтением настроек и их заменой, так что окно тут настоящее, а не выдуманное.
+        """
+        self.write(json.dumps({"mine": 1}))
+        original = mcpbar.backup_settings
+
+        def someone_else_writes_first():
+            result = original()
+            with open(self.settings, "w") as fh:
+                json.dump({"mine": 1, "theirs": 2}, fh)
+            return result
+
+        mcpbar.backup_settings = someone_else_writes_first
+        try:
+            self.assertFalse(mcpbar.toggle_server("wiki", turn_off=True))
+        finally:
+            mcpbar.backup_settings = original
+        with open(self.settings) as fh:
+            self.assertEqual(json.load(fh), {"mine": 1, "theirs": 2})
+
+    def test_symlink_на_dotfiles_остаётся_symlink(self):
+        """Настройки часто симлинк в ~/dotfiles. os.replace заменял саму ссылку обычным
+        файлом: оригинал в dotfiles оставался старым, а синхронизация тихо умирала."""
+        target = os.path.join(self._dir.name, "dotfiles-settings.json")
+        with open(target, "w") as fh:
+            json.dump({"mine": 1}, fh)
+        os.symlink(target, self.settings)
+        self.assertTrue(mcpbar.toggle_server("wiki", turn_off=True))
+        self.assertTrue(os.path.islink(self.settings), "симлинк заменён обычным файлом")
+        with open(target) as fh:
+            self.assertIn("deniedMcpServers", json.load(fh))
+
+
+class ReportGlyphs(unittest.TestCase):
+    def test_каждое_состояние_имеет_значок_и_цвет(self):
+        """`/mcp-health` печатает GLYPH[state] по жёсткому индексу: состояние без значка
+        роняет всю команду KeyError'ом. Первым таким стал unknown у HTTP-сервера проекта."""
+        for state in (mcpbar.OK, mcpbar.FAILED, mcpbar.PENDING, mcpbar.AUTH,
+                      mcpbar.OFF, mcpbar.UNKNOWN):
+            self.assertIn(state, mcpbar.GLYPH)
+            self.assertIn(state, mcpbar.COLOR)
+
+    def test_состояния_из_probe_печатаются(self):
+        entry = mcpbar.probe_project_server(
+            "api", {"type": "http", "url": "https://x/mcp"}, "/tmp/proj", "local")
+        self.assertIn(entry["state"], mcpbar.GLYPH)
 
 
 class UsageEndpoint(unittest.TestCase):
