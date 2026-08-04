@@ -153,6 +153,17 @@ final class MCPModel {
         servers[s].tools[t].enabled = enabled
     }
 
+    /// Whether this server's row should show a spinner instead of a state.
+    ///
+    /// Both halves matter. "pending" alone is not enough: a server can sit pending for reasons no
+    /// check will resolve — an authorisation nobody has granted — and an arc turning next to work
+    /// nobody is doing claims progress that is not happening. A running backend alone is not
+    /// enough either: the servers that already answered are not being waited on.
+    func isChecking(_ name: String, backendBusy: Bool) -> Bool {
+        guard backendBusy else { return false }
+        return servers.first(where: { $0.name == name })?.state == "pending"
+    }
+
     func setServerLocally(_ name: String, enabled: Bool) {
         guard let s = servers.firstIndex(where: { $0.name == name }) else { return }
         // Not "ok": switching a server back on does not reconnect it. The list of servers is

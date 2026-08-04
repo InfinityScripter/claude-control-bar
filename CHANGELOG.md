@@ -18,11 +18,14 @@ reports on Claude Code — it switches parts of it off.
 - **Context window usage per session**, in the row and in its tooltip. Claude Code gives that
   number to `statusLine` and to nothing else, and the desktop app never runs `statusLine`, so it
   is recomputed from the transcript with the CLI's own formula.
-- **MCP section**: servers grouped by where they are configured, each with a switch and an
-  `enabled/total` tool count; per-server tool lists and one flat **All tools** inventory.
+- **MCP section**: servers grouped by where they are configured, one row each with a switch, an
+  `enabled/total` tool count and the server's tool list as a submenu off that same row.
+- **A spinner on a row being checked**, and `next session` once it has been — a re-enabled server
+  is on, but a session assembles its server list at startup, so an open one keeps what it had.
+  The check is ordered by the switch itself rather than waiting for the ten-minute timer.
 - **Tool cards on hover** — description and parameters, read from the server's own `tools/list`
   response. Parameters are new data; the backend did not collect `inputSchema` before.
-- **Usage bars in the menu bar**: 5h limit, 7d limit and context, with the detail in the menu.
+- **Usage bars in the menu bar**: the 5h and 7d limits, labelled, with the detail in the menu.
 - **A `changed:` line** naming what moved since the last check, plus a notification when a server
   falls over. Tool counts change silently — that is usually you, one click ago.
 - `statusline --install`, which wraps an existing `statusLine` command to capture limits without

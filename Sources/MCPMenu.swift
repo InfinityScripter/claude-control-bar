@@ -12,6 +12,7 @@ final class MCPRowView: NSView {
     private let label = NSTextField(labelWithString: "")
     private let trailing = NSTextField(labelWithString: "")
     private let chevron = NSTextField(labelWithString: "\u{203A}")
+    private let spinner = SpinnerView(size: 13)
     private let toggle: ToggleView
     private let onHover: ((NSView) -> Void)?
     private let hasChevron: Bool
@@ -21,6 +22,7 @@ final class MCPRowView: NSView {
 
     init(mark glyph: String?, markColor: NSColor, title: String, trailing tail: String,
          isOn: Bool, indent: CGFloat, width: CGFloat, enabled: Bool = true, chevron showChevron: Bool = false,
+         spinning: Bool = false,
          onHover: ((NSView) -> Void)? = nil, onToggle: @escaping (Bool) -> Void) {
         self.hasChevron = showChevron
         self.toggle = ToggleView(isOn: isOn)
@@ -70,6 +72,10 @@ final class MCPRowView: NSView {
         trailing.autoresizingMask = [.minXMargin]
         addSubview(trailing)
 
+        spinner.autoresizingMask = [.minXMargin]
+        addSubview(spinner)
+        spinner.setActive(spinning)
+
         // Drawn by hand rather than left to AppKit: an item with a custom view gets no submenu
         // arrow of its own. Without it a server needed a second row just to say "there is more
         // in here", which doubled the length of the whole section.
@@ -95,6 +101,11 @@ final class MCPRowView: NSView {
             chevron.frame = NSRect(x: right - gap - chevronW, y: (rowH - 16) / 2,
                                    width: chevronW, height: 16)
             right = chevron.frame.minX
+        }
+        if !spinner.isHidden {
+            let side = spinner.frame.width
+            spinner.setFrameOrigin(NSPoint(x: right - gap - side, y: (rowH - side) / 2))
+            right = spinner.frame.minX
         }
         // Sized to the text, not to a fixed column: a fixed 74pt turned "new session" into
         // "new sessior", which reads as a rendering fault rather than a status.
@@ -129,6 +140,7 @@ final class MCPRowView: NSView {
         label.textColor = .white
         trailing.textColor = NSColor.white.withAlphaComponent(0.75)
         chevron.textColor = NSColor.white.withAlphaComponent(0.75)
+        spinner.tint = NSColor.white.withAlphaComponent(0.75)
         onHover?(self)
     }
 
@@ -138,6 +150,7 @@ final class MCPRowView: NSView {
         label.textColor = .labelColor
         trailing.textColor = .secondaryLabelColor
         chevron.textColor = .tertiaryLabelColor
+        spinner.tint = .secondaryLabelColor
         ToolCard.shared.hide()
     }
 
@@ -160,7 +173,9 @@ final class MCPRowView: NSView {
     /// remove rows mid-track, but the views it already holds can be rewritten — and all of it
     /// has to be rewritten, not just the count: switching a server off left a green dot sitting
     /// beside an off switch until the menu was reopened.
-    func setStatus(glyph: String, color: NSColor, trailing text: String, dim: Bool) {
+    func setStatus(glyph: String, color: NSColor, trailing text: String, dim: Bool,
+                   spinning: Bool = false) {
+        spinner.setActive(spinning)
         mark.stringValue = glyph
         mark.textColor = color
         mark.sizeToFit()
@@ -301,6 +316,11 @@ extension StatusController {
             : "\(server.enabledTools)/\(server.tools.count)"
     }
 
+    /// Whether this row is waiting on a check that is actually happening.
+    private func serverChecking(_ name: String) -> Bool {
+        mcp.isChecking(name, backendBusy: mcpChecking)
+    }
+
     /// What the right-hand column says for a server. A server that did not answer says so in
     /// words — it used to be a bare "!", which next to a plainly-ON switch reads as a
     /// contradiction rather than an explanation, especially since "pending" here means
@@ -309,11 +329,11 @@ extension StatusController {
         guard let server = mcp.servers.first(where: { $0.name == name }) else { return "—" }
         switch server.state {
         case "ok", "off": return toolCount(name)
-        // The actionable fact, not the internal state name. A re-enabled server is on — but
-        // Claude Code assembles a session's server list when the session starts, so an already
-        // open one keeps what it had. The row explains itself in its tooltip, and resolves to a
-        // real count once the check ordered by the toggle comes back.
-        case "pending": return "next session"
+        // Empty while the check runs: the spinner in this same slot is the answer, and a word
+        // beside a turning arc reads as two competing statuses. Once nothing is checking, the
+        // actionable fact takes over — a re-enabled server is on, but Claude Code assembles a
+        // session's server list when the session starts, so an already open one keeps what it had.
+        case "pending": return serverChecking(name) ? "" : "next session"
         default: return "failed"
         }
     }
@@ -330,7 +350,7 @@ extension StatusController {
             mark: mcpGlyph(server.state), markColor: mcpTint(server.state),
             title: mcpShortName(name), trailing: tail,
             isOn: !server.disabled, indent: 14, width: mcpRowWidth,
-            chevron: !server.tools.isEmpty
+            chevron: !server.tools.isEmpty, spinning: serverChecking(name)
         ) { [weak self] on in self?.setMCPServer(name, enabled: on) }
         switch server.state {
         case "ok": row.toolTip = name
@@ -341,14 +361,19 @@ extension StatusController {
         default: row.toolTip = name + " · " + server.status
         }
         head.view = row
-        guard !server.tools.isEmpty else { return [head] }
 
         // The tool list hangs off the server's own row rather than a separate "Tools ›" line
         // beneath it. Twelve servers meant twenty-four rows to say twelve things.
-        let submenu = NSMenu()
-        submenu.addItem(header("Click a row to switch a tool on or off"))
-        for tool in server.tools { submenu.addItem(toolRow(tool, of: server, indent: 14)) }
-        head.submenu = submenu
+        if !server.tools.isEmpty {
+            let submenu = NSMenu()
+            submenu.addItem(header("Click a row to switch a tool on or off"))
+            for tool in server.tools { submenu.addItem(toolRow(tool, of: server, indent: 14)) }
+            head.submenu = submenu
+        }
+        // Registered for every server, tools or not: this used to sit behind the submenu, so a
+        // server with no tool list of its own never re-rendered at all. Stale text was easy to
+        // miss; a spinner that never stops is not.
+        //
         // The whole row re-renders, not just its count. Switching a server off used to leave a
         // green dot next to an off switch until the menu was reopened, which read as the click
         // having done nothing.
@@ -356,7 +381,8 @@ extension StatusController {
             guard let self, let row,
                   let now = self.mcp.servers.first(where: { $0.name == name }) else { return }
             row.setStatus(glyph: mcpGlyph(now.state), color: mcpTint(now.state),
-                          trailing: self.serverTail(name), dim: now.disabled)
+                          trailing: self.serverTail(name), dim: now.disabled,
+                          spinning: self.serverChecking(name))
         }
         return [head]
     }

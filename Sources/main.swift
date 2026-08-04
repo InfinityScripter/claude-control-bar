@@ -836,12 +836,18 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func setMCPServer(_ name: String, enabled: Bool) {
         mcp.setServerLocally(name, enabled: enabled)
-        refreshCounts()
         runBackend(["toggle-server", name, enabled ? "--on" : "--off"])
         scheduleRecheck()
+        // Last, not first: the row draws a spinner while a check is running or ordered, so it has
+        // to be redrawn after the work is on its way rather than before.
+        refreshCounts()
     }
 
-    /// A toggle leaves the row saying "checking…", and something has to go and check. Waiting for
+    /// Whether anything is being worked out right now — a backend run in flight, or one already
+    /// ordered and counting down. What the spinner on a server row is allowed to claim.
+    var mcpChecking: Bool { mcpBusy || (recheckTimer?.isValid ?? false) }
+
+    /// A toggle leaves the row spinning, and something has to go and check. Waiting for
     /// the ten-minute timer meant a server switched back on sat unresolved long enough to read as
     /// broken. Debounced, because flipping several servers in a row should cost one check, not one
     /// each — a full check re-runs `claude mcp list` and a tools/list round trip per server.

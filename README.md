@@ -111,8 +111,8 @@ observed from a real `statusLine` payload replaces the guess permanently.
   Click a row to bring that session's terminal to the front.
 - **Limits** — 5h and 7d usage with reset countdowns and the age of the reading.
 - **MCP** — servers grouped by where they are configured (local config, claude.ai connectors,
-  plugins, project `.mcp.json`), each with `enabled/total` tools and a switch. **All tools** is
-  the flat inventory of everything currently costing you context.
+  plugins, project `.mcp.json`), each on one row with `enabled/total` tools, a switch, and its
+  tool list as a submenu off the same row.
 - **changed:** — what moved since the last check, because a count that is merely different next
   time tells you nothing about whether you moved it or a server did. Servers going down also
   raise a notification; tool counts do not, since that is usually you, one click ago.
@@ -121,6 +121,13 @@ observed from a real `statusLine` payload replaces the guess permanently.
 Switching a server or a tool writes to `~/.claude/settings.json` (`deniedMcpServers` and
 `permissions.deny`). It takes effect in **new** sessions: the tool list is assembled when a
 session starts, so an open tab is unaffected.
+
+A server switched back on spins while the app goes and looks, and shows `next session` once it
+has: on, but not in any window that was already open. The look itself is not cheap — `claude mcp
+list` starts every configured server and waits for each to answer, about half a minute here — so
+it runs when you flip a switch, when you open the menu on a picture older than two minutes, and
+every ten minutes regardless. Not on every open: that would start every server you have each time
+you glanced at the icon.
 
 ### Where it works
 

@@ -86,6 +86,17 @@ model.setServerLocally("wiki", enabled: true)
 check(mcpGlyph(model.servers.first { $0.name == "wiki" }!.state) == "\u{23F8}",
       "back on, it shows the paused glyph until a new session picks it up")
 
+// The spinner claims work is happening, so it needs both halves to be true. "pending" outlives
+// the check that resolves it — a server can wait on an authorisation no check will grant — and an
+// arc turning against nothing is a promise the app cannot keep.
+check(model.isChecking("wiki", backendBusy: true),
+      "a pending server spins while the backend is working")
+check(!model.isChecking("wiki", backendBusy: false),
+      "and stops the moment nothing is checking")
+check(!model.isChecking("yt", backendBusy: true),
+      "a server that already answered does not spin")
+check(!model.isChecking("nosuch", backendBusy: true), "an unknown server does not spin")
+
 try? FileManager.default.removeItem(atPath: dir)
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 exit(failures == 0 ? 0 : 1)
