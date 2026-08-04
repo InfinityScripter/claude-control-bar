@@ -32,20 +32,18 @@ with the plugin.
 
 ### Homebrew
 
-There is no cask. It would need its own tap and a published release, and neither exists yet —
-so there is no `brew install` line here to copy, because it would fail. The menu's update check
-already looks for a `claude-control-bar` cask, so the day one exists it starts working on its
-own. Until then: the plugin above, or the DMG below.
+There is no cask, so there is no `brew install` line here to copy — it would fail. What is
+missing is a tap of its own; the menu's update check already looks for a `claude-control-bar`
+cask, so the day one exists it starts working without a change here. Until then: the plugin
+above, or the DMG below.
 
 ### DMG
 
-> [!NOTE]
-> No release has been published yet — the Releases page is empty until a `v0.5.0` tag exists.
-> `./build.sh --dmg` produces the image locally. Until a release is up, use the plugin channel.
-
-1. Download the latest `claude-control-bar.dmg` from [Releases](../../releases).
+1. Download `claude-control-bar.dmg` from [the latest release](../../releases/latest).
 2. Drag **Claude Control Bar** into Applications.
 3. Launch it once — that installs the hooks.
+
+The app checks GitHub once a day and offers the newer version in its own menu when there is one.
 
 > [!IMPORTANT]
 > **The DMG is not notarized.** This fork has no Apple Developer ID, so the app is ad-hoc signed
@@ -120,9 +118,11 @@ observed from a real `statusLine` payload replaces the guess permanently.
 - **Limits** — 5h and 7d usage with reset countdowns and the age of the reading.
 - **MCP** — servers grouped by where they are configured (local config, claude.ai connectors,
   plugins, project `.mcp.json`), each on one row with `enabled/total` tools, a switch, and its
-  tool list as a submenu off the same row. Tool descriptions and parameters come from asking the
-  server itself, which this app only does for servers in `~/.claude.json`; plugin servers
-  therefore show names without cards.
+  tool list as a submenu off the same row.
+- **A plugin server usually shows `—` instead of a tool count.** Tools are learned by asking the
+  server directly, and the app only does that for servers configured in `~/.claude.json`; for the
+  rest it falls back to names seen in past transcripts, so a plugin server you have actually used
+  gets its list and the others stay blank until you do.
 - **Servers from a project's `.mcp.json` are asked about, not started.** That file ships with the
   repository, and Claude Code asks you once before trusting anything in it. This app never runs a
   command out of it — it runs `claude mcp list` in that project and takes the answer, so the
@@ -131,7 +131,8 @@ observed from a real `statusLine` payload replaces the guess permanently.
 - **changed:** — what moved since the last check, because a count that is merely different next
   time tells you nothing about whether you moved it or a server did. Servers going down also
   raise a notification; tool counts do not, since that is usually you, one click ago.
-- **Options** — timer, thinking words, animation style, icon color, completion sound.
+- **Options** — timer, thinking words, the Anthropic limits poll, animation style, icon colour,
+  completion sound. Below them: the version, and an update line when a newer one exists.
 
 Switching a server or a tool writes to `~/.claude/settings.json` (`deniedMcpServers` and
 `permissions.deny`). It takes effect in **new** sessions: the tool list is assembled when a
@@ -139,10 +140,11 @@ session starts, so an open tab is unaffected.
 
 A server switched back on spins while the app goes and looks, and shows `next session` once it
 has: on, but not in any window that was already open. The look itself is not cheap — `claude mcp
-list` starts every configured server and waits for each to answer, about half a minute here — so
-it runs when you flip a switch, when you open the menu on a picture older than two minutes, and
-every ten minutes regardless. Not on every open: that would start every server you have each time
-you glanced at the icon.
+list` starts every configured server and waits for each to answer, about half a minute here, plus
+one more run per open project that has servers of its own — so it runs when you flip a switch,
+when you open the menu on a picture older than two minutes, and every ten minutes regardless. Not
+on every open: that would start every server you have each time you glanced at the icon. Two
+checks never overlap; a refresh asked for while one is running is dropped rather than queued.
 
 ### Where it works
 
@@ -206,7 +208,8 @@ Then drag the app to the Trash. State it created lives in `~/.claude/control-bar
 
 Installed as a plugin: `/plugin uninstall claude-control-bar` removes the hooks, then drag
 `~/Applications/Claude Control Bar.app` to the Trash. If you installed the `statusLine` capture,
-run `mcpbar.py statusline --uninstall` first to get your original command back.
+run `/limits-capture uninstall` first to get your original command back — do it before removing
+the plugin, since the command lives there.
 
 ## Acknowledgements
 
