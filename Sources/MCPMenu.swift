@@ -168,6 +168,10 @@ final class MCPRowView: NSView {
         trailing.stringValue = text
         label.textColor = hovered ? .white : (dim ? .tertiaryLabelColor : .labelColor)
         chevron.isHidden = dim
+        // The switch follows too, for the case where something else moved it — another window,
+        // a hand-edit of settings.json. Guarded on inequality because ToggleView animates on
+        // every assignment, and this runs on each poll tick while the menu is open.
+        if toggle.isOn == dim { toggle.isOn = !dim }
         needsLayout = true
     }
 
