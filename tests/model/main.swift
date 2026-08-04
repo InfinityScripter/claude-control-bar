@@ -75,6 +75,17 @@ check(model.reloadIfChanged(force: true), "re-reads on force")
 check(model.freshChange()?.up == ["yt"], "a server coming back is reported as up")
 check(model.freshChange()?.deservesNotification == true, "a server coming back is worth a notification")
 
+// Switching a server off has to change what its row SAYS, not only whether it counts. Leaving
+// a green dot beside an off switch read as the click having done nothing.
+model.setServerLocally("wiki", enabled: false)
+let offWiki = model.servers.first { $0.name == "wiki" }!
+check(offWiki.disabled, "a switched-off server reports itself disabled")
+check(mcpGlyph(offWiki.state) == "\u{25CB}", "and its glyph is the hollow one, not the green dot")
+check(mcpTint(offWiki.state) == .tertiaryLabelColor, "and its colour is dimmed")
+model.setServerLocally("wiki", enabled: true)
+check(mcpGlyph(model.servers.first { $0.name == "wiki" }!.state) == "\u{23F8}",
+      "back on, it shows the paused glyph until a new session picks it up")
+
 try? FileManager.default.removeItem(atPath: dir)
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 exit(failures == 0 ? 0 : 1)

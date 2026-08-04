@@ -811,6 +811,10 @@ final class StatusController: NSObject, NSMenuDelegate {
                 self.mcpBusy = false
                 self.mcp.reloadIfChanged(force: true)
                 self.notifyMCPChange()
+                // The backend's own answer has to land in the open menu too, not just the
+                // optimistic guess that preceded it — otherwise a toggle the backend refused
+                // would keep showing as applied.
+                self.refreshCounts()
                 self.evaluate()
             }
         }
@@ -1380,7 +1384,10 @@ final class StatusController: NSObject, NSMenuDelegate {
         reloadSessions()
         // Both are mtime checks against a file another process rewrites atomically, so this is
         // a stat() per tick, not a parse — the parse happens only when something actually moved.
-        if mcp.reloadIfChanged() { notifyMCPChange() }
+        if mcp.reloadIfChanged() {
+            notifyMCPChange()
+            if menuIsOpen { refreshCounts() }
+        }
         loadLimits()
         evaluate()
         if menuIsOpen { refreshOpenMenuRows() }

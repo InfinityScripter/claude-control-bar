@@ -16,6 +16,8 @@ final class MCPRowView: NSView {
     private let onHover: ((NSView) -> Void)?
     private let hasChevron: Bool
     private let rowH: CGFloat = 24
+    private var hovered = false
+    private var markX: CGFloat = 0
 
     init(mark glyph: String?, markColor: NSColor, title: String, trailing tail: String,
          isOn: Bool, indent: CGFloat, width: CGFloat, enabled: Bool = true, chevron showChevron: Bool = false,
@@ -44,6 +46,7 @@ final class MCPRowView: NSView {
             mark.textColor = markColor
             mark.sizeToFit()
             mark.setFrameOrigin(NSPoint(x: indent, y: (rowH - mark.frame.height) / 2))
+            markX = indent
             addSubview(mark)
         }
 
@@ -93,7 +96,11 @@ final class MCPRowView: NSView {
                                    width: chevronW, height: 16)
             right = chevron.frame.minX
         }
-        let tailW: CGFloat = trailing.stringValue.isEmpty ? 0 : 74
+        // Sized to the text, not to a fixed column: a fixed 74pt turned "new session" into
+        // "new sessior", which reads as a rendering fault rather than a status.
+        let tailW: CGFloat = trailing.stringValue.isEmpty ? 0
+            : ceil(trailing.stringValue.size(withAttributes: [
+                .font: trailing.font ?? NSFont.menuFont(ofSize: 0)]).width) + 2
         trailing.frame = NSRect(x: right - gap - tailW, y: (rowH - 16) / 2,
                                 width: tailW, height: 16)
         label.frame.size.width = max(40, (tailW > 0 ? trailing.frame.minX : right)
@@ -117,6 +124,7 @@ final class MCPRowView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
+        hovered = true
         highlight.isHidden = false
         label.textColor = .white
         trailing.textColor = NSColor.white.withAlphaComponent(0.75)
@@ -125,6 +133,7 @@ final class MCPRowView: NSView {
     }
 
     override func mouseExited(with event: NSEvent) {
+        hovered = false
         highlight.isHidden = true
         label.textColor = .labelColor
         trailing.textColor = .secondaryLabelColor
@@ -147,9 +156,21 @@ final class MCPRowView: NSView {
         toggle.onToggle?(toggle.isOn)
     }
 
-    /// Counts change while the menu is open — a click on one tool moves its server's total and
-    /// the grand total. NSMenu cannot add or remove rows mid-track, but the views it already
-    /// holds can be rewritten, which is what keeps those numbers honest.
+    /// Everything on the row that can change while the menu is open. NSMenu cannot add or
+    /// remove rows mid-track, but the views it already holds can be rewritten — and all of it
+    /// has to be rewritten, not just the count: switching a server off left a green dot sitting
+    /// beside an off switch until the menu was reopened.
+    func setStatus(glyph: String, color: NSColor, trailing text: String, dim: Bool) {
+        mark.stringValue = glyph
+        mark.textColor = color
+        mark.sizeToFit()
+        mark.setFrameOrigin(NSPoint(x: markX, y: (rowH - mark.frame.height) / 2))
+        trailing.stringValue = text
+        label.textColor = hovered ? .white : (dim ? .tertiaryLabelColor : .labelColor)
+        chevron.isHidden = dim
+        needsLayout = true
+    }
+
     func setTrailing(_ text: String) {
         trailing.stringValue = text
         needsLayout = true
@@ -272,14 +293,22 @@ extension StatusController {
             : "\(server.enabledTools)/\(server.tools.count)"
     }
 
+    /// What the right-hand column says for a server. A server that did not answer says so in
+    /// words — it used to be a bare "!", which next to a plainly-ON switch reads as a
+    /// contradiction rather than an explanation, especially since "pending" here means
+    /// "switched on, waiting for a new session".
+    private func serverTail(_ name: String) -> String {
+        guard let server = mcp.servers.first(where: { $0.name == name }) else { return "—" }
+        switch server.state {
+        case "ok", "off": return toolCount(name)
+        case "pending": return "new session"
+        default: return "failed"
+        }
+    }
+
     private func serverRows(_ server: MCPServer) -> [NSMenuItem] {
         let name = server.name
-        // A server that did not answer says so in words. It used to be a bare "!", which next to
-        // a switch that is plainly ON reads as a contradiction rather than an explanation —
-        // especially since "pending" here means "switched on, waiting for a new session".
-        let tail = (server.state == "ok" || server.state == "off")
-            ? toolCount(name)
-            : (server.state == "pending" ? "new session" : "failed")
+        let tail = serverTail(name)
 
         let head = NSMenuItem()
         // Titles are unused for display when a view is set, but they are what the dump
@@ -301,10 +330,14 @@ extension StatusController {
         submenu.addItem(header("Click a row to switch a tool on or off"))
         for tool in server.tools { submenu.addItem(toolRow(tool, of: server, indent: 14)) }
         head.submenu = submenu
+        // The whole row re-renders, not just its count. Switching a server off used to leave a
+        // green dot next to an off switch until the menu was reopened, which read as the click
+        // having done nothing.
         watchCount { [weak self, weak row] in
             guard let self, let row,
-                  self.mcp.servers.first(where: { $0.name == name })?.state == "ok" else { return }
-            row.setTrailing(self.toolCount(name))
+                  let now = self.mcp.servers.first(where: { $0.name == name }) else { return }
+            row.setStatus(glyph: mcpGlyph(now.state), color: mcpTint(now.state),
+                          trailing: self.serverTail(name), dim: now.disabled)
         }
         return [head]
     }
