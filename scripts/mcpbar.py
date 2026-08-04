@@ -50,6 +50,10 @@ LOCK_TTL = 120
 OK, FAILED, PENDING, AUTH, OFF = "ok", "failed", "pending", "auth", "off"
 UNKNOWN = "unknown"
 
+# Насколько состояние плохо. Нужно там, где два одноимённых сервера сливаются в одну строку:
+# остаётся худшее из состояний, иначе зелёный молча закрывает собой упавший сервер.
+SEVERITY = {OK: 0, PENDING: 1, AUTH: 1, FAILED: 2}
+
 
 # ──────────────────────────────────────────────────────────── язык
 
@@ -92,7 +96,6 @@ STRINGS = {
     "server.off": ("disabled", "выключен"),
     "server.restart": ("on, from the next session", "включён, со следующей сессии"),
     "server.project": ("project {dir}", "проект {dir}"),
-    "server.remote": ("remote, not health-checked", "удалённый, статус не проверяется"),
     "open.settings": ("Open settings.json", "Открыть settings.json"),
     "server.muted": ("({n} disabled)", "({n} выключено)"),
     "tools.none": ("— tools", "— инстр."),
@@ -140,6 +143,41 @@ def plural_tools(count):
 
 
 # ──────────────────────────────────────────────────────────── общее
+
+SECURE_DIR, SECURE_FILE = 0o700, 0o600
+
+
+def secure_root(path=None):
+    """Каталог состояния закрыт для всех, кроме владельца — снаружи и внутри.
+
+    Домашний каталог на macOS открыт группе staff, а в ней состоят все локальные
+    пользователи машины. Внутри лежат рабочие каталоги сессий и пути к их транскриптам,
+    проценты лимитов аккаунта и — при CLAUDE_STATUSBAR_DEBUG=1 — обрывки набранного.
+    Рождалось это всё с umask, то есть 0644.
+
+    Проход делается на каждый refresh, а не только при создании: обновление версии само по
+    себе прав не чинит, и без прохода исправленными оказались бы только новые установки.
+    """
+    root = path or ROOT
+    try:
+        os.makedirs(root, mode=SECURE_DIR, exist_ok=True)
+        os.chmod(root, SECURE_DIR)
+    except OSError:
+        return
+    for current, dirs, files in os.walk(root):
+        for name in dirs + files:
+            target = os.path.join(current, name)
+            # Симлинк пропускаем: chmod пошёл бы по ссылке и переписал права чужому файлу.
+            if os.path.islink(target):
+                continue
+            try:
+                os.chmod(target, SECURE_DIR if os.path.isdir(target) else SECURE_FILE)
+            except OSError:
+                # Ошибка на одном файле — не повод бросить остальные: хуки пишут сюда
+                # параллельно, и исчезнувший временный файл оставлял бы весь каталог
+                # незакрытым до следующего прохода.
+                continue
+
 
 def read_json(path, default=None):
     try:
@@ -604,8 +642,15 @@ def project_cwds(cwds, global_config):
     projects = (global_config or {}).get("projects") or {}
     out = []
     for cwd in cwds:
-        has = ((projects.get(cwd) or {}).get("mcpServers")
-               or (read_json(os.path.join(cwd, ".mcp.json")) or {}).get("mcpServers"))
+        has = bool((projects.get(cwd) or {}).get("mcpServers"))
+        config = os.path.join(cwd, ".mcp.json")
+        if not has and os.path.exists(config):
+            parsed = read_json(config)
+            # Файл есть, но не разбирается — проект всё равно идёт на проверку. Сломанная
+            # конфигурация MCP как раз то, про что инструмент здоровья обязан сказать, а
+            # read_json глушит ошибку разбора, и проект исчезал из карты целиком — вместе
+            # с уже поднятыми серверами. Что там внутри, разбирает Claude Code, не мы.
+            has = not isinstance(parsed, dict) or bool(parsed.get("mcpServers"))
         if has and cwd not in out:
             out.append(cwd)
     return out
@@ -751,8 +796,9 @@ def settings_lock():
 
     @contextmanager
     def held():
-        os.makedirs(ROOT, exist_ok=True)
-        with open(os.path.join(ROOT, "settings.lock"), "w") as fh:
+        os.makedirs(ROOT, mode=SECURE_DIR, exist_ok=True)
+        lock = os.path.join(ROOT, "settings.lock")
+        with os.fdopen(os.open(lock, os.O_WRONLY | os.O_CREAT, SECURE_FILE), "w") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
             try:
                 yield
@@ -863,7 +909,7 @@ def statusline_install():
 
     settings = read_json(SETTINGS) or {}
     backup_settings()
-    os.makedirs(ROOT, exist_ok=True)
+    os.makedirs(ROOT, mode=SECURE_DIR, exist_ok=True)
     original = settings.get("statusLine")
     # Целиком, включая None для «его не было»: по этой записи делается откат.
     write_json(STATUSLINE_SAVED, original)
@@ -1003,6 +1049,14 @@ def fetch_limits():
         return "нет токена: Claude Code не залогинен через браузерный OAuth"
     import urllib.request
 
+    # Редиректы запрещены целиком. Стандартный обработчик urllib переносит Authorization на
+    # новый хост как есть (requests так не делает, urllib делает), поэтому одного 302 — от
+    # эндпоинта, прокси или будущего переезда API — хватило бы, чтобы токен аккаунта уехал
+    # чужому серверу. Проверять resp.geturl() после запроса поздно: заголовок уже ушёл.
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
     req = urllib.request.Request(USAGE_URL, headers={
         "Authorization": f"Bearer {token}",
         "anthropic-beta": "oauth-2025-04-20",
@@ -1011,9 +1065,9 @@ def fetch_limits():
         "User-Agent": "claude-control-bar (statusline companion)",
     })
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.build_opener(NoRedirect).open(req, timeout=15) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
-    except Exception as exc:  # noqa: BLE001 — сеть, 401, JSON: исход один, файл не трогаем
+    except Exception as exc:  # noqa: BLE001 — сеть, 401, редирект, JSON: файл не трогаем
         return f"опрос не удался: {type(exc).__name__}"
     record = usage_record(payload)
     if not record:
@@ -1214,6 +1268,7 @@ def live_sessions():
 # ──────────────────────────────────────────────────────────── сборка состояния
 
 def refresh():
+    secure_root()
     servers, error = run_health_check()
     previous = load_state() or {}
 
@@ -1233,25 +1288,39 @@ def refresh():
         entry["source"] = classify(entry["name"], local)
 
     # Серверы проектов живых сессий — тем же `claude mcp list`, но из каталога проекта:
-    # общая проверка выше их не видит, её cwd закреплён на корне. Совпадение имени с уже
-    # найденным сервером — пропуск: это почти наверняка тот же самый, и одна строка честнее
-    # двух неразличимых.
-    seen = {s["name"] for s in servers}
+    # общая проверка выше их не видит, её cwd закреплён на корне.
+    #
+    # Одно имя — одна строка, и это не упрощение: settings.json адресует сервер единственным
+    # полем serverName, поэтому два тумблера на одно имя врали бы — выключение «db в alpha»
+    # гасит db во всех проектах разом. Но состояния у одноимённых серверов разные, и зелёная
+    # строка поверх упавшего сервера соседнего проекта — ровно та ложь, ради которой это
+    # приложение и написано. Поэтому строка достаётся худшему состоянию, а имя проекта в ней
+    # говорит, где именно смотреть.
+    by_name = {s["name"]: s for s in servers}
+    project_errors = []
     for cwd in project_cwds(session_cwds(), config):
-        found, error = run_health_check(cwd=cwd)
-        if error:
+        label = os.path.basename(cwd.rstrip("/")) or cwd
+        found, failure = run_health_check(cwd=cwd)
+        # Своя переменная, не общая: раньше здесь переиспользовалась `error` общей проверки,
+        # и удачный следующий проект обнулял ошибку предыдущего — в меню не оставалось ни
+        # упавшего проекта, ни строки «проверка не удалась».
+        if failure:
+            project_errors.append(f"{label}: {failure}")
             continue
         for entry in found:
-            if entry["name"] in seen:
-                continue
-            seen.add(entry["name"])
-            entry["source"] = "project"
-            entry["project"] = os.path.basename(cwd.rstrip("/")) or cwd
             # «⏸ Pending approval» здесь значит именно то, что написано: Claude Code этот
             # сервер не поднял и ждёт ответа человека. Отличаем от своего pending («включён,
             # со следующей сессии») — совет у них противоположный.
             entry["needsApproval"] = entry["state"] == PENDING
-            servers.append(entry)
+            entry["project"] = label
+            same_name = by_name.get(entry["name"])
+            if same_name is None:
+                entry["source"] = "project"
+                by_name[entry["name"]] = entry
+                servers.append(entry)
+            elif SEVERITY.get(entry["state"], 0) > SEVERITY.get(same_name["state"], 0):
+                same_name.update(state=entry["state"], status=entry["status"],
+                                 project=label, needsApproval=entry["needsApproval"])
 
     # Строго после всех health-check'ов: каждый из них переписывает stderr-логи, из которых
     # берутся числа инструментов, — в том числе логи серверов проекта.
@@ -1300,8 +1369,13 @@ def refresh():
         "limits": read_json(LIMITS) or {},
         "denyRules": rules,
     }
-    if error:
-        data["error"] = error
+    # Ошибки проектов идут рядом с общей, а не вместо неё: общая значит «карты нет вообще»,
+    # проектная — «вот этот проект не ответил», и вторая без имени проекта бесполезна.
+    problems = ([error] if error else []) + project_errors
+    if problems:
+        # Предел тот же, что у одиночной ошибки: строка уходит в заголовок меню, и десяток
+        # неответивших проектов растянул бы его на весь экран.
+        data["error"] = "; ".join(problems)[:200]
     write_json(STATE, data)
     return data
 
@@ -1316,7 +1390,7 @@ def spawn_refresh():
     try:
         if os.path.exists(LOCK) and time.time() - os.path.getmtime(LOCK) < LOCK_TTL:
             return
-        os.makedirs(ROOT, exist_ok=True)
+        os.makedirs(ROOT, mode=SECURE_DIR, exist_ok=True)
         with open(LOCK, "w") as fh:
             fh.write(str(os.getpid()))
         subprocess.Popen(
@@ -1381,7 +1455,12 @@ def report(force=False):
             continue
         out.append(paint(t("group." + key), "1"))
         for server in group:
-            glyph = paint(GLYPH[server["state"]], COLOR[server["state"]])
+            # Через .get, а не по жёсткому индексу: состояние без значка роняло всю команду
+            # KeyError'ом (так и появился unknown — у HTTP-сервера проекта). Теперь unknown
+            # работает как запасной выход для любого будущего состояния, а не как запись,
+            # которую надо не забыть добавить.
+            state = server["state"]
+            glyph = paint(GLYPH.get(state, GLYPH[UNKNOWN]), COLOR.get(state, COLOR[UNKNOWN]))
             count = server.get("tools")
             tools = (f"{count} {plural_tools(count)}"
                      if count is not None else t("tools.none")).rjust(10)

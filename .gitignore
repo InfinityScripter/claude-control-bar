@@ -8,6 +8,10 @@ build/
 *.dmg
 .DS_Store
 node_modules/
+# Byte-compiled by the test run; a committed .pyc drifts from its source and is read by nothing
+# (the app runs the .py on the system python).
+__pycache__/
+*.pyc
 
 # Private maintainer notes (kept out of the public repo)
 CLAUDE.md

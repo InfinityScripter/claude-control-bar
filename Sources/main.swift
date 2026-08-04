@@ -638,12 +638,24 @@ final class StatusController: NSObject, NSMenuDelegate {
     //
     // Retired to the Trash, not unlinked: an app the user can drag back is a different promise
     // from one this deleted on its own authority during a routine launch.
-    /// True only for a copy living in /Applications or ~/Applications. A build run straight out
+    /// True only for a copy living under /Applications or ~/Applications. A build run straight out
     /// of build/ is a development artifact and must keep its hands off the user's machine — it
     /// has no business installing hooks into settings.json or moving installed apps to the Trash
     /// just because someone launched it to look at the menu. (Learned the direct way: a dev run
     /// wrote eight hooks into a live settings.json.)
-    var isInstalledCopy: Bool { Bundle.main.bundlePath.contains("/Applications/") }
+    ///
+    /// Anchored at the front of the path, not searched anywhere inside it: a plain `contains`
+    /// promoted `/tmp/Applications/scratch/…` and `~/projects/Applications/demo/…` to installed
+    /// copies, which is the exact dev run this guard exists to hold back. A prefix rather than an
+    /// exact parent, because organising apps into /Applications/Utilities is normal and a copy
+    /// filed away there is installed by any honest reading.
+    var isInstalledCopy: Bool {
+        let bundle = URL(fileURLWithPath: Bundle.main.bundlePath).resolvingSymlinksInPath().path
+        // Both sides resolved, or a home directory that is itself a link never matches.
+        let personal = URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath()
+            .appendingPathComponent("Applications").path
+        return bundle.hasPrefix("/Applications/") || bundle.hasPrefix(personal + "/")
+    }
 
     func retirePredecessors() {
         guard isInstalledCopy else { return }

@@ -129,7 +129,7 @@ process.stdin.on("end", () => {
   // Off by default; CLAUDE_STATUSBAR_DEBUG=1 logs every hook invocation to hooks.log.
   if (process.env.CLAUDE_STATUSBAR_DEBUG === "1") {
     try {
-      fs.mkdirSync(dir, { recursive: true });
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       // Rotated at 1 MB, keeping one previous file. The line below carries an excerpt of the
       // event's message, so this is a file that can hold fragments of what was typed — letting
       // it grow without limit for the life of the install is not a debugging aid, it is a
@@ -138,8 +138,11 @@ process.stdin.on("end", () => {
       try {
         if (fs.statSync(logPath).size > 1_000_000) fs.renameSync(logPath, logPath + ".1");
       } catch {}
+      // 0600: this file holds fragments of what was typed, and the home folder is readable by
+      // group staff on macOS — every local account. The mode applies when the log is created.
       fs.appendFileSync(logPath,
-        `${new Date().toISOString()} [${event}] tool=${p.tool_name || "-"} mode=${p.permission_mode || "-"} msg=${JSON.stringify(p.message || "").slice(0, 160)} keys=${Object.keys(p).join(",")}\n`);
+        `${new Date().toISOString()} [${event}] tool=${p.tool_name || "-"} mode=${p.permission_mode || "-"} msg=${JSON.stringify(p.message || "").slice(0, 160)} keys=${Object.keys(p).join(",")}\n`,
+        { mode: 0o600 });
     } catch {}
   }
 
@@ -210,9 +213,12 @@ process.stdin.on("end", () => {
   };
   const out = { state, label, tool: p.tool_name || "", project, cwd, sessionId: p.session_id || "", transcript, entrypoint, term_program: termProgram, pid: process.ppid, started: true, startedAt, ts, ...ctx };
   try {
-    fs.mkdirSync(stateDir, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
     const tmp = statePath + "." + process.pid + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(out));
+    // Written with the mode set at creation: the file carries the working directory, the
+    // transcript path and the pid, and the umask default of 0644 hands all three to any other
+    // local account (the home folder is group-readable by staff on macOS).
+    fs.writeFileSync(tmp, JSON.stringify(out), { mode: 0o600 });
     fs.renameSync(tmp, statePath);
   } catch {}
 

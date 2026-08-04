@@ -34,9 +34,13 @@ def read_json(path, default=None):
 
 
 def atomic_write(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # 0700/0600, а не umask: здесь лежат проценты лимитов аккаунта и таблица окон, а домашний
+    # каталог на macOS открыт группе staff — то есть каждому локальному пользователю машины.
+    # Дескриптор открывается сразу с правами: chmod после записи оставил бы окно, в котором
+    # файл читаем всем.
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     tmp = "%s.%d.tmp" % (path, os.getpid())
-    with open(tmp, "w") as fh:
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
         json.dump(data, fh, ensure_ascii=False)
     os.replace(tmp, path)
 

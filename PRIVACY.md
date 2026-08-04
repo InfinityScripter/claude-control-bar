@@ -7,8 +7,10 @@ Claude Control Bar collects no data and has no servers. Everything it does happe
 - **A usage poll to `api.anthropic.com` every five minutes**, authenticated with the OAuth token
   Claude Code keeps in your Keychain. It returns your 5-hour and 7-day limit percentages — the
   same numbers `/usage` shows — and nothing else is asked for or stored. The token is sent to
-  Anthropic and to no other host. Switch **Limits via Anthropic API** off in Options and this
-  request never happens.
+  Anthropic and to no other host: the request refuses redirects outright, so a `30x` answer from
+  the endpoint, a proxy or a future move of the API cannot carry the token to another origin —
+  it is reported as a failed poll instead. Switch **Limits via Anthropic API** off in Options and
+  this request never happens.
 - **One update check a day**: a request to GitHub's public releases API for the latest tag, and
   one to Homebrew's public formulae API for the current cask version. Both only decide whether
   the menu shows an update line.
@@ -54,6 +56,12 @@ Mac, and all of it is listed here rather than left to be discovered.
 
 Everything lives under `~/.claude/control-bar/`: one small JSON file per session in `state.d/`,
 the MCP picture in `mcp.json`, the limits in `limits.json`.
+
+That directory is kept readable by you alone — `0700` on the folders, `0600` on the files, checked
+and corrected on every refresh rather than only at install. A macOS home folder is readable by the
+group `staff`, which is every local account on the machine, so files left at the usual `0644`
+would have handed your working directories, transcript paths and account limits to any other user
+of the same Mac.
 
 With `CLAUDE_STATUSBAR_DEBUG=1` set — off by default — the hook also appends a line per event to
 `control-bar/hooks.log`, including the first 160 characters of the event's `message` field. That

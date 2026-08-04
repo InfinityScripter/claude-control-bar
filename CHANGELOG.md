@@ -7,6 +7,46 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.5.2] - 2026-08-04
+
+### Security
+
+- **The usage poll no longer follows redirects.** `urllib` copies the `Authorization` header onto
+  the redirected request, across origins included — unlike `requests`, which strips it — so a
+  single `302` from the endpoint, a proxy or a future move of the API would have delivered the
+  account's OAuth token to another host. Reproduced against two local servers on the system
+  Python the app actually runs. Redirects are now refused outright and a `30x` is reported as a
+  failed poll; checking the final URL afterwards would have been too late, the header having
+  already been sent.
+- **State files are owner-only.** `~/.claude/control-bar/` and everything under it is created at
+  `0700`/`0600`, and existing installs are corrected on every refresh — an upgrade alone does not
+  fix permissions. A macOS home folder is readable by the group `staff`, i.e. every local account
+  on the machine, and these files hold working directories, transcript paths, account limit
+  percentages and, with `CLAUDE_STATUSBAR_DEBUG=1`, fragments of what was typed.
+
+### Fixed
+
+- **A green server row no longer hides a failed one of the same name.** Two projects with a
+  server called `db` collapsed into one row keyed by name, and whichever was seen first won —
+  so a working `db` in one project masked a broken `db` in the one being worked in. The row stays
+  single (`settings.json` addresses a server by `serverName` alone, so two switches for one name
+  would lie in the other direction), but it now takes the worst state of the two and names the
+  project it came from.
+- **A project whose health check fails is reported instead of vanishing.** The loop reused the
+  same `error` variable as the overall check: a project that timed out was skipped by `continue`,
+  and the next project that answered reset the variable to nothing. The menu showed neither the
+  broken project nor a "check failed" line. Project failures are now collected separately and
+  named one by one.
+- **A malformed `.mcp.json` no longer removes a project from the map.** The parse that decides
+  whether a project is worth checking swallowed its own error and answered "no servers here", so
+  a broken config — precisely what a health tool exists to surface — took the whole project's
+  servers off the map silently. An unparseable file now sends the project to `claude mcp list`,
+  which is where the diagnosis belongs.
+- **A development build outside `/Applications` stays a development build.** The installed-copy
+  test matched `/Applications/` anywhere in the path, so a build under `/tmp/Applications/…` or
+  `~/projects/Applications/…` would have installed hooks into a live `settings.json` and moved
+  apps to the Trash. The path is now anchored at `/Applications` or `~/Applications`.
+
 ## [0.5.1] - 2026-08-04
 
 ### Fixed

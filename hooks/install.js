@@ -37,13 +37,18 @@ const oldAgentPlist = path.join(home, "Library", "LaunchAgents", OLD_AGENT_LABEL
 try { cp.execSync(`launchctl bootout gui/${process.getuid()}/${OLD_AGENT_LABEL}`, { stdio: "ignore" }); } catch {}
 if (fs.existsSync(oldAgentPlist)) { fs.rmSync(oldAgentPlist); console.log("Removed old desktop watcher LaunchAgent."); }
 
-fs.mkdirSync(sbDir, { recursive: true });
+fs.mkdirSync(sbDir, { recursive: true, mode: 0o700 });
 fs.rmSync(path.join(sbDir, "watcher.sh"), { force: true });
 // Retire pre-multi-session artifacts (single global state + empty liveness markers).
 fs.rmSync(path.join(sbDir, "state.json"), { force: true });
 fs.rmSync(path.join(sbDir, "sessions.d"), { recursive: true, force: true });
 fs.copyFileSync(path.join(__dirname, "update.js"), updateDest);
 fs.copyFileSync(path.join(__dirname, "lifecycle.js"), lifecycleDest);
+// copyFileSync carries the repository's 0644 across, and this installer runs on every launch —
+// without the chmod the copies would be re-opened to the whole machine twice an hour, undoing
+// the backend's own pass. These are hook scripts Claude Code runs as this user: owner-only is
+// all they ever need, and PRIVACY.md calls them trusted local code for exactly that reason.
+for (const script of [updateDest, lifecycleDest]) { try { fs.chmodSync(script, 0o600); } catch {} }
 
 const shellQuote = (value) => `'${value.replace(/'/g, `'\\''`)}'`;
 const quotedMarkerPrefix = shellQuote(MARKER).slice(0, -1);
@@ -132,8 +137,8 @@ const next = JSON.stringify(settings, null, 2) + "\n";
 if (next === before) {
   console.log("Hooks already current in", settingsPath);
 } else if (writeSettingsAtomic(next, readAt)) {
-  fs.mkdirSync(sbDir, { recursive: true });
-  fs.writeFileSync(ownerPath, JSON.stringify({ channel: "app", pluginRoot: "", ts: Date.now() }));
+  fs.mkdirSync(sbDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(ownerPath, JSON.stringify({ channel: "app", pluginRoot: "", ts: Date.now() }), { mode: 0o600 });
   console.log("Installed control-bar hooks into", settingsPath);
   console.log("Scripts:", updateDest, "and", lifecycleDest);
   console.log("Backup (first run only):", settingsPath + ".bak-control-bar");

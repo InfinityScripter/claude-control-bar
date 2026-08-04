@@ -373,7 +373,12 @@ extension StatusController {
             row.toolTip = name + "\nSwitched on. Claude Code builds a session's list of servers"
                 + " when the session starts, so one that is already open keeps what it had."
                 + "\nThe tool count returns here once the check finishes."
+        // The project belongs here most of all. One name is one row (settings.json addresses a
+        // server by serverName alone), so when two open projects both configure a `db`, the row
+        // takes the worse of the two states — and then "failed" without a project name leaves
+        // the user checking the wrong repository.
         default: row.toolTip = name + " · " + server.status
+            + (server.project.map { "\nproject \($0)" } ?? "")
         }
         head.view = row
 

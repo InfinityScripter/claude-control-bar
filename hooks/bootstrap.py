@@ -56,9 +56,11 @@ def read_json(path, default=None):
 
 
 def write_json(path, data):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # 0700/0600, а не umask: каталог общий с состоянием сессий, а домашний каталог на macOS
+    # открыт группе staff — то есть каждому локальному пользователю машины.
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "w") as fh:
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
         json.dump(data, fh, ensure_ascii=False)
     os.replace(tmp, path)
 

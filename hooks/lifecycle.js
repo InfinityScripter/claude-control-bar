@@ -12,7 +12,10 @@ const dir = path.join(os.homedir(), ".claude", "control-bar");
 const stateDir = path.join(dir, "state.d");
 const event = process.argv[2];
 
-fs.mkdirSync(stateDir, { recursive: true });
+// 0700/0600 everywhere below, not the umask default. A session file carries the working
+// directory, the transcript path and the pid, and the home folder is group-readable by staff
+// on macOS — which is every local account on the machine.
+fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 
 const running = () => { try { cp.execSync(`pgrep -x ${EXEC}`, { stdio: "ignore" }); return true; } catch { return false; } };
 const safeId = (s) => String(s || "").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 64) || "unknown";
@@ -38,7 +41,9 @@ const reapDeadSessions = () => {
 
 const writeAtomic = (file, obj) => {
   const tmp = file + "." + process.pid + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(obj));
+  // The mode is set at creation rather than chmod'ed after: the temp file is written in full
+  // before the rename, so a later chmod would leave it world-readable for that whole window.
+  fs.writeFileSync(tmp, JSON.stringify(obj), { mode: 0o600 });
   fs.renameSync(tmp, file);
 };
 

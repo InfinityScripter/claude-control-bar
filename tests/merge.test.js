@@ -93,6 +93,20 @@ test("a session start reaps only sessions whose process is gone", () => {
   assert.deepEqual(left, ["live.json", "new.json"]);
 });
 
+test("a session file is readable by its owner and nobody else", () => {
+  const home = sandbox();
+  // The sandbox pre-creates state.d with the umask default; removed so the hook creates it and
+  // the mode under test is the one the hook asks for.
+  fs.rmSync(stateDir(home), { recursive: true, force: true });
+
+  run(updatePath, home, ["prompt"], JSON.stringify({ session_id: "s0", cwd: home }));
+
+  // The file names the working directory, the transcript and the pid, and a macOS home folder is
+  // group-readable by staff — which is every local account on the machine.
+  assert.equal(fs.statSync(path.join(stateDir(home), "s0.json")).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(stateDir(home)).mode & 0o777, 0o700);
+});
+
 test("context is measured from the transcript with the CLI's own formula", () => {
   const home = sandbox();
   const transcript = path.join(home, "t.jsonl");

@@ -296,11 +296,14 @@ class Toggles(unittest.TestCase):
         self.settings = os.path.join(self._dir.name, "settings.json")
         with open(self.settings, "w") as fh:
             json.dump({"alwaysThinkingEnabled": True}, fh)
-        self._real = mcpbar.SETTINGS
+        # ROOT подменяется вместе с SETTINGS: settings_lock() кладёт файл блокировки в ROOT,
+        # и без подмены тест писал в настоящий ~/.claude/control-bar живой установки.
+        self._real = (mcpbar.SETTINGS, mcpbar.ROOT)
         mcpbar.SETTINGS = self.settings
+        mcpbar.ROOT = os.path.join(self._dir.name, "control-bar")
 
     def tearDown(self):
-        mcpbar.SETTINGS = self._real
+        mcpbar.SETTINGS, mcpbar.ROOT = self._real
         self._dir.cleanup()
 
     def read(self):
@@ -487,6 +490,165 @@ class ProjectServers(unittest.TestCase):
         got = mcpbar.parse_list_line("repo-tool: npx thing - ⏸ Pending approval")
         self.assertEqual(got["state"], mcpbar.PENDING)
 
+    def test_битый_mcp_json_не_прячет_проект(self):
+        """Сломанный конфиг — как раз то, про что инструмент здоровья обязан сказать.
+
+        Разбор здесь только фильтр «есть ли смысл звать claude mcp list», а не чтение
+        конфигурации; ошибка разбора убирала весь проект из карты молча, вместе с уже
+        поднятыми серверами.
+        """
+        cwd = tempfile.mkdtemp()
+        with open(os.path.join(cwd, ".mcp.json"), "w") as fh:
+            fh.write("{ broken json")
+        self.assertEqual(mcpbar.project_cwds([cwd], {}), [cwd])
+
+    def test_конфиг_не_объектом_тоже_идёт_на_проверку(self):
+        cwd = tempfile.mkdtemp()
+        with open(os.path.join(cwd, ".mcp.json"), "w") as fh:
+            json.dump(["nonsense"], fh)
+        self.assertEqual(mcpbar.project_cwds([cwd], {}), [cwd])
+
+    def test_целый_но_пустой_конфиг_проверку_не_вызывает(self):
+        """Здесь искать нечего, а вызов стоит полминуты — ради этого фильтр и существует."""
+        cwd = tempfile.mkdtemp()
+        with open(os.path.join(cwd, ".mcp.json"), "w") as fh:
+            json.dump({"mcpServers": {}}, fh)
+        self.assertEqual(mcpbar.project_cwds([cwd], {}), [])
+
+
+class RefreshProjects(unittest.TestCase):
+    """Что refresh() делает с проектами: их ошибками и их одноимёнными серверами.
+
+    Оба случая ниже приводили к одному итогу — приложение показывало здоровую картину
+    там, где здоровья не было.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        tmp = self._dir.name
+        self.answers = {}
+        self.projects = []
+        patched = {
+            "ROOT": tmp,
+            "STATE": os.path.join(tmp, "mcp.json"),
+            "LIMITS": os.path.join(tmp, "limits.json"),
+            "SESSIONS": os.path.join(tmp, "state.d"),
+            "CONFIG": os.path.join(tmp, "claude.json"),
+            "SETTINGS": os.path.join(tmp, "settings.json"),
+            "NEEDS_AUTH": os.path.join(tmp, "needs-auth.json"),
+            # Сеть и Claude Code из проверки убраны целиком: здесь проверяется сборка карты.
+            "run_health_check": lambda cwd="/": self.answers.get(cwd, ([], "нет ответа")),
+            "session_cwds": lambda: list(self.projects),
+            "project_cwds": lambda cwds, config: list(cwds),
+            "attach_tools": lambda servers: None,
+            "model_windows": lambda: {},
+        }
+        self.saved = {k: getattr(mcpbar, k) for k in patched}
+        for k, v in patched.items():
+            setattr(mcpbar, k, v)
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(mcpbar, k, v)
+        self._dir.cleanup()
+
+    @staticmethod
+    def server(name, state, status="✔ Connected"):
+        return {"name": name, "target": "", "status": status, "state": state}
+
+    def test_ошибка_проекта_не_исчезает_от_успеха_соседа(self):
+        """Одна переменная на общую проверку и на все проекты: упавший проект уходил в
+        continue, а следующий удачный обнулял ошибку — в меню не было ни строки «упал»,
+        ни строки «проверка не удалась»."""
+        self.answers = {
+            "/": ([self.server("wiki", mcpbar.OK)], None),
+            "/work/broken": ([], "claude mcp list не ответил вовремя"),
+            "/work/healthy": ([self.server("db", mcpbar.OK)], None),
+        }
+        self.projects = ["/work/broken", "/work/healthy"]
+        data = mcpbar.refresh()
+        self.assertIn("broken", data.get("error") or "")
+
+    def test_ошибка_проекта_названа_поимённо(self):
+        self.answers = {
+            "/": ([self.server("wiki", mcpbar.OK)], None),
+            "/work/broken": ([], "claude mcp list не ответил вовремя"),
+        }
+        self.projects = ["/work/broken"]
+        data = mcpbar.refresh()
+        self.assertIn("broken", data.get("error") or "")
+        self.assertIn("не ответил", data.get("error") or "")
+
+    def test_упавший_сервер_не_прячется_за_одноимённым_зелёным(self):
+        self.answers = {
+            "/": ([self.server("wiki", mcpbar.OK)], None),
+            "/work/alpha": ([self.server("db", mcpbar.OK)], None),
+            "/work/beta": ([self.server("db", mcpbar.FAILED, "✘ Failed to connect")], None),
+        }
+        self.projects = ["/work/alpha", "/work/beta"]
+        rows = [s for s in mcpbar.refresh()["servers"] if s["name"] == "db"]
+        # Строка одна: settings.json адресует сервер по имени, и два тумблера на одно имя
+        # врали бы в другую сторону — выключение «db в alpha» гасит db везде.
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["state"], mcpbar.FAILED)
+        self.assertEqual(rows[0]["project"], "beta")
+
+    def test_зелёный_не_перебивает_упавшего(self):
+        """Порядок обхода проектов случаен — правило одностороннее: хуже перебивает лучше."""
+        self.answers = {
+            "/": ([self.server("wiki", mcpbar.OK)], None),
+            "/work/beta": ([self.server("db", mcpbar.FAILED, "✘ Failed to connect")], None),
+            "/work/alpha": ([self.server("db", mcpbar.OK)], None),
+        }
+        self.projects = ["/work/beta", "/work/alpha"]
+        rows = [s for s in mcpbar.refresh()["servers"] if s["name"] == "db"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["state"], mcpbar.FAILED)
+        self.assertEqual(rows[0]["project"], "beta")
+
+
+class StatePermissions(unittest.TestCase):
+    """В ~/.claude/control-bar/ лежат рабочие каталоги, транскрипты сессий и лимиты аккаунта.
+
+    Домашний каталог на macOS открыт группе staff, в которой состоят все локальные
+    пользователи, — при 0644 второй аккаунт машины читал эти файлы свободно.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self._real = (mcpbar.ROOT, mcpbar.SESSIONS)
+        mcpbar.ROOT = os.path.join(self._dir.name, "control-bar")
+        mcpbar.SESSIONS = os.path.join(mcpbar.ROOT, "state.d")
+
+    def tearDown(self):
+        mcpbar.ROOT, mcpbar.SESSIONS = self._real
+        self._dir.cleanup()
+
+    def test_каталог_и_файлы_закрываются_от_чужих(self):
+        os.makedirs(mcpbar.SESSIONS)
+        os.chmod(mcpbar.ROOT, 0o755)
+        os.chmod(mcpbar.SESSIONS, 0o755)
+        open_file = os.path.join(mcpbar.ROOT, "limits.json")
+        with open(open_file, "w") as fh:
+            fh.write("{}")
+        os.chmod(open_file, 0o644)
+
+        mcpbar.secure_root()
+
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.ROOT).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.SESSIONS).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(open_file).st_mode), 0o600)
+
+    def test_каталог_создаётся_сразу_закрытым(self):
+        mcpbar.secure_root()
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.ROOT).st_mode), 0o700)
+
+    def test_новый_файл_состояния_рождается_закрытым(self):
+        mcpbar.secure_root()
+        mcpbar.write_json(os.path.join(mcpbar.ROOT, "mcp.json"), {"servers": []})
+        self.assertEqual(
+            stat.S_IMODE(os.stat(os.path.join(mcpbar.ROOT, "mcp.json")).st_mode), 0o600)
+
 
 class SettingsSafety(unittest.TestCase):
     """settings.json принадлежит человеку: в нём его правила и env MCP-серверов с токенами.
@@ -640,6 +802,74 @@ class UsageEndpoint(unittest.TestCase):
         self.assertEqual(mcpbar.parse_reset(1_785_866_400), 1_785_866_400)
         self.assertIsNone(mcpbar.parse_reset("not-a-date"))
         self.assertIsNone(mcpbar.parse_reset(None))
+
+
+class UsageToken(unittest.TestCase):
+    """Токен уходит на api.anthropic.com и никуда больше — обещание PRIVACY.md.
+
+    urllib, в отличие от requests, переносит Authorization на новый хост при 302 как есть:
+    одного редиректа со стороны эндпоинта, прокси или будущего переезда API хватало, чтобы
+    Bearer лёг у чужого сервера. Проверяется двумя настоящими локальными серверами —
+    подделка urlopen проверила бы только саму подделку.
+    """
+
+    def setUp(self):
+        import http.server
+        import threading
+
+        self.seen = {}
+        seen = self.seen
+
+        class Target(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen["auth"] = self.headers.get("Authorization")
+                body = b'{"five_hour": {"utilization": 5}}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        self.target = http.server.HTTPServer(("127.0.0.1", 0), Target)
+        target_url = "http://127.0.0.1:%d/" % self.target.server_address[1]
+
+        class Bouncer(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", target_url)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        self.bouncer = http.server.HTTPServer(("127.0.0.1", 0), Bouncer)
+        for server in (self.target, self.bouncer):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+
+        self._dir = tempfile.TemporaryDirectory()
+        self.saved = {k: getattr(mcpbar, k) for k in ("USAGE_URL", "LIMITS", "oauth_token")}
+        mcpbar.USAGE_URL = "http://127.0.0.1:%d/" % self.bouncer.server_address[1]
+        mcpbar.LIMITS = os.path.join(self._dir.name, "limits.json")
+        mcpbar.oauth_token = lambda: "SECRET"
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(mcpbar, k, v)
+        for server in (self.target, self.bouncer):
+            server.shutdown()
+            server.server_close()
+        self._dir.cleanup()
+
+    def test_редирект_не_уносит_токен_на_другой_хост(self):
+        mcpbar.fetch_limits()
+        self.assertIsNone(self.seen.get("auth"), "Authorization уехал по редиректу")
+
+    def test_редирект_считается_сбоем_а_не_данными(self):
+        result = mcpbar.fetch_limits()
+        self.assertIn("не удался", result)
+        self.assertFalse(os.path.exists(mcpbar.LIMITS))
 
 
 if __name__ == "__main__":
