@@ -77,6 +77,13 @@ reports on Claude Code — it switches parts of it off.
   so an uncapped file is a transcript nobody asked for.
 - **PRIVACY.md now lists what is read locally** — transcripts, the `statusLine` payload,
   `settings.json`, the MCP tool lists — not only what crosses the network.
+- **Limits are real now, not whatever a terminal last said.** The 5h/7d figures come from
+  Anthropic's usage endpoint — the same one `/usage` asks — polled every five minutes with the
+  OAuth token Claude Code already keeps in the Keychain. The `statusLine` capture only fired
+  while a terminal CLI was redrawing its TUI, so in the desktop app the bars froze on whatever
+  they last showed. The capture stays as a free secondary source; the poll has an off switch in
+  Options ("Limits via Anthropic API") because it spends the user's own token, and PRIVACY.md
+  names the request.
 
 ### Changed
 

@@ -67,23 +67,29 @@ If you also have **claude-status-bar** installed, both apps will react to the sa
 is left alone on purpose — it is someone else's product, and disabling it behind your back would
 be worse than the duplication. The installer says so out loud instead.
 
-## Limits, and why they need one extra step
+## Limits
 
-Claude Code never writes your usage limits to disk. They live in the process and leave through
-exactly one door: the JSON payload handed to a `statusLine` command. So the app can only show
-them if something is standing in that door.
+The 5-hour and 7-day figures come from Anthropic's own usage endpoint — the same one the
+`/usage` command inside Claude Code asks — polled every five minutes with the OAuth token
+Claude Code keeps in your Keychain. The token is read locally and sent to `api.anthropic.com`
+and nowhere else; nothing about your account is stored beyond the two percentages and their
+reset times.
 
-```bash
-/usr/bin/python3 ~/.claude/plugins/.../scripts/mcpbar.py statusline --install
-```
+Two things worth saying out loud:
 
-The wrapper saves whatever `statusLine` command you already had, passes it the exact same bytes,
-and prints its output unchanged — your status line does not change by a character. Undo with
-`statusline --uninstall`. Limits are per account, not per session, so one terminal session keeps
-the figures fresh for every window the app shows. Without this the Limits section says it has no
-data rather than inventing a number.
+- **This is how every tool in this niche works** (cclimit, Usagebar, Usage4Claude, …), but the
+  endpoint is undocumented and Anthropic's consumer terms describe the OAuth token as intended
+  for Claude Code and claude.ai. If that gray zone is not for you, switch **Limits via
+  Anthropic API** off in Options — the section will honestly say it has no data.
+- The token Claude Code stores after `claude setup-token` lacks the profile scope this endpoint
+  wants; the normal browser sign-in has it.
 
-The same payload also states the real context window of the model that answered, which is
+There is also a passive second source: a `statusLine` wrapper
+(`mcpbar.py statusline --install`) that reads the same figures out of the payload Claude Code
+hands a status line command, byte-for-byte transparently to whatever status line you already
+have. It costs nothing but only fires while a terminal CLI is redrawing its TUI — the desktop
+app never runs `statusLine` at all, which is exactly why the poll above is the default. The
+same payload also states the real context window of the model that answered, which is
 remembered — see below.
 
 ## Context window

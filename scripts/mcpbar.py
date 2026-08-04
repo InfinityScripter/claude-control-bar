@@ -734,6 +734,115 @@ def statusline_uninstall():
     return f"возвращено: {saved or '(statusLine удалён)'}"
 
 
+# ──────────────────────────────────────────────────────────── лимиты по OAuth
+
+# Тот же эндпоинт, которым /usage в самом Claude Code рисует свои проценты. statusLine-перехват
+# остаётся вторым источником, но работает он только пока в терминале открыт CLI с живым TUI —
+# у пользователя десктопного приложения лимиты через него не обновляются вообще. Опрос эндпоинта
+# от сессий не зависит.
+#
+# Токен — тот, что Claude Code сам положил в Keychain. Он не печатается, не логируется и не
+# уходит никуда, кроме api.anthropic.com. Чаще раза в 3 минуты спрашивать нельзя (community-
+# консенсус: агрессивный rate limit), приложение ходит раз в 5.
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+KEYCHAIN_SERVICE = "Claude Code-credentials"
+CREDENTIALS_FILE = os.path.join(CLAUDE, ".credentials.json")
+
+
+def oauth_token():
+    """Access token Claude Code: Keychain на macOS, файл на Linux/Windows. None — не настроен."""
+    import subprocess
+
+    raw = ""
+    try:
+        raw = subprocess.run(
+            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+            capture_output=True, text=True, timeout=30,
+        ).stdout.strip()
+    except Exception:
+        pass
+    if not raw:
+        try:
+            with open(CREDENTIALS_FILE) as fh:
+                raw = fh.read()
+        except OSError:
+            return None
+    try:
+        creds = json.loads(raw).get("claudeAiOauth") or {}
+    except ValueError:
+        return None
+    # expiresAt в миллисекундах; просроченный токен вернёт 401, но честнее не ходить вовсе —
+    # CLI сам обновит запись при следующем запуске.
+    expires = creds.get("expiresAt")
+    if isinstance(expires, (int, float)) and expires / 1000 < time.time():
+        return None
+    return creds.get("accessToken") or None
+
+
+def parse_reset(value):
+    """resets_at приходит ISO-строкой с таймзоной; statusLine шлёт epoch. Наружу — epoch int."""
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        from datetime import datetime
+
+        try:
+            return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            return None
+    return None
+
+
+def usage_record(payload, now=None):
+    """Ответ эндпоинта → limits.json той же формы, что пишет statusline.py.
+
+    Поле там называется utilization, в statusLine — used_percentage; наружу всегда
+    used_percentage и всегда int: Swift читает `as? Int`, и дробное значение молча
+    выключило бы секцию лимитов при здоровом на вид файле.
+    """
+    record = {"ts": int(now or time.time()), "source": "oauth"}
+    for name, block in (payload or {}).items():
+        if not isinstance(block, dict):
+            continue
+        used = block.get("utilization", block.get("used_percentage"))
+        if used is None:
+            continue
+        record[name] = {
+            "used_percentage": int(round(float(used))),
+            "resets_at": parse_reset(block.get("resets_at")),
+        }
+    return record if len(record) > 2 else None
+
+
+def fetch_limits():
+    """Один опрос: токен → эндпоинт → limits.json. Молчалив при любом сбое — прошлые
+    цифры в файле лучше, чем затёртые ошибкой."""
+    token = oauth_token()
+    if not token:
+        return "нет токена: Claude Code не залогинен через браузерный OAuth"
+    import urllib.request
+
+    req = urllib.request.Request(USAGE_URL, headers={
+        "Authorization": f"Bearer {token}",
+        "anthropic-beta": "oauth-2025-04-20",
+        "Content-Type": "application/json",
+        # Без узнаваемого UA запросы попадают в агрессивно лимитируемую корзину.
+        "User-Agent": "claude-control-bar (statusline companion)",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 — сеть, 401, JSON: исход один, файл не трогаем
+        return f"опрос не удался: {type(exc).__name__}"
+    record = usage_record(payload)
+    if not record:
+        return "ответ без единого окна лимитов"
+    write_json(LIMITS, record)
+    windows = ", ".join(f"{k} {v['used_percentage']}%" for k, v in record.items()
+                        if isinstance(v, dict))
+    return f"обновлено: {windows}"
+
+
 # ──────────────────────────────────────────────────────────── контекстное окно
 
 WINDOW_CACHE = os.path.join(ROOT, "model-windows.json")
@@ -1163,6 +1272,8 @@ def main(argv):
         print(report(force="--force" in rest))
     elif command == "doctor":
         print(doctor())
+    elif command == "limits":
+        print(fetch_limits())
     elif command == "statusline":
         if "--install" in rest:
             print(statusline_install())

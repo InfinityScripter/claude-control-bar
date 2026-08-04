@@ -4,12 +4,18 @@ Claude Control Bar collects no data and has no servers. Everything it does happe
 
 ## Network
 
-One update check a day: a request to GitHub's public releases API for the latest tag, and one to
-Homebrew's public formulae API for the current cask version. Both only decide whether the menu
-shows an update line. Nothing is sent to the developer — as with any update check, GitHub and
-Homebrew see that a request arrived; the developer never does.
+- **A usage poll to `api.anthropic.com` every five minutes**, authenticated with the OAuth token
+  Claude Code keeps in your Keychain. It returns your 5-hour and 7-day limit percentages — the
+  same numbers `/usage` shows — and nothing else is asked for or stored. The token is sent to
+  Anthropic and to no other host. Switch **Limits via Anthropic API** off in Options and this
+  request never happens.
+- **One update check a day**: a request to GitHub's public releases API for the latest tag, and
+  one to Homebrew's public formulae API for the current cask version. Both only decide whether
+  the menu shows an update line.
 
-That is the whole list. There is no telemetry, no crash reporting and no analytics.
+Nothing is sent to the developer — GitHub, Homebrew and Anthropic see that a request arrived;
+the developer never does. That is the whole list. There is no telemetry, no crash reporting and
+no analytics.
 
 ## What it reads on your machine
 

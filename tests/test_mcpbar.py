@@ -337,5 +337,41 @@ class Toggles(unittest.TestCase):
         self.assertEqual(after["allow"], ["Bash"])
 
 
+class UsageEndpoint(unittest.TestCase):
+    """Разбор ответа api/oauth/usage. Сеть в тестах не участвует — только чистые функции."""
+
+    def test_ответ_эндпоинта_превращается_в_формат_statusline(self):
+        record = mcpbar.usage_record({
+            "five_hour": {"utilization": 23.4, "resets_at": "2026-08-04T18:00:00+00:00"},
+            "seven_day": {"utilization": 79.0, "resets_at": "2026-08-05T12:00:00Z"},
+        }, now=1_785_850_000)
+        self.assertEqual(record["source"], "oauth")
+        # int, не float: Swift читает used_percentage как `as? Int`, дробное значение
+        # молча выключает секцию лимитов при здоровом на вид файле.
+        self.assertEqual(record["five_hour"]["used_percentage"], 23)
+        self.assertEqual(record["seven_day"]["used_percentage"], 79)
+        # ISO с таймзоной → epoch, обе нотации зоны.
+        self.assertEqual(record["five_hour"]["resets_at"], 1_785_866_400)
+        self.assertEqual(record["seven_day"]["resets_at"], 1_785_931_200)
+
+    def test_неизвестные_окна_проходят_как_есть(self):
+        record = mcpbar.usage_record({
+            "five_hour": {"utilization": 1, "resets_at": None},
+            "seven_day_opus": {"utilization": 55, "resets_at": None},
+        }, now=1)
+        self.assertIn("seven_day_opus", record)
+
+    def test_пустой_ответ_не_рождает_запись(self):
+        self.assertIsNone(mcpbar.usage_record({}, now=1))
+        self.assertIsNone(mcpbar.usage_record({"error": "x"}, now=1))
+        self.assertIsNone(mcpbar.usage_record(None, now=1))
+
+    def test_epoch_в_resets_at_проходит_без_изменений(self):
+        # statusLine шлёт epoch — общий разборщик обязан понимать обе формы.
+        self.assertEqual(mcpbar.parse_reset(1_785_866_400), 1_785_866_400)
+        self.assertIsNone(mcpbar.parse_reset("not-a-date"))
+        self.assertIsNone(mcpbar.parse_reset(None))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

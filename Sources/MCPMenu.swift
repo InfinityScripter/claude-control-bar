@@ -206,10 +206,13 @@ extension StatusController {
         menu.addItem(.separator())
         menu.addItem(header("Limits"))
         guard let limits, limits.fiveHour != nil || limits.sevenDay != nil else {
-            // Claude Code keeps limits in memory and hands them to statusLine alone, so with no
-            // capture in place there is nothing to show. Saying that beats an empty section, and
-            // beats inventing a number.
-            menu.addItem(header("  no data — see README, \"Limits\""))
+            // Empty means the usage poll has not succeeded yet: switched off in Options, or
+            // Claude Code is not signed in through the browser OAuth flow (a `setup-token`
+            // login lacks the profile scope the endpoint wants). Saying so beats an empty
+            // section, and beats inventing a number.
+            menu.addItem(header(oauthLimits
+                ? "  no data yet — is Claude Code signed in?"
+                : "  switched off — see \"Limits via Anthropic API\""))
             return
         }
         let rows: [(String, Int?, Double?)] = [

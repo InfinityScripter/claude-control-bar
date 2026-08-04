@@ -474,6 +474,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     var showTimer = false
     var iconSystem = false // false = brand Orange; true = adaptive black/white (template image)
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
+    var oauthLimits = true          // poll Anthropic's usage endpoint for the 5h/7d limits
     var sessionWord: [String: String] = [:] // id -> current thinking word; re-picked on each entry into "thinking"
     var soundThreshold: Double = 0  // 0 = off; else the min turn length (seconds) that chimes on completion
     var turnStart: [String: Double] = [:]  // id -> active turn start, for the completion-sound length gate
@@ -543,6 +544,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         if d.object(forKey: "showTimer") != nil { showTimer = d.bool(forKey: "showTimer") }
         if d.object(forKey: "iconSystem") != nil { iconSystem = d.bool(forKey: "iconSystem") }
         if d.object(forKey: "thinkingWords") != nil { useThinkingWords = d.bool(forKey: "thinkingWords") }
+        if d.object(forKey: "oauthLimits") != nil { oauthLimits = d.bool(forKey: "oauthLimits") }
         if d.object(forKey: "soundThreshold") != nil { soundThreshold = d.double(forKey: "soundThreshold") }
         if let s = d.string(forKey: "animStyle"), let st = AnimStyle(rawValue: s) { animStyle = st }
         let menu = NSMenu()
@@ -558,6 +560,15 @@ final class StatusController: NSObject, NSMenuDelegate {
             [weak self] _ in self?.refreshMCP()
         }
         refreshMCP()
+        // Limits come from the same endpoint /usage reads, on their own cadence: the statusLine
+        // capture only fires while a terminal CLI is redrawing its TUI, so for someone working in
+        // the desktop app it never fires at all — which left the bars frozen on whatever they
+        // last showed. Five minutes is well clear of the endpoint's rate limiting (community
+        // consensus puts the floor at three).
+        Timer.scheduledTimer(withTimeInterval: 300, repeats: true) {
+            [weak self] _ in self?.pollLimits()
+        }
+        pollLimits()
         tick()
         try? FileManager.default.removeItem(atPath: (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/quit-intent"))
         // CONTROL_BAR_DUMP_MENU=1 builds the dropdown once, prints it and quits. Looking at the
@@ -846,6 +857,25 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     @objc func refreshMCP() { runBackend(["refresh"]) }
 
+    /// One usage poll: mcpbar.py reads the account limits from Anthropic's usage endpoint —
+    /// the same one /usage in Claude Code asks — and rewrites limits.json; the 0.4s tick picks
+    /// the file up. Not routed through runBackend: that toggles mcpBusy and re-reads mcp.json,
+    /// and a limits poll has nothing to say about either. Off switch in Options, because it
+    /// spends the user's own OAuth token, even if only against Anthropic's own API.
+    func pollLimits() {
+        guard oauthLimits, !backend.script.isEmpty else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: self.backend.python)
+            task.arguments = [self.backend.script, "limits"]
+            task.standardOutput = FileHandle.nullDevice
+            task.standardError = FileHandle.nullDevice
+            try? task.run()
+            task.waitUntilExit()
+        }
+    }
+
     func watchCount(_ update: @escaping () -> Void) {
         mcpCountLabels.append(update)
         update()
@@ -967,6 +997,10 @@ final class StatusController: NSObject, NSMenuDelegate {
         if !mcpBusy, Date().timeIntervalSince1970 - mcp.checkedAt > Self.mcpOpenStaleAfter {
             refreshMCP()
         }
+        // A sleeping Mac misses timer ticks, so the five-minute cadence can silently become an
+        // hour. Opening the menu is the moment the figures get looked at — worth a poll if the
+        // reading is older than the timer could explain.
+        if Date().timeIntervalSince1970 - (limits?.ts ?? 0) > 600 { pollLimits() }
         checkForUpdate() // refreshes the update cache for next open (gated to once a day)
 
         // Branches otherwise refresh only on hook events, so re-read on open (one tiny file read per
@@ -1038,6 +1072,15 @@ final class StatusController: NSObject, NSMenuDelegate {
             self?.useThinkingWords = on
             UserDefaults.standard.set(on, forKey: "thinkingWords")
             self?.evaluate()   // re-render the bar label immediately with/without the rotating word
+        })
+        // Off is a real choice here, not decoration: the poll authenticates with the user's own
+        // Claude OAuth token (sent to api.anthropic.com and nowhere else). Switching it back on
+        // polls immediately — waiting up to five minutes to see the effect of a click reads as
+        // the click having failed.
+        menu.addItem(toggleRow(title: "Limits via Anthropic API", isOn: oauthLimits) { [weak self] on in
+            self?.oauthLimits = on
+            UserDefaults.standard.set(on, forKey: "oauthLimits")
+            if on { self?.pollLimits() }
         })
 
         let animParent = NSMenuItem(title: "Animation", action: nil, keyEquivalent: "")
