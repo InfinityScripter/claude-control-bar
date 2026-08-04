@@ -451,63 +451,41 @@ class ProjectServers(unittest.TestCase):
     `claude mcp list` (его cwd закреплён на корне) их не показывает — они добираются
     из конфигурации по каталогам живых сессий."""
 
-    def test_оба_scope_читаются_и_дедуплицируются(self):
+    def test_каталог_с_серверами_обоих_scope_попадает_в_список(self):
         cwd = tempfile.mkdtemp()
         with open(os.path.join(cwd, ".mcp.json"), "w") as fh:
-            json.dump({"mcpServers": {
-                "repo-tool": {"command": "./run.sh"},
-                "shared": {"command": "project-wins-not"},
-            }}, fh)
-        config = {"projects": {cwd: {"mcpServers": {
-            "local-tool": {"command": "echo"},
-            "shared": {"command": "local-wins"},
-        }}}}
-        found = mcpbar.project_server_configs([cwd], config)
-        self.assertEqual(set(found), {"repo-tool", "local-tool", "shared"})
-        # local имеет приоритет над project — как в самом Claude Code.
-        self.assertEqual(found["shared"][0]["command"], "local-wins")
-        self.assertEqual(found["repo-tool"][1], cwd)
-        # Scope едет вместе с конфигурацией: от него зависит, можно ли эту команду запускать.
-        self.assertEqual(found["repo-tool"][2], "project")
-        self.assertEqual(found["local-tool"][2], "local")
+            json.dump({"mcpServers": {"repo-tool": {"command": "./run.sh"}}}, fh)
+        self.assertEqual(mcpbar.project_cwds([cwd], {}), [cwd])
+
+        other = tempfile.mkdtemp()
+        config = {"projects": {other: {"mcpServers": {"mine": {"command": "echo"}}}}}
+        self.assertEqual(mcpbar.project_cwds([other], config), [other])
 
     def test_проект_без_конфигурации_даёт_пусто(self):
-        self.assertEqual(mcpbar.project_server_configs([tempfile.mkdtemp()], {}), {})
-
-    def test_удалённый_сервер_проекта_честно_не_проверен(self):
-        entry = mcpbar.probe_project_server(
-            "api", {"type": "http", "url": "https://x/mcp"}, "/tmp/proj", "local")
-        self.assertEqual(entry["state"], "unknown")
-        self.assertEqual(entry["source"], "project")
-        self.assertEqual(entry["project"], "proj")
-
-    def test_упавший_stdio_сервер_проекта_помечен_красным(self):
-        entry = mcpbar.probe_project_server(
-            "dead", {"command": "/nonexistent-binary-xyz"}, "/tmp/proj", "local")
-        self.assertEqual(entry["state"], mcpbar.FAILED)
+        """Пустой список значит «не звать сюда claude mcp list» — а это полминуты."""
+        self.assertEqual(mcpbar.project_cwds([tempfile.mkdtemp()], {}), [])
 
     def test_команда_из_mcp_json_не_запускается(self):
         """Главное правило: .mcp.json лежит в репозитории, который мог написать кто угодно.
 
-        Claude Code спрашивает разрешение на такой сервер один раз и до ответа его не
-        запускает. Панель к этому диалогу доступа не имеет, поэтому не запускает вовсе:
-        достаточно было склонировать репозиторий и открыть его, чтобы команда из чужого
-        конфига выполнилась на ближайшей проверке.
+        Раньше эта конфигурация читалась и её команда уходила в Popen — достаточно было
+        склонировать чужой репозиторий и открыть его. Теперь скрипт только смотрит, есть ли
+        в каталоге серверы, и дальше спрашивает `claude mcp list`: что из .mcp.json поднимать,
+        а что держать в «⏸ Pending approval», решает Claude Code, у которого одобрение и есть.
         """
         cwd = tempfile.mkdtemp()
         marker = os.path.join(cwd, "executed")
-        entry = mcpbar.probe_project_server(
-            "evil", {"command": "/usr/bin/touch", "args": [marker]}, cwd, "project")
+        with open(os.path.join(cwd, ".mcp.json"), "w") as fh:
+            json.dump({"mcpServers": {
+                "evil": {"command": "/usr/bin/touch", "args": [marker]},
+            }}, fh)
+        self.assertEqual(mcpbar.project_cwds([cwd], {}), [cwd])
         self.assertFalse(os.path.exists(marker), "команда из .mcp.json была выполнена")
-        self.assertEqual(entry["state"], mcpbar.PENDING)
 
-    def test_локальный_сервер_проекта_по_прежнему_опрашивается(self):
-        """Обратная сторона: local-scope пользователь добавил сам, его запускать можно."""
-        cwd = tempfile.mkdtemp()
-        marker = os.path.join(cwd, "executed")
-        mcpbar.probe_project_server(
-            "mine", {"command": "/usr/bin/touch", "args": [marker]}, cwd, "local")
-        self.assertTrue(os.path.exists(marker), "свой же сервер перестал опрашиваться")
+    def test_ожидающий_одобрения_сервер_разбирается_как_pending(self):
+        """Строка, которой Claude Code отвечает про неодобренный сервер, — наш признак."""
+        got = mcpbar.parse_list_line("repo-tool: npx thing - ⏸ Pending approval")
+        self.assertEqual(got["state"], mcpbar.PENDING)
 
 
 class SettingsSafety(unittest.TestCase):
@@ -615,10 +593,17 @@ class ReportGlyphs(unittest.TestCase):
             self.assertIn(state, mcpbar.GLYPH)
             self.assertIn(state, mcpbar.COLOR)
 
-    def test_состояния_из_probe_печатаются(self):
-        entry = mcpbar.probe_project_server(
-            "api", {"type": "http", "url": "https://x/mcp"}, "/tmp/proj", "local")
-        self.assertIn(entry["state"], mcpbar.GLYPH)
+    def test_каждое_состояние_из_разбора_печатается(self):
+        """Разбор — единственное место, где состояния рождаются; печатать надо все."""
+        for line in (
+            "a: cmd - ✔ Connected",
+            "b: cmd - ✘ Failed to connect",
+            "c: cmd - ⏸ Pending approval",
+            "d: https://x/mcp (HTTP) - ✔ Connected",
+        ):
+            got = mcpbar.parse_list_line(line)
+            self.assertIsNotNone(got, line)
+            self.assertIn(got["state"], mcpbar.GLYPH)
 
 
 class UsageEndpoint(unittest.TestCase):

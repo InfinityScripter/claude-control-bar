@@ -93,8 +93,6 @@ STRINGS = {
     "server.restart": ("on, from the next session", "включён, со следующей сессии"),
     "server.project": ("project {dir}", "проект {dir}"),
     "server.remote": ("remote, not health-checked", "удалённый, статус не проверяется"),
-    "server.needs_approval": ("from .mcp.json, approve in Claude Code",
-                              "из .mcp.json, одобрить в Claude Code"),
     "open.settings": ("Open settings.json", "Открыть settings.json"),
     "server.muted": ("({n} disabled)", "({n} выключено)"),
     "tools.none": ("— tools", "— инстр."),
@@ -267,14 +265,19 @@ def parse_list_line(line):
     return {"name": name, "target": target.strip(), "status": status, "state": state}
 
 
-def run_health_check():
+def run_health_check(cwd="/"):
     """`claude mcp list` — единственный источник живого статуса. Флага --json у неё нет.
 
-    cwd закреплён на корне намеренно: ответ этой команды зависит от каталога запуска
+    По умолчанию cwd закреплён на корне: ответ этой команды зависит от каталога запуска
     (local- и project-scope серверы видны только из своего проекта), а этот вызов строит
-    ОБЩУЮ часть карты — user, плагины, коннекторы. Серверы проектов добираются отдельно,
-    по каталогам живых сессий, в project_server_configs(). Без закрепления картина зависела
-    бы от того, откуда случайно запущено приложение.
+    ОБЩУЮ часть карты — user, плагины, коннекторы. Без закрепления картина зависела бы от
+    того, откуда случайно запущено приложение.
+
+    Для серверов проекта эта же команда зовётся ещё раз, с каталогом проекта. Так и надо:
+    сам Claude Code решает, какой сервер из `.mcp.json` он готов поднять, а какой ждёт
+    одобрения — и печатает второй как `⏸ Pending approval`, не подключаясь к нему. Читать
+    чужой `.mcp.json` и запускать команду оттуда самим нельзя: одобрения у нас нет, спросить
+    его мы не можем, а конфигурация приезжает вместе с репозиторием.
     """
     import subprocess
 
@@ -283,7 +286,7 @@ def run_health_check():
         return [], t("err.nobinary")
     try:
         proc = subprocess.run(
-            [claude, "mcp", "list"], capture_output=True, text=True, timeout=120, cwd="/"
+            [claude, "mcp", "list"], capture_output=True, text=True, timeout=120, cwd=cwd
         )
     except subprocess.TimeoutExpired:
         return [], t("err.timeout")
@@ -588,67 +591,24 @@ def session_cwds():
     return cwds
 
 
-def project_server_configs(cwds, global_config):
-    """Конфигурации MCP-серверов, привязанных к проектам живых сессий.
+def project_cwds(cwds, global_config):
+    """Каталоги живых сессий, у которых вообще есть свои MCP-серверы.
 
-    `claude mcp list` отвечает только про каталог, из которого запущена, — поэтому серверы
-    двух официальных проектных scope'ов в общей проверке не видны вовсе:
-    local — ~/.claude.json → projects[<cwd>].mcpServers, project — <cwd>/.mcp.json.
-    Возвращает name → (config, cwd, scope); при совпадении имени в двух проектах остаётся
-    первый по порядку сессий — двух строк с одним именем меню различить не может.
+    Нужно только чтобы не гонять `claude mcp list` (полминуты) по проектам, где искать
+    нечего. Сами конфигурации отсюда никуда не идут: что из них поднимать, решает Claude
+    Code — он один знает, какой сервер из `.mcp.json` человек одобрил.
+
+    Два места, где живут серверы проекта: `~/.claude.json` → `projects[<cwd>].mcpServers`
+    (их добавляет сам человек) и `<cwd>/.mcp.json` (приезжает вместе с репозиторием).
     """
     projects = (global_config or {}).get("projects") or {}
-    found = {}
+    out = []
     for cwd in cwds:
-        for scope, configs in (
-            ("local", (projects.get(cwd) or {}).get("mcpServers") or {}),
-            ("project", (read_json(os.path.join(cwd, ".mcp.json")) or {}).get("mcpServers") or {}),
-        ):
-            for name, config in configs.items():
-                if isinstance(config, dict):
-                    found.setdefault(name, (config, cwd, scope))
-    return found
-
-
-def probe_project_server(name, config, cwd, scope):
-    """Живая строка для сервера проекта: stdio опрашивается по-настоящему, из каталога
-    проекта; удалённый (http/sse) не проверяется — честное «не проверяется» вместо
-    выдуманного зелёного кружка."""
-    base = os.path.basename(cwd.rstrip("/")) or cwd
-    entry = {
-        "name": name, "target": config.get("command") or config.get("url") or "",
-        "source": "project", "project": base,
-        "toolNames": [], "toolDocs": {}, "toolParams": {}, "tools": None,
-    }
-    # .mcp.json лежит в репозитории и написан не обязательно тем, кто его открыл. Claude Code
-    # спрашивает разрешение на такой сервер один раз и до ответа его не запускает; панель к
-    # этому диалогу доступа не имеет, а значит не вправе решать за него — иначе достаточно
-    # склонировать чужой репозиторий и открыть его, чтобы команда из конфига выполнилась на
-    # ближайшей проверке. Строку показываем (сервер существует), команду не трогаем.
-    if scope == "project":
-        entry["state"] = PENDING
-        entry["status"] = t("server.needs_approval") + " · " + t("server.project", dir=base)
-        # Отдельный признак, потому что pending значит две разные вещи: «включён, ждёт новой
-        # сессии» и «ждёт одобрения». Первой строке место в подсказке про сессию, второй — нет,
-        # и без этого поля меню советовало бы открыть новую сессию там, где нужно нажать /mcp.
-        entry["needsApproval"] = True
-        return entry
-    if config.get("type", "stdio") != "stdio":
-        entry["state"] = UNKNOWN
-        entry["status"] = t("server.remote") + " · " + t("server.project", dir=base)
-        return entry
-    tools = ask_server_for_tools(name, config, cwd=cwd)
-    if tools is None:
-        entry["state"] = FAILED
-        entry["status"] = "✘ " + t("server.project", dir=base)
-        return entry
-    entry["state"] = OK
-    entry["status"] = "✔ " + t("server.project", dir=base)
-    entry["toolNames"] = sorted(t["name"] for t in tools)
-    entry["toolDocs"] = {t["name"]: t["description"] for t in tools if t.get("description")}
-    entry["toolParams"] = {t["name"]: t["params"] for t in tools if t.get("params")}
-    entry["tools"] = len(tools)
-    return entry
+        has = ((projects.get(cwd) or {}).get("mcpServers")
+               or (read_json(os.path.join(cwd, ".mcp.json")) or {}).get("mcpServers"))
+        if has and cwd not in out:
+            out.append(cwd)
+    return out
 
 
 def attach_tools(servers):
@@ -1272,16 +1232,30 @@ def refresh():
     for entry in servers:
         entry["source"] = classify(entry["name"], local)
 
-    # Строго после health-check: он переписывает stderr-логи, из которых берутся числа.
-    attach_tools(servers)
-
-    # Серверы проектов живых сессий — отдельным проходом: общая проверка выше их не видит
-    # (её cwd закреплён на корне). Совпадение имени с глобальным сервером — пропуск: это
-    # почти наверняка тот же сервер, и одна строка честнее двух неразличимых.
+    # Серверы проектов живых сессий — тем же `claude mcp list`, но из каталога проекта:
+    # общая проверка выше их не видит, её cwd закреплён на корне. Совпадение имени с уже
+    # найденным сервером — пропуск: это почти наверняка тот же самый, и одна строка честнее
+    # двух неразличимых.
     seen = {s["name"] for s in servers}
-    for name, (server_config, cwd, scope) in project_server_configs(session_cwds(), config).items():
-        if name not in seen:
-            servers.append(probe_project_server(name, server_config, cwd, scope))
+    for cwd in project_cwds(session_cwds(), config):
+        found, error = run_health_check(cwd=cwd)
+        if error:
+            continue
+        for entry in found:
+            if entry["name"] in seen:
+                continue
+            seen.add(entry["name"])
+            entry["source"] = "project"
+            entry["project"] = os.path.basename(cwd.rstrip("/")) or cwd
+            # «⏸ Pending approval» здесь значит именно то, что написано: Claude Code этот
+            # сервер не поднял и ждёт ответа человека. Отличаем от своего pending («включён,
+            # со следующей сессии») — совет у них противоположный.
+            entry["needsApproval"] = entry["state"] == PENDING
+            servers.append(entry)
+
+    # Строго после всех health-check'ов: каждый из них переписывает stderr-логи, из которых
+    # берутся числа инструментов, — в том числе логи серверов проекта.
+    attach_tools(servers)
 
     # Таблицу размеров окон держим свежей здесь, хотя сама она нужна не нам, а Node-хуку:
     # выскребается она из бинаря Claude Code (226 МБ) и в хуке, который срабатывает на

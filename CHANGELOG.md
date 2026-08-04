@@ -7,6 +7,24 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.5.1] - 2026-08-04
+
+### Fixed
+
+- **Servers from a project's `.mcp.json` are back, and the row about them tells the truth.**
+  0.5.0 closed a real hole — the app read that file and started its servers itself, so opening a
+  cloned repository was enough to run a command from someone else's config — but it closed it by
+  refusing to touch project servers at all, and labelled every one of them *approve in Claude
+  Code*. For a server the user had already approved that was simply false: nothing was waiting on
+  them, and a working server went dark with its tools. The mistake behind it was reading approval
+  out of `enabledMcpjsonServers`, which is empty even for approved servers — that list is not
+  where the decision lives.
+  The app now asks instead of deciding: `claude mcp list` is run in the project's own directory
+  and its answer is taken as-is. Claude Code applies its own approval policy, starts what it is
+  allowed to start, and reports the rest as `⏸ Pending approval`. No command out of `.mcp.json`
+  is ever executed by this app, approved or not — so the hole stays closed while approved servers
+  keep working. Costs one extra health check per project that has servers.
+
 ## [0.5.0] - 2026-08-04
 
 Renamed to **Claude Control Bar** and merged with
@@ -317,6 +335,7 @@ reports on Claude Code — it switches parts of it off.
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[0.5.1]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.5.1
 [0.5.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.5.0
 [0.4.3]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.4.3
 [0.4.2]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.4.2

@@ -123,11 +123,11 @@ observed from a real `statusLine` payload replaces the guess permanently.
   tool list as a submenu off the same row. Tool descriptions and parameters come from asking the
   server itself, which this app only does for servers in `~/.claude.json`; plugin servers
   therefore show names without cards.
-- **A server from a project's `.mcp.json` is listed but never started.** That file ships with the
-  repository, and Claude Code asks you once before trusting anything in it. This app has no way
-  to show you that question, so it does not answer it on your behalf: the row says *approve in
-  Claude Code* and no command from that file is run until you have. Servers you added yourself
-  are unaffected.
+- **Servers from a project's `.mcp.json` are asked about, not started.** That file ships with the
+  repository, and Claude Code asks you once before trusting anything in it. This app never runs a
+  command out of it — it runs `claude mcp list` in that project and takes the answer, so the
+  decision about what may start stays where your approval lives. A server you have not approved
+  comes back as *approve in Claude Code* and is left alone.
 - **changed:** — what moved since the last check, because a count that is merely different next
   time tells you nothing about whether you moved it or a server did. Servers going down also
   raise a notification; tool counts do not, since that is usually you, one click ago.

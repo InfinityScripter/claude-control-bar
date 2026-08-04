@@ -23,11 +23,12 @@ after a toggle. A remote (HTTP/SSE) server sees a connection each time; a corpor
 it; a stdio server runs briefly as a local process. That is your own configuration doing what it
 does when a session starts, but the app is what triggers it on a schedule.
 
-One boundary inside that: a server configured in a project's own `.mcp.json` is **listed but
-never started**. That file arrives with the repository rather than from you, Claude Code asks
-once before trusting it, and this app cannot show you that question — so it does not answer it
-for you. Cloning a repository and opening it therefore cannot make this app run a command out of
-its config.
+One boundary inside that: this app never runs a command out of a project's own `.mcp.json`. That
+file arrives with the repository rather than from you, and Claude Code asks once before trusting
+it. Instead of reading the file and starting things itself, the app runs `claude mcp list` in
+that project and takes the answer — so whether a server may start is decided where your approval
+is recorded, not here. Cloning a repository and opening it cannot make this app execute anything
+out of its config.
 
 ## What it reads on your machine
 
