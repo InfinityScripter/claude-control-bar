@@ -1,7 +1,22 @@
 {
-  "name": "claude-status-bar",
-  "description": "Menu bar status indicator for Claude Code: animated spark, elapsed timer, and open/close lifecycle.",
-  "version": "0.4.3",
-  "homepage": "https://github.com/m1ckc3s/claude-status-bar",
-  "license": "MIT"
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "claude-control-bar",
+  "displayName": "Claude Control Bar",
+  "version": "0.5.0",
+  "description": "macOS menu bar app for Claude Code: live sessions with context-window usage, MCP servers with per-tool switches, and 5h/7d limit bars. Fork of m1ckc3s/claude-status-bar merged with InfinityScripter/claude-mcp-bar.",
+  "author": {
+    "name": "Talalaev M"
+  },
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "statusbar",
+    "menubar",
+    "macos",
+    "context",
+    "limits",
+    "sessions"
+  ],
+  "homepage": "https://github.com/InfinityScripter/claude-control-bar",
+  "repository": "https://github.com/InfinityScripter/claude-control-bar"
 }

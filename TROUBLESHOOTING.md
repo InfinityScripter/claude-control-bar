@@ -1,5 +1,22 @@
 # Troubleshooting
 
+**Icon nowhere to be seen, but the app is running?** Your menu bar is full. An item that does not
+fit is not clipped — macOS parks it off-screen and puts it behind the `›` overflow chevron, and
+from the outside that is indistinguishable from an app that failed to start. Measure instead of
+guessing:
+
+```bash
+CONTROL_BAR_DIAGNOSE=1 "/Applications/Claude Control Bar.app/Contents/MacOS/ClaudeControlBar"
+```
+
+It prints the item's window frame against the screen and says which of the two it is. A real
+reading from a full menu bar looks like `item window=(-1110.0, 1410.0, …) screen=(0, 0, 2560, 1440)` —
+the item exists, is visible, and sits at x = −1110.
+
+Quit any running copy first, or you are measuring a second instance that never got a slot. The
+bars cost about 35pt on top of the plain icon, so freeing one text-bearing item (anything showing
+a clock or a percentage) is usually enough. Cmd-drag rearranges menu bar items.
+
 **You don't open this app, it opens itself.** The only time you launch it by hand is once, right after install, so it can wire up the Claude Code hooks. After that it starts itself whenever a Claude Code session is running and quits when none is. So opening it from Finder or Spotlight with no session active can look like it launches and immediately quits. That is expected, not a crash: just start a Claude Code session and the icon appears on its own. Upgrades self-heal: drop the new version into Applications and it refreshes its own hooks the next time it starts up. (It relaunches itself when your next session begins, and on a version change it re-runs its installer automatically, so you never run anything by hand.)
 
 **Updated (or just installed) while Claude Code sessions were already running?** Sessions already open appear the next time they do something (a prompt or a tool call), so the menu can look empty until then. Starting a new `claude` session also works. (On 0.4.0 and earlier, a new session was the only way; update if you're seeing that.)

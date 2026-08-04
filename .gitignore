@@ -1,3 +1,9 @@
+# A user's global ~/.gitignore may contain `/*` — that happens when the home folder is itself
+# a git repository. core.excludesFile applies to EVERY repository, so without this line git
+# silently sees none of this project's files and `git add -A` pretends to succeed while
+# committing nothing. Measured here: scripts/, commands/ and tests/ were all invisible.
+!/*
+
 build/
 *.dmg
 .DS_Store

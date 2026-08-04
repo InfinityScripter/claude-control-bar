@@ -1,4 +1,5 @@
 import Cocoa
+import UserNotifications
 
 // Custom-drawn toggle. NSSwitch can't show its accent inside a menu (the menu's vibrant, non-key
 // window draws the implicit accent gray), so we render the track + knob as layers and fill the
@@ -12,6 +13,9 @@ final class ToggleView: NSView {
     private var hovered = false
     var isOn: Bool { didSet { updateState(animated: true) } }
     var onToggle: ((Bool) -> Void)?
+    /// A switch on a row that cannot act (the tools of a server the user just turned off) still
+    /// has to render, just not respond.
+    var isEnabled = true { didSet { alphaValue = isEnabled ? 1 : 0.4 } }
 
     init(isOn: Bool) {
         self.isOn = isOn
@@ -89,7 +93,7 @@ final class ToggleView: NSView {
     override func mouseExited(with event: NSEvent) { hovered = false; updateState(animated: false) }
 
     override func mouseDown(with event: NSEvent) {
-        guard Date().timeIntervalSince(lastToggle) > 0.1 else { return }
+        guard isEnabled, Date().timeIntervalSince(lastToggle) > 0.1 else { return }
         lastToggle = Date()
         isOn.toggle()
         onToggle?(isOn)
@@ -106,11 +110,15 @@ final class SessionRowView: NSView {
     private let spinner = NSProgressIndicator()
     private let nameField = NSTextField(labelWithString: "")
     private let timerField = NSTextField(labelWithString: "")
+    // How full this session's context window is. Its own field rather than a suffix on the name,
+    // because it has to stay put while the name truncates and the timer appears and vanishes.
+    private let contextField = NSTextField(labelWithString: "")
     private let pillView = NSImageView()
     private let pad: CGFloat = 14, iconSize: CGFloat = 16, rowH: CGFloat = 24
     private let highlightView = NSVisualEffectView()  // system selection material = exact native highlight
     private var hovered = false
     private var iconBaseTint: NSColor?       // tint when not hovered (template icons); white on hover
+    private var contextBase: NSColor = .secondaryLabelColor  // green/amber/red by fill, white on hover
     private var pillNormal: NSImage?, pillSelected: NSImage?
     private var nameText = "", branchText = ""
 
@@ -149,6 +157,11 @@ final class SessionRowView: NSView {
         timerField.alignment = .right
         timerField.autoresizingMask = [.minXMargin]
         addSubview(timerField)
+        contextField.font = NSFont.monospacedSystemFont(
+            ofSize: NSFont.menuFont(ofSize: 0).pointSize - 1, weight: .regular)
+        contextField.alignment = .right
+        contextField.autoresizingMask = [.minXMargin]
+        addSubview(contextField)
         pillView.imageScaling = .scaleNone
         pillView.autoresizingMask = [.minXMargin]
         addSubview(pillView)
@@ -156,6 +169,7 @@ final class SessionRowView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func configure(icon: NSImage?, iconTint: NSColor?, spinning: Bool, name: String, branch: String, timer: String?,
+                   context: Int?, contextAssumed: Bool,
                    pillNormal: NSImage?, pillSelected: NSImage?, pillInset: CGFloat, timerGap: CGFloat) {
         let w = bounds.width
         iconView.image = icon
@@ -182,6 +196,25 @@ final class SessionRowView: NSView {
                                     width: pill.size.width, height: pill.size.height)
             pillLeft = pillView.frame.minX
         } else { pillView.isHidden = true }
+        // Laid out right to left: pill, then context, then timer, then whatever is left over goes
+        // to the name. Context sits inboard of the pill so it holds one column across all rows
+        // while the timer comes and goes with the turn.
+        if let context {
+            contextField.isHidden = false
+            // "~" marks a percentage computed against a window size that was inferred rather
+            // than known — better than quietly presenting a guess as a measurement.
+            contextField.stringValue = (contextAssumed ? "~" : "") + "\(context)%"
+            contextBase = context >= 90 ? .systemRed
+                : (context >= 75 ? .systemOrange : .secondaryLabelColor)
+            contextField.textColor = hovered ? .white : contextBase
+            let font = contextField.font ?? NSFont.menuFont(ofSize: 0)
+            let cw = ceil(contextField.stringValue.size(withAttributes: [.font: font]).width) + 2
+            contextField.frame = NSRect(x: pillLeft - timerGap - cw, y: (rowH - 16) / 2,
+                                        width: cw, height: 16)
+            pillLeft = contextField.frame.minX
+        } else {
+            contextField.isHidden = true
+        }
         if let timer = timer {
             timerField.isHidden = false
             timerField.stringValue = timer
@@ -233,6 +266,7 @@ final class SessionRowView: NSView {
         highlightView.isHidden = !h
         renderName()
         timerField.textColor = h ? .white : .secondaryLabelColor
+        contextField.textColor = h ? .white : contextBase
         iconView.contentTintColor = h ? .white : iconBaseTint
         if !pillView.isHidden { pillView.image = h ? pillSelected : pillNormal }
     }
@@ -314,8 +348,46 @@ final class CopyRowView: NSView {
 
 final class StatusController: NSObject, NSMenuDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    let stateDir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/statusbar/state.d")
+    let root = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar")
+    let stateDir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/state.d")
     let claudeDesktopBundleID = "com.anthropic.claudefordesktop"
+
+    // MARK: MCP + limits
+    lazy var mcp = MCPModel(
+        path: (root as NSString).appendingPathComponent("mcp.json"))
+    var limits: Limits?
+    var mcpBusy = false
+    /// Every label in the open menu that shows a count. NSMenu will not let rows be added or
+    /// removed while it is tracking, but the items it already holds can be rewritten — which is
+    /// how switching one tool moves its server's total and the grand total on the spot, instead
+    /// of leaving both stale until the menu is reopened.
+    var mcpCountLabels: [() -> Void] = []
+    /// How often the MCP picture is rebuilt from scratch. `claude mcp list` takes seconds, so it
+    /// is not on the render path — but without it the picture never updates at all, which is how
+    /// a server that had reconnected went on showing a red cross indefinitely.
+    static let mcpRefreshInterval: TimeInterval = 600
+    var lastGauge: (Gauge, Bool)?
+    /// Everything the MCP half needs to run: the interpreter and the script. Written by the
+    /// plugin's bootstrap hook so the app survives the plugin moving between versions; falls
+    /// back to the copy inside the app bundle, which is what the brew/DMG channel has.
+    lazy var backend: (python: String, script: String) = {
+        let paths = (root as NSString).appendingPathComponent("paths.json")
+        if let data = FileManager.default.contents(atPath: paths),
+           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let script = root["script"] as? String, FileManager.default.fileExists(atPath: script) {
+            return (root["python"] as? String ?? "/usr/bin/python3", script)
+        }
+        let bundled = Bundle.main.path(forResource: "mcpbar", ofType: "py", inDirectory: "scripts")
+        return ("/usr/bin/python3", bundled ?? "")
+    }()
+
+    struct Limits {
+        let fiveHour: Int?
+        let sevenDay: Int?
+        let fiveHourResets: Double?
+        let sevenDayResets: Double?
+        let ts: Double
+    }
 
     var pollTimer: Timer?
     var animTimer: Timer?
@@ -339,6 +411,15 @@ final class StatusController: NSObject, NSMenuDelegate {
         var started: Bool       // true once the session had real activity (a prompt/tool); a merely-opened
                                 // conversation seeds started=false and stays out of the dropdown.
         var startedAt: Double, ts: Double
+        // How full this session's context window is, measured by hooks/update.js from the
+        // transcript on every event. Claude Code hands this number to statusLine and to nothing
+        // else, and the desktop app never runs statusLine — so it is recomputed rather than read.
+        var pct: Int?
+        var tokens: Int?
+        var window: Int?
+        var model: String = ""
+        var assumed = false    // the window size is a family guess, not a known figure
+
         var eff: String = ""   // effective state, recomputed once per tick in evaluate()
         var branch: String = ""      // git branch (or short SHA when detached); "" outside a repo
         var displayName: String = "" // project, parent-qualified when two live sessions share a name
@@ -356,6 +437,11 @@ final class StatusController: NSObject, NSMenuDelegate {
             self.started = o["started"] as? Bool ?? false
             self.startedAt = (o["startedAt"] as? NSNumber)?.doubleValue ?? 0
             self.ts = (o["ts"] as? NSNumber)?.doubleValue ?? 0
+            self.pct = (o["pct"] as? NSNumber)?.intValue
+            self.tokens = (o["tokens"] as? NSNumber)?.intValue
+            self.window = (o["window"] as? NSNumber)?.intValue
+            self.model = o["model"] as? String ?? ""
+            self.assumed = o["assumed"] as? Bool ?? false
         }
     }
     var sessions: [String: Session] = [:]  // id -> latest parsed per-session state
@@ -456,39 +542,147 @@ final class StatusController: NSObject, NSMenuDelegate {
         let t = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(t, forMode: .common)
         pollTimer = t
+        // Rebuilding the MCP picture is expensive (`claude mcp list` plus a tools/list round trip
+        // per server) so it gets its own slow timer rather than riding the 0.4s render tick.
+        Timer.scheduledTimer(withTimeInterval: Self.mcpRefreshInterval, repeats: true) {
+            [weak self] _ in self?.refreshMCP()
+        }
+        refreshMCP()
         tick()
-        try? FileManager.default.removeItem(atPath: (NSHomeDirectory() as NSString).appendingPathComponent(".claude/statusbar/quit-intent"))
-        removeOldNamedBundle()
+        try? FileManager.default.removeItem(atPath: (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/quit-intent"))
+        // CONTROL_BAR_DUMP_MENU=1 builds the dropdown once, prints it and quits. Looking at the
+        // real thing is not a reliable check: a crowded menu bar parks items off-screen behind a
+        // manager's chevron (measured at x ≈ −8650 on this machine), so they are invisible while
+        // perfectly healthy. This reads the menu that would be drawn.
+        // CONTROL_BAR_DIAGNOSE=1 answers the single most common report — "the icon is gone" —
+        // with measurements instead of guesses. A status item that does not fit beside the notch
+        // is not clipped: macOS parks it off-screen behind the overflow chevron, and from the
+        // outside that is indistinguishable from an app that failed to start.
+        // CONTROL_BAR_DIAGNOSE=menu opens the dropdown by itself, so it can be screenshotted.
+        // There is no other way to look at it: the menu closes the moment anything else takes
+        // over, and a crowded menu bar can hide the item that opens it.
+        if ProcessInfo.processInfo.environment["CONTROL_BAR_DIAGNOSE"] == "menu" {
+            Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in
+                // An accessory app is not active, and performClick on an inactive app's status
+                // button does nothing at all.
+                NSApp.activate(ignoringOtherApps: true)
+                self?.statusItem.button?.performClick(nil)
+            }
+        } else if ProcessInfo.processInfo.environment["CONTROL_BAR_DIAGNOSE"] != nil {
+            Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
+                guard let self else { return }
+                let gauge = self.currentGauge()
+                print("gauge 5h=\(gauge.fiveHour as Any) 7d=\(gauge.sevenDay as Any)")
+                print("sessions=\(self.sessions.count) mcp servers=\(self.mcp.servers.count)")
+                guard let button = self.statusItem.button else {
+                    print("no status item button at all"); NSApp.terminate(nil); return
+                }
+                print("image=\(button.image.map { "\(Int($0.size.width))x\(Int($0.size.height))" } ?? "nil")"
+                    + " template=\(button.image?.isTemplate as Any) length=\(self.statusItem.length)")
+                if let window = button.window {
+                    let screen = NSScreen.main?.frame ?? .zero
+                    print("item window=\(window.frame) visible=\(window.isVisible) screen=\(screen)")
+                    print(window.frame.maxX > screen.maxX || window.frame.minX < 0
+                          ? "VERDICT: parked off-screen — the menu bar is full, it is behind the › chevron"
+                          : "VERDICT: on screen at x=\(Int(window.frame.minX))")
+                } else {
+                    print("button has no window yet")
+                }
+                NSApp.terminate(nil)
+            }
+        }
+        if ProcessInfo.processInfo.environment["CONTROL_BAR_DUMP_MENU"] != nil {
+            Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
+                guard let self, let menu = self.statusItem.menu else { return }
+                self.menuNeedsUpdate(menu)
+                print(StatusController.describe(menu))
+                NSApp.terminate(nil)
+            }
+        }
+        enforceSingleInstance()
+        retirePredecessors()
         ensureHooksInstalled()
         checkForUpdate()
     }
 
-    // 0.4.0 rename transition ("ClaudeStatusBar.app" to "Claude Status Bar.app"): Finder won't
-    // replace across different filenames, so a manual DMG update leaves the old-named copy behind;
-    // remove it on launch. Guarded by bundle id so a fork or unrelated app at that path is never
-    // touched, and skipped when running FROM that path (old-named dev builds).
-    func removeOldNamedBundle() {
-        let old = "/Applications/ClaudeStatusBar.app"
-        guard Bundle.main.bundlePath != old,
-              let info = NSDictionary(contentsOfFile: old + "/Contents/Info.plist"),
-              info["CFBundleIdentifier"] as? String == "com.local.claudestatusbar" else { return }
-        for app in NSWorkspace.shared.runningApplications
-            where app.bundleURL?.path == old && app.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-            app.forceTerminate()
+    // Bundles this project shipped under earlier names. See identity.env: upstream's
+    // com.local.claudestatusbar is deliberately absent — claude-status-bar is a separate
+    // product the user may want, and a fork that deletes the app it forked from is a bug with
+    // a very bad blast radius. The inherited routine did exactly that, by id.
+    let legacyBundleIDs = ["com.local.mcpstatus", "com.local.mcpbar"]
+
+    // A rename leaves the previous copy installed and running: same job, second menu bar icon,
+    // two apps writing one state directory. Measured on the development machine mid-merge —
+    // MCPStatus and an orphaned MCP Bar.app from an earlier rename were both still on disk.
+    //
+    // Retired to the Trash, not unlinked: an app the user can drag back is a different promise
+    // from one this deleted on its own authority during a routine launch.
+    /// True only for a copy living in /Applications or ~/Applications. A build run straight out
+    /// of build/ is a development artifact and must keep its hands off the user's machine — it
+    /// has no business installing hooks into settings.json or moving installed apps to the Trash
+    /// just because someone launched it to look at the menu. (Learned the direct way: a dev run
+    /// wrote eight hooks into a live settings.json.)
+    var isInstalledCopy: Bool { Bundle.main.bundlePath.contains("/Applications/") }
+
+    func retirePredecessors() {
+        guard isInstalledCopy else { return }
+        let fm = FileManager.default
+        for id in legacyBundleIDs where id != Bundle.main.bundleIdentifier {
+            for app in NSWorkspace.shared.runningApplications where app.bundleIdentifier == id {
+                app.terminate()
+            }
+            guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id),
+                  // Re-read the id off disk: urlForApplication answers from Launch Services'
+                  // cache, which keeps pointing at a path long after the bundle moved.
+                  let info = NSDictionary(
+                    contentsOfFile: url.appendingPathComponent("Contents/Info.plist").path),
+                  info["CFBundleIdentifier"] as? String == id,
+                  url.path != Bundle.main.bundlePath
+            else { continue }
+            var trashed: NSURL?
+            do { try fm.trashItem(at: url, resultingItemURL: &trashed) } catch {
+                NSLog("ClaudeControlBar: could not retire \(url.path): \(error)")
+            }
         }
-        try? FileManager.default.removeItem(atPath: old)
+    }
+
+    // Two bundles can carry one id (the plugin builds into ~/Applications, brew installs into
+    // /Applications) and macOS will happily run both — one id, two menu bar items, and `open -b`
+    // picking between them at random. The copy in /Applications wins because that is the one
+    // brew updates; a plugin build stands down rather than fighting it.
+    func enforceSingleInstance() {
+        let me = ProcessInfo.processInfo.processIdentifier
+        let mine = Bundle.main.bundlePath
+        let others = NSWorkspace.shared.runningApplications.filter {
+            $0.bundleIdentifier == Bundle.main.bundleIdentifier && $0.processIdentifier != me
+        }
+        guard !others.isEmpty else { return }
+        let systemWide = mine.hasPrefix("/Applications/")
+        for other in others {
+            let theirs = other.bundleURL?.path ?? ""
+            if systemWide && !theirs.hasPrefix("/Applications/") {
+                other.terminate()
+            } else if !systemWide {
+                NSLog("ClaudeControlBar: \(theirs) already running, standing down")
+                NSApp.terminate(nil)
+                return
+            }
+        }
     }
 
     // Re-runs on first install AND on every version change, so upgrades pick up hook
     // changes and retire old artifacts.
     func ensureHooksInstalled() {
-        let d = UserDefaults.standard
-        let current = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? ""
-        guard d.string(forKey: "installedVersion") != current,
+        // Run on every launch, not once per version. The installer is idempotent — it compares
+        // and writes nothing when nothing differs — and it is also what reclaims the hooks when
+        // the plugin channel goes away, which is not a version change at all. A version gate got
+        // this exactly backwards: remove the hooks by hand (or have another install remove them)
+        // and the app would never put them back, because UserDefaults still said "done".
+        guard isInstalledCopy,
               let installer = Bundle.main.path(forResource: "install", ofType: "js") else { return }
         DispatchQueue.global().async {
             guard let node = Self.locateNode() else {
-                NSLog("ClaudeStatusBar: could not find node; hooks not installed (will retry next launch)")
+                NSLog("ClaudeControlBar: could not find node; hooks not installed (will retry next launch)")
                 return
             }
             let task = Process()
@@ -496,7 +690,6 @@ final class StatusController: NSObject, NSMenuDelegate {
             task.arguments = [installer]
             try? task.run()
             task.waitUntilExit()
-            if task.terminationStatus == 0 { UserDefaults.standard.set(current, forKey: "installedVersion") }
         }
     }
 
@@ -538,19 +731,19 @@ final class StatusController: NSObject, NSMenuDelegate {
     // MARK: update check
 
     var currentVersion: String { (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0" }
-    let releaseAPIURL = "https://api.github.com/repos/m1ckc3s/claude-status-bar/releases/latest"
-    let releasePageURL = "https://github.com/m1ckc3s/claude-status-bar/releases/latest"
+    let releaseAPIURL = "https://api.github.com/repos/InfinityScripter/claude-control-bar/releases/latest"
+    let releasePageURL = "https://github.com/InfinityScripter/claude-control-bar/releases/latest"
     // Homebrew: the cask lags a GitHub release by up to ~a day (autobump), so brew-managed
     // installs gate "update available" on the CASK version, so the copy command always works
     // when offered. Public JSON, nothing sent anywhere (same privacy story as the GitHub check).
-    let brewCaskAPIURL = "https://formulae.brew.sh/api/cask/claude-status-bar.json"
-    let brewUpgradeCommand = "brew upgrade --cask claude-status-bar"
+    let brewCaskAPIURL = "https://formulae.brew.sh/api/cask/claude-control-bar.json"
+    let brewUpgradeCommand = "brew upgrade --cask claude-control-bar"
     // The trailing `open` matters: brew only copies the app, and the first launch of the new copy
     // is what installs hooks and removes the old-named bundle (0.4.0 rename transition).
-    let brewInstallCommand = "brew install --cask claude-status-bar && open -a \"Claude Status Bar\""
+    let brewInstallCommand = "brew install --cask claude-control-bar && open -a \"Claude Control Bar\""
     var brewManaged: Bool {
-        FileManager.default.fileExists(atPath: "/opt/homebrew/Caskroom/claude-status-bar")
-            || FileManager.default.fileExists(atPath: "/usr/local/Caskroom/claude-status-bar")
+        FileManager.default.fileExists(atPath: "/opt/homebrew/Caskroom/claude-control-bar")
+            || FileManager.default.fileExists(atPath: "/usr/local/Caskroom/claude-control-bar")
     }
 
     // Once/day: cache GitHub's latest release tag in UserDefaults. Nothing sent to us.
@@ -560,7 +753,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         if now - d.double(forKey: "lastUpdateCheck") < 86400 { return }
         guard let url = URL(string: releaseAPIURL) else { return }
         var req = URLRequest(url: url)
-        req.setValue("ClaudeStatusBar", forHTTPHeaderField: "User-Agent") // GitHub API requires a UA
+        req.setValue("ClaudeControlBar", forHTTPHeaderField: "User-Agent") // GitHub API requires a UA
         URLSession.shared.dataTask(with: req) { data, _, _ in
             guard let data = data,
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -593,6 +786,107 @@ final class StatusController: NSObject, NSMenuDelegate {
         if let url = URL(string: releasePageURL) { NSWorkspace.shared.open(url) }
     }
 
+    // MARK: MCP backend
+
+    /// Any mcpbar.py command: off the main queue, UI updated back on it. Nothing here parses the
+    /// script's output — the script writes mcp.json and the model re-reads it.
+    func runBackend(_ arguments: [String]) {
+        guard !backend.script.isEmpty else {
+            NSLog("ClaudeControlBar: no mcpbar.py — the bootstrap hook has not run")
+            return
+        }
+        mcpBusy = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let task = Process()
+            // Absolute paths: a GUI process gets a stripped PATH with no pyenv and no nvm in it.
+            task.executableURL = URL(fileURLWithPath: self.backend.python)
+            task.arguments = [self.backend.script] + arguments
+            task.standardOutput = FileHandle.nullDevice
+            task.standardError = FileHandle.nullDevice
+            do { try task.run(); task.waitUntilExit() } catch {
+                NSLog("ClaudeControlBar: \(self.backend.python) failed: \(error)")
+            }
+            DispatchQueue.main.async {
+                self.mcpBusy = false
+                self.mcp.reloadIfChanged(force: true)
+                self.notifyMCPChange()
+                self.evaluate()
+            }
+        }
+    }
+
+    @objc func refreshMCP() { runBackend(["refresh"]) }
+
+    func watchCount(_ update: @escaping () -> Void) {
+        mcpCountLabels.append(update)
+        update()
+    }
+
+    func refreshCounts() { mcpCountLabels.forEach { $0() } }
+
+    func setMCPServer(_ name: String, enabled: Bool) {
+        mcp.setServerLocally(name, enabled: enabled)
+        refreshCounts()
+        runBackend(["toggle-server", name, enabled ? "--on" : "--off"])
+    }
+
+    func setMCPTool(_ rule: String, enabled: Bool) {
+        runBackend(["toggle-tool", rule, enabled ? "--on" : "--off"])
+    }
+
+    @objc func openSettingsJSON() {
+        NSWorkspace.shared.open(URL(fileURLWithPath:
+            (NSHomeDirectory() as NSString).appendingPathComponent(".claude/settings.json")))
+    }
+
+    func loadLimits() {
+        let path = (root as NSString).appendingPathComponent("limits.json")
+        guard let data = FileManager.default.contents(atPath: path),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+        // as? Int, deliberately: the statusLine payload reports fractional percentages and
+        // hooks/statusline.py rounds them on the way in. If a writer ever forgets, the limits
+        // vanish from the menu while limits.json still looks perfectly healthy — so the
+        // rounding lives in one place and is covered by a test.
+        let five = root["five_hour"] as? [String: Any]
+        let seven = root["seven_day"] as? [String: Any]
+        limits = Limits(
+            fiveHour: five?["used_percentage"] as? Int,
+            sevenDay: seven?["used_percentage"] as? Int,
+            fiveHourResets: five?["resets_at"] as? Double,
+            sevenDayResets: seven?["resets_at"] as? Double,
+            ts: root["ts"] as? Double ?? 0)
+    }
+
+    /// A server falling over is worth interrupting for; a tool count moving is not — that is
+    /// usually the user, one click ago, in this very menu.
+    func notifyMCPChange() {
+        guard let change = mcp.freshChange(), change.deservesNotification else { return }
+        if !change.down.isEmpty {
+            notify(title: change.down.count == 1
+                    ? "MCP: \(mcpShortName(change.down[0])) went down"
+                    : "MCP: \(change.down.count) servers went down",
+                   body: change.down.map(mcpShortName).joined(separator: ", "))
+        }
+        if !change.up.isEmpty {
+            notify(title: change.up.count == 1
+                    ? "MCP: \(mcpShortName(change.up[0])) is back"
+                    : "MCP: \(change.up.count) servers are back",
+                   body: change.up.map(mcpShortName).joined(separator: ", "))
+        }
+    }
+
+    func notify(title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        ) { error in if let error { NSLog("ClaudeControlBar: notification failed: \(error)") } }
+    }
+
     // MARK: menu
 
     // The poll timer runs in .common mode, so it keeps firing while the menu tracks; we use that
@@ -603,6 +897,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     func menuDidClose(_ menu: NSMenu) {
         menuIsOpen = false
         sessionMenuItems.removeAll()
+        mcpCountLabels.removeAll()   // they capture menu items that are about to be discarded
     }
 
     // The session SET only changes on reopen (NSMenu can't add/remove rows reliably mid-track).
@@ -617,6 +912,13 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        mcpCountLabels.removeAll()
+        // Opening the menu is the moment the picture is looked at, so it is also the moment to
+        // notice it has gone stale. The rebuild is asynchronous; this open shows what is known,
+        // the next one shows the truth.
+        if !mcpBusy, Date().timeIntervalSince1970 - mcp.checkedAt > Self.mcpRefreshInterval {
+            refreshMCP()
+        }
         checkForUpdate() // refreshes the update cache for next open (gated to once a day)
 
         // Branches otherwise refresh only on hook events, so re-read on open (one tiny file read per
@@ -659,6 +961,7 @@ final class StatusController: NSObject, NSMenuDelegate {
                 view.onClick = { [weak self] in menu.cancelTracking(); self?.openSession(sid, entrypoint: ep, termProgram: tp) }
                 configureSessionRow(view, s, eff: eff)
                 let it = NSMenuItem()
+                it.title = sessionMenuLine(s) + (s.pct.map { "  ctx \($0)%" } ?? "")
                 it.view = view
                 menu.addItem(it)
                 sessionMenuItems.append((it, s.id))  // kept so tick() can live-update the timers
@@ -673,6 +976,10 @@ final class StatusController: NSObject, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
+        addLimitsSection(to: menu)
+        addMCPSection(to: menu)
+
+        menu.addItem(.separator())
         menu.addItem(header("Options"))
         menu.addItem(toggleRow(title: "Show timer", isOn: showTimer) { [weak self] on in
             self?.showTimer = on
@@ -720,6 +1027,18 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
         soundParent.submenu = soundSub
         menu.addItem(soundParent)
+
+        menu.addItem(.separator())
+        let recheck = NSMenuItem(title: mcpBusy ? "Checking MCP…" : "Check MCP now",
+                                 action: #selector(refreshMCP), keyEquivalent: "r")
+        recheck.target = self
+        recheck.isEnabled = !mcpBusy
+        menu.addItem(recheck)
+        let settings = NSMenuItem(title: "Open settings.json", action: #selector(openSettingsJSON),
+                                  keyEquivalent: "")
+        settings.target = self
+        settings.toolTip = "Every server and tool switch is written here"
+        menu.addItem(settings)
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Version \(currentVersion)", action: nil, keyEquivalent: ""))
@@ -808,10 +1127,10 @@ final class StatusController: NSObject, NSMenuDelegate {
         return line
     }
 
-    // Live layout knobs read fresh from ~/.claude/statusbar/uiconfig.json each render, so numeric
+    // Live layout knobs read fresh from ~/.claude/control-bar/uiconfig.json each render, so numeric
     // tweaks (timer column, pill offset, gap) take effect on the next menu open with NO rebuild.
     func uiConfig() -> [String: Double] {
-        let p = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/statusbar/uiconfig.json")
+        let p = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/uiconfig.json")
         guard let d = FileManager.default.contents(atPath: p),
               let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [:] }
         return j.compactMapValues { ($0 as? NSNumber)?.doubleValue }
@@ -832,6 +1151,7 @@ final class StatusController: NSObject, NSMenuDelegate {
                     name: truncated(sessionName(s), max: nameMax, keep: nameMax),
                     branch: truncated(s.branch, max: 22, keep: 20),
                     timer: working ? elapsed(max(0, Int(now - s.startedAt))) : nil,
+                    context: s.pct, contextAssumed: s.assumed,
                     pillNormal: tag.isEmpty ? nil : pillImage(tag),
                     pillSelected: tag.isEmpty ? nil : pillImage(tag, selected: true),
                     pillInset: CGFloat(cfg["pillInset"] ?? 12),
@@ -839,6 +1159,11 @@ final class StatusController: NSObject, NSMenuDelegate {
         // Truncated rows stay inspectable: full name, branch, and path on hover.
         var tip = sessionName(s)
         if !s.branch.isEmpty { tip += " · " + s.branch }
+        if let pct = s.pct, let tokens = s.tokens, let window = s.window {
+            tip += "\ncontext \(pct)% — \(Self.grouped(tokens)) of \(Self.grouped(window)) tokens"
+            if !s.model.isEmpty { tip += " · " + s.model }
+            if s.assumed { tip += "\nwindow size inferred, not reported by this model" }
+        }
         if !s.cwd.isEmpty { tip += "\n" + s.cwd }
         v.toolTip = tip
     }
@@ -961,6 +1286,24 @@ final class StatusController: NSObject, NSMenuDelegate {
         sessionWord[s.id] = w
     }
 
+    static func describe(_ menu: NSMenu, depth: Int = 0) -> String {
+        let pad = String(repeating: "  ", count: depth)
+        return menu.items.map { item -> String in
+            if item.isSeparatorItem { return pad + "──" }
+            var line = pad + (item.title.isEmpty ? item.attributedTitle?.string ?? "" : item.title)
+            if let tip = item.toolTip { line += "   [tip: " + tip.replacingOccurrences(of: "\n", with: " ⏎ ") + "]" }
+            if let sub = item.submenu { line += "\n" + describe(sub, depth: depth + 1) }
+            return line
+        }.joined(separator: "\n")
+    }
+
+    static func grouped(_ n: Int) -> String {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.groupingSeparator = " "   // thin, language-neutral: 154 452 reads the same everywhere
+        return f.string(from: NSNumber(value: n)) ?? "\(n)"
+    }
+
     // "1m 1s" / "43s" — Claude Code's elapsed-clock style.
     func elapsed(_ secs: Int) -> String {
         let m = secs / 60, s = secs % 60
@@ -970,7 +1313,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     // The marker keeps update.js's self-relaunch from undoing an explicit Quit; cleared on the
     // next SessionStart (lifecycle.js) or the next manual launch (below), whichever comes first.
     @objc func quit() {
-        let marker = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/statusbar/quit-intent")
+        let marker = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/quit-intent")
         FileManager.default.createFile(atPath: marker, contents: nil)
         NSApp.terminate(nil)
     }
@@ -1035,8 +1378,26 @@ final class StatusController: NSObject, NSMenuDelegate {
     func tick() {
         checkLifecycle()
         reloadSessions()
+        // Both are mtime checks against a file another process rewrites atomically, so this is
+        // a stat() per tick, not a parse — the parse happens only when something actually moved.
+        if mcp.reloadIfChanged() { notifyMCPChange() }
+        loadLimits()
         evaluate()
         if menuIsOpen { refreshOpenMenuRows() }
+    }
+
+    /// Bars ride in the same status item as the icon. A second status item would be cleaner to
+    /// build and cost another ~33pt of a menu bar that, on this machine, is already ~220pt past
+    /// what fits beside the notch — and overflow there does not clip, it disappears.
+    func decorate(_ icon: NSImage?) -> NSImage? {
+        let gauge = currentGauge()
+        guard !gauge.isEmpty else { return icon }
+        return gauge.image(icon: icon)
+    }
+
+    func currentGauge() -> Gauge {
+        Gauge(fiveHour: limits?.fiveHour.map { Double($0) / 100 },
+              sevenDay: limits?.sevenDay.map { Double($0) / 100 })
     }
 
     // The .json session files currently in state.d/ (ignores the .tmp files mid-write).
@@ -1291,15 +1652,15 @@ final class StatusController: NSObject, NSMenuDelegate {
         } else {
             animTimer?.invalidate(); animTimer = nil
             frameIdx = 0
-            button.image = dot ? dotIcon(color: color) : restingIcon(color: color)
+            button.image = decorate(dot ? dotIcon(color: color) : restingIcon(color: color))
         }
         applyTitle()
-        if button.image == nil { button.image = dot ? dotIcon(color: color) : restingIcon(color: color) }
+        if button.image == nil { button.image = decorate(dot ? dotIcon(color: color) : restingIcon(color: color)) }
     }
 
     func animStep() {
         frameIdx = (frameIdx + 1) % frameCount
-        statusItem.button?.image = iconImage(color: activeColor, frame: frameIdx)
+        statusItem.button?.image = decorate(iconImage(color: activeColor, frame: frameIdx))
         applyTitle() // refresh the elapsed clock
     }
 

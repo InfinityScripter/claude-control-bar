@@ -1,58 +1,126 @@
+# Claude Control Bar
 
+A macOS menu bar app for **Claude Code**. It shows what Claude is doing right now — and lets you
+change what it has to work with, without opening anything.
 
-A tiny macOS menu bar app that shows **Claude Code's live status**: an animated Claude icon while it's thinking or running a tool, a yellow dot when it's awaiting your permission, and the elapsed time of the current turn. Lightweight, no window, no dock icon, no usage dashboards.
+- **Sessions** — an animated icon while Claude thinks or runs a tool, a yellow dot when it needs
+  your permission, a live turn timer, and **how full each session's context window is**.
+- **MCP** — every server, whether it answered, and a switch on each one. Every tool, with its
+  description and parameters on hover, and a switch on each of those too. A muted tool is not
+  merely blocked at call time: Claude Code drops it from the context entirely.
+- **Limits** — 5-hour and 7-day usage as bars in the menu bar itself, spelled out with reset
+  times in the menu.
 
-Built so you can tab away during a long "thinking" stretch and still see, at a glance, whether Claude is working, waiting on you, or done.
-
-<img width="480" height="383" alt="Screen Recording 2026-07-10 at 12 32 23 AM" src="https://github.com/user-attachments/assets/f5d77b7c-f41d-4276-b28f-e1cf655fd323" />
+This is a fork of **[m1ckc3s/claude-status-bar](https://github.com/m1ckc3s/claude-status-bar)**
+merged with **[InfinityScripter/claude-mcp-bar](https://github.com/InfinityScripter/claude-mcp-bar)**.
+The sessions half, the animations and the lifecycle come from the first; the MCP half, the
+context measurement and the limits come from the second. It is a different product from either,
+with its own name and bundle id, and it does not touch an installation of either one.
 
 ## Install
 
-### Homebrew (recommended)
+### As a Claude Code plugin (recommended)
 
 ```bash
-brew install --cask claude-status-bar && open -a "Claude Status Bar"
+/plugin marketplace add InfinityScripter/claude-control-bar
 ```
 
-The one launch at the end matters: it wires up the Claude Code hooks automatically. After that it starts itself whenever Claude Code runs.
+Then `/plugin install claude-control-bar`. The app is compiled on your own Mac at the next
+session start, which means Gatekeeper is never involved — nothing was downloaded. Updates arrive
+with the plugin.
 
-**Already using the app from the DMG?** The same command switches you to Homebrew. Your settings and hooks carry over, and the old copy cleans itself up on first launch. Full details, edge cases, and the tested upgrade matrix: **[HOMEBREW.md](HOMEBREW.md)**.
+### Homebrew
 
-> [!IMPORTANT]
-> **Updated (or installed) mid-session?** Sessions already open appear the next time they do something (a prompt or a tool call). Starting a new `claude` session also works.
+> [!NOTE]
+> Not available yet. The cask needs a tap and a published release; `./build.sh --dmg` produces
+> the image, and the menu's update check already looks for a `claude-control-bar` cask so it
+> works the day one exists. Until then, use the plugin or the DMG.
+
+```bash
+brew install --cask claude-control-bar && open -a "Claude Control Bar"
+```
+
+That final launch matters: it is what wires up the Claude Code hooks.
 
 ### DMG
 
-*Signed and notarized by Apple*
+1. Download the latest `claude-control-bar.dmg` from [Releases](../../releases).
+2. Drag **Claude Control Bar** into Applications.
+3. Launch it once — that installs the hooks.
 
-1. Download the latest `ClaudeStatusBar.dmg` from [Releases](../../releases).
-2. Open it and drag **Claude Status Bar** into Applications.
-3. Launch it once. On first launch it wires up the Claude Code hooks for you automatically.
-4. Start a new Claude Code session, the icon appears whenever Claude Code is running.
+> [!IMPORTANT]
+> **The DMG is not notarized.** This fork has no Apple Developer ID, so the app is ad-hoc signed
+> and macOS will block the first launch. On macOS 15 and later the old Control-click → Open
+> trick no longer works: open **System Settings → Privacy & Security** and press **Open Anyway**,
+> or run `xattr -dr com.apple.quarantine "/Applications/Claude Control Bar.app"`. If that is not
+> acceptable, use the plugin channel — it builds from source on your machine and never meets
+> Gatekeeper at all.
 
-## Updating
+### Both channels at once
 
-The menu tells you when an update is ready. Installed via brew, it shows **Update via brew** with a copy button (paste the command in your terminal); it appears once Homebrew can actually deliver the new version, which can lag a release by up to a day. Installed via DMG, **Update available** opens the releases page, plus a one-click **Switch to Homebrew** option.
+Don't. Claude Code merges plugin hooks with the ones in `settings.json` and runs every match, so
+two installs mean two hook processes per tool call. The app arbitrates this itself through
+`~/.claude/control-bar/owner.json`: the plugin always wins, and the app channel reclaims the
+hooks automatically the moment the plugin directory is gone.
 
-Or just run `brew upgrade --cask claude-status-bar` (brew), or download the latest DMG and drag it into Applications (manual). Hooks refresh themselves on the next launch; nothing to run by hand. **Upgrading from 0.3.x via DMG? Launch the app once after dragging**, that's what retires the old-named copy ([details](HOMEBREW.md#faq--troubleshooting)).
+If you also have **claude-status-bar** installed, both apps will react to the same events. That
+is left alone on purpose — it is someone else's product, and disabling it behind your back would
+be worse than the duplication. The installer says so out loud instead.
 
-## What it shows
+## Limits, and why they need one extra step
 
-- **Thinking / working** — the icon animates, with a live `1m 1s` timer.
-- **Running a tool** — a short label (`Editing`, `Reading`, `Running command`, `Using tool`, …).
-- **Awaiting permission** — a paused yellow dot, in both the CLI and the Desktop app.
-- **Idle / done** — rests on the Claude logo.
+Claude Code never writes your usage limits to disk. They live in the process and leave through
+exactly one door: the JSON payload handed to a `statusLine` command. So the app can only show
+them if something is standing in that door.
 
-Everything is controlled from the menu:
+```bash
+/usr/bin/python3 ~/.claude/plugins/.../scripts/mcpbar.py statusline --install
+```
 
-- **Show timer:** toggle the elapsed `1m 1s` clock.
-- **Thinking words:** rotate a playful verb (`Manifesting…`, `Percolating…`) in place of `Thinking…`, like Claude Code (on by default).
-- **Animation style:**
-  - **Claude Spark**, the web/chat "morph" spark
-  - **Claude Code**, the terminal glyph spinner
-  - **Crab Walking**, a pixel-art Clawd crab that scuttles while Claude works
-- **Icon color:** **Orange** or **System** (adaptive black/white). All three styles follow this setting: in System mode Crab Walking renders as a shaded monochrome silhouette that matches the menu bar.
-- **Version and update:** the menu shows your current version and tells you when an update is ready (see [Updating](#updating)).
+The wrapper saves whatever `statusLine` command you already had, passes it the exact same bytes,
+and prints its output unchanged — your status line does not change by a character. Undo with
+`statusline --uninstall`. Limits are per account, not per session, so one terminal session keeps
+the figures fresh for every window the app shows. Without this the Limits section says it has no
+data rather than inventing a number.
+
+The same payload also states the real context window of the model that answered, which is
+remembered — see below.
+
+## Context window
+
+Claude Code hands the used-context percentage to `statusLine` and to nothing else, and the
+desktop app never runs `statusLine` (it drives the CLI headless, where there is no TUI to draw a
+status line into). So the figure is recomputed from the session transcript with the CLI's own
+formula:
+
+```
+used% = clamp(round((input + cache_creation + cache_read) / window * 100), 0, 100)
+```
+
+Window sizes are scraped out of your installed `claude` binary rather than hardcoded — a
+hardcoded table rots with every release, and the list is not ours to publish. That table is not
+complete, though: transcripts record the *served* model name, and it may not exist in the local
+registry at all. On Claude Code 2.1.205 the registry knows `claude-opus-4-8` and maps the alias
+`opus` onto it, while transcripts say `claude-opus-5` — a name absent from the binary. An unknown
+name therefore borrows the widest window in its own family and is marked with `~`, and a size
+observed from a real `statusLine` payload replaces the guess permanently.
+
+## What the menu shows
+
+- **Sessions** — project · branch, a live timer while working, context %, and a CLI/APP badge.
+  Click a row to bring that session's terminal to the front.
+- **Limits** — 5h and 7d usage with reset countdowns and the age of the reading.
+- **MCP** — servers grouped by where they are configured (local config, claude.ai connectors,
+  plugins, project `.mcp.json`), each with `enabled/total` tools and a switch. **All tools** is
+  the flat inventory of everything currently costing you context.
+- **changed:** — what moved since the last check, because a count that is merely different next
+  time tells you nothing about whether you moved it or a server did. Servers going down also
+  raise a notification; tool counts do not, since that is usually you, one click ago.
+- **Options** — timer, thinking words, animation style, icon color, completion sound.
+
+Switching a server or a tool writes to `~/.claude/settings.json` (`deniedMcpServers` and
+`permissions.deny`). It takes effect in **new** sessions: the tool list is assembled when a
+session starts, so an open tab is unaffected.
 
 ### Where it works
 
@@ -63,49 +131,67 @@ Everything is controlled from the menu:
 | Cursor (Claude Code extension) | ✅ |
 | Claude Desktop — **Chat/Cowork** tab | ❌ |
 
-**Multi-session support.** When several Claude Code sessions run at once (multiple terminals, or a terminal plus the desktop app), the menu bar surfaces the highest-priority one: a session awaiting your permission is never hidden behind one that's thinking. The dropdown lists every live session. Precise per-tab focus is in progress: **[issue #19 →](https://github.com/m1ckc3s/claude-status-bar/issues/19)**.
-
 ## How it works
 
 > [!NOTE]
-> You don't open this app; it opens itself when a Claude Code session starts, and quits when none is running. The only manual launch is the very first one after install, to set up the hooks. Opened by hand with no session active, it quits again after a few seconds. That's normal.
+> You don't open this app; it opens itself when a Claude Code session starts and quits when none
+> is running. Opened by hand with no session active, it quits again after a few seconds.
 
-The app is stateless. Claude Code fires hooks as it works; the app polls those updates and aggregates them across every live session into a single icon, a permission dot if one needs you, animating if any session is working, resting when all are idle. It launches itself when Claude Code opens and quits when nothing's running, so there's nothing to manage.
+Three parts, deliberately separated:
 
-The installer merges its hooks into `~/.claude/settings.json` (backing it up first), and the app's only network activity is a once-a-day update check against GitHub's and Homebrew's public APIs ([details](PRIVACY.md)).
+| Part | Job |
+|---|---|
+| `hooks/*.js` | One file per session in `~/.claude/control-bar/state.d/`, plus the context measurement |
+| `scripts/mcpbar.py` | `claude mcp list`, a JSON-RPC `tools/list` round trip for names and parameters, the switches |
+| `Sources/*.swift` | Draws. Computes nothing. |
+
+The app's only network activity is a once-a-day update check against GitHub's and Homebrew's
+public APIs ([details](PRIVACY.md)).
+
+There is also a slash command, `/mcp-health`, that prints the same MCP map as text.
 
 ## Requirements
 
 - macOS 12+
 - [Claude Code](https://claude.com/claude-code) (CLI or the Desktop app)
-- Node.js
+- Node.js, and the system `/usr/bin/python3` (Command Line Tools)
+
+## Menu bar space
+
+Beside the notch there are roughly 772 points, and an item that does not fit is not clipped — it
+slides underneath and disappears. The bars cost about 35pt on top of the plain icon. If the item
+does not show up, that is usually the reason, not a bug; a menu bar manager parking it behind a
+chevron looks identical.
 
 ## Troubleshooting
 
-Icon not appearing, vanishing on its own, or not animating when it should? See [Troubleshooting](TROUBLESHOOTING.md), most of it is expected behavior, not a bug.
+See [Troubleshooting](TROUBLESHOOTING.md). `CONTROL_BAR_DUMP_MENU=1` run against the app binary
+prints the menu it would draw, which beats hunting for an item that may be parked off-screen.
 
 ## Uninstall
 
 ```bash
-node "/Applications/Claude Status Bar.app/Contents/Resources/uninstall.js"   # removes only our hooks
-brew uninstall --zap claude-status-bar                                       # removes the app + every file it created
+node "/Applications/Claude Control Bar.app/Contents/Resources/uninstall.js"   # removes only our hooks
+brew uninstall --zap claude-control-bar                                      # app + every file it created
 ```
 
-Installed manually instead of via brew? Skip the second line and drag the app to the Trash.
+Installed as a plugin: `/plugin uninstall claude-control-bar` removes the hooks, then drag
+`~/Applications/Claude Control Bar.app` to the Trash. If you installed the `statusLine` capture,
+run `mcpbar.py statusline --uninstall` first to get your original command back.
 
 ## Acknowledgements
 
-I built this for myself, then open-sourced it because other people might find it handy too, and I'm genuinely thrilled that so many of you do. An extra thank-you to everyone who went the extra mile and contributed code, fixes, and ideas.
-
-**[See the contributors →](ACKNOWLEDGEMENTS.md)**
+Built on **[claude-status-bar](https://github.com/m1ckc3s/claude-status-bar)** by Mick Cesanek —
+the sessions model, the animations, the self-launching lifecycle and the DMG pipeline are his
+work, and this fork would not exist without them. **[Contributors →](ACKNOWLEDGEMENTS.md)**
 
 ## Trademark / Not Affiliated
 
-This is an unofficial, open-source side project. **It is not affiliated with, endorsed by, or sponsored by Anthropic.** "Claude" and the Claude spark logo are trademarks of Anthropic, used here nominatively. This project is MIT licensed, but that covers the source code only and conveys no rights to Anthropic's trademarks or brand.
-
-If I'm violating or impeding your trademark, Contact me on X ([@mickces](https://x.com/mickces))
-This is a free side project; I'm not monetizing it.
+This is an unofficial, open-source side project. **It is not affiliated with, endorsed by, or
+sponsored by Anthropic.** "Claude" and the Claude spark logo are trademarks of Anthropic, used
+here nominatively. This project is MIT licensed, but that covers the source code only and
+conveys no rights to Anthropic's trademarks or brand.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE). Copyright for the original work remains with Mick Cesanek.

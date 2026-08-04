@@ -1,28 +1,38 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/lifecycle.js\" start" }] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/bootstrap.py\"",
+            "timeout": 300,
+            "statusMessage": "Claude Control Bar…"
+          },
+          { "type": "command", "command": "PATH=\"/opt/homebrew/bin:/usr/local/bin${PATH:+:$PATH}\" node \"${CLAUDE_PLUGIN_ROOT}/hooks/lifecycle.js\" start" }
+        ]
+      }
     ],
     "SessionEnd": [
-      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/lifecycle.js\" end" }] }
+      { "hooks": [{ "type": "command", "command": "PATH=\"/opt/homebrew/bin:/usr/local/bin${PATH:+:$PATH}\" node \"${CLAUDE_PLUGIN_ROOT}/hooks/lifecycle.js\" end" }] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/update.js\" prompt" }] }
+      { "hooks": [{ "type": "command", "command": "PATH=\"/opt/homebrew/bin:/usr/local/bin${PATH:+:$PATH}\" node \"${CLAUDE_PLUGIN_ROOT}/hooks/update.js\" prompt" }] }
     ],
     "PreToolUse": [
-      { "matcher": "*", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/update.js\" pre" }] }
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "PATH=\"/opt/homebrew/bin:/usr/local/bin${PATH:+:$PATH}\" node \"${CLAUDE_PLUGIN_ROOT}/hooks/update.js\" pre" }] }
     ],
     "PostToolUse": [
-      { "matcher": "*", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/update.js\" post" }] }
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "PATH=\"/opt/homebrew/bin:/usr/local/bin${PATH:+:$PATH}\" node \"${CLAUDE_PLUGIN_ROOT}/hooks/update.js\" post" }] }
     ],
     "Notification": [
-      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/update.js\" notify" }] }
+      { "hooks": [{ "type": "command", "command": "PATH=\"/opt/homebrew/bin:/usr/local/bin${PATH:+:$PATH}\" node \"${CLAUDE_PLUGIN_ROOT}/hooks/update.js\" notify" }] }
     ],
     "PermissionRequest": [
-      { "matcher": "*", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/update.js\" permreq" }] }
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "PATH=\"/opt/homebrew/bin:/usr/local/bin${PATH:+:$PATH}\" node \"${CLAUDE_PLUGIN_ROOT}/hooks/update.js\" permreq" }] }
     ],
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/update.js\" stop" }] }
+      { "hooks": [{ "type": "command", "command": "PATH=\"/opt/homebrew/bin:/usr/local/bin${PATH:+:$PATH}\" node \"${CLAUDE_PLUGIN_ROOT}/hooks/update.js\" stop" }] }
     ]
   }
 }

@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The backend deliberately runs on the system python and the standard library alone: it is
+      # launched by a GUI process, where neither pyenv nor nvm is on PATH.
+      - name: Python tests
+        run: /usr/bin/python3 -m unittest discover -s tests -v
+
+      - name: Node tests
+        run: node --test tests/*.test.js
+
+      # No Xcode project here (the app builds with a bare swiftc), so the model checks are a
+      # plain executable that exits non-zero on the first failure.
+      - name: Swift model checks
+        run: |
+          swiftc -O Sources/MCPModel.swift tests/model/main.swift -o "$RUNNER_TEMP/model" -framework Cocoa
+          "$RUNNER_TEMP/model"
+
+      - name: Build the app
+        run: CONTROL_BAR_APP="$RUNNER_TEMP/Claude Control Bar.app" bash build.sh
+
+      - name: Manifests are valid JSON
+        run: |
+          /usr/bin/python3 -c "
+          import json
+          for path in ('.claude-plugin/plugin.json', '.claude-plugin/marketplace.json', 'hooks/hooks.json'):
+              json.load(open(path)); print(path, 'ok')
+          "
+
+      # plugin.json is the single source of the version. Compared against the BUILT bundle, not
+      # against the text of build.sh — a hardcoded plist would otherwise pass review forever.
+      - name: One version everywhere
+        run: |
+          /usr/bin/python3 - "$RUNNER_TEMP/Claude Control Bar.app" <<'PY'
+          import json, plistlib, sys
+          want = json.load(open('.claude-plugin/plugin.json'))['version']
+          market = json.load(open('.claude-plugin/marketplace.json'))['plugins']
+          bad = [e['name'] for e in market if e.get('version') != want]
+          if bad:
+              sys.exit(f'marketplace.json disagrees with plugin.json={want}: {bad}')
+          with open(sys.argv[1] + '/Contents/Info.plist', 'rb') as fh:
+              info = plistlib.load(fh)
+          for key in ('CFBundleShortVersionString', 'CFBundleVersion'):
+              if info[key] != want:
+                  sys.exit(f'built bundle {key}={info[key]}, expected {want}')
+          print('version agrees everywhere:', want)
+          PY
+
+      # The hook scripts cannot read identity.env — install.js copies them out of the repo into
+      # ~/.claude/control-bar/ — so they carry the same literals inline. This is the guard that
+      # keeps the two from drifting apart, which is how a rename half-applies.
+      - name: Identity is consistent
+        run: |
+          /usr/bin/python3 - "$RUNNER_TEMP/Claude Control Bar.app" <<'PY'
+          import plistlib, sys
+          ident = {}
+          for line in open('identity.env'):
+              line = line.strip()
+              if line and not line.startswith('#') and '=' in line:
+                  k, _, v = line.partition('=')
+                  ident[k.strip()] = v.strip().strip('"')
+          bundle, exe = ident['BUNDLE_ID'], ident['EXEC']
+          checks = [
+              ('hooks/lifecycle.js', [bundle, exe]),
+              ('hooks/update.js', [bundle, exe]),
+              ('hooks/uninstall.js', [exe]),
+              ('hooks/install.js', [ident['STATE_DIR'].split('/')[-1]]),
+          ]
+          for path, needles in checks:
+              text = open(path).read()
+              for needle in needles:
+                  if needle not in text:
+                      sys.exit(f'{path} does not carry {needle!r} from identity.env')
+          with open(sys.argv[1] + '/Contents/Info.plist', 'rb') as fh:
+              info = plistlib.load(fh)
+          if info['CFBundleIdentifier'] != bundle or info['CFBundleExecutable'] != exe:
+              sys.exit('built bundle identity disagrees with identity.env')
+          # Upstream is a separate product someone may have installed on purpose, and the
+          # cleanup routine that came with this code deletes bundles BY ID. Quoted, so the
+          # comments explaining why the id is absent do not trip the check.
+          for path in ('Sources/main.swift', 'hooks/lifecycle.js', 'hooks/update.js'):
+              if '"com.local.claudestatusbar"' in open(path).read():
+                  sys.exit(path + " uses upstream's bundle id as a literal")
+          print('identity consistent:', bundle, exe)
+          PY

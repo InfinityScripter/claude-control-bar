@@ -1,14 +1,17 @@
 #!/bin/bash
-# Builds ClaudeStatusBar.app (and optionally a .dmg with: ./build.sh --dmg).
+# Builds the menu bar app (and optionally a .dmg with: ./build.sh --dmg).
 set -euo pipefail
 cd "$(dirname "$0")"
+# Identity lives in one file so a rename can never half-apply (see identity.env).
+# shellcheck source=identity.env
+. "$(dirname "$0")/identity.env"
 
-# 0.4.0: the bundle folder is "Claude Status Bar.app" (matches the cask token claude-status-bar,
-# promised in homebrew-cask PR #274337). The EXECUTABLE stays "ClaudeStatusBar": lifecycle.js
-# pgreps that name and opens by bundle id, and every pkill/dev instruction relies on it, so only
-# the folder name changes.
-APP="build/Claude Status Bar.app"
-BIN="$APP/Contents/MacOS/ClaudeStatusBar"
+# Version has exactly one source: the plugin manifest. It used to be typed into the Info.plist
+# heredoc as well, which is how a build ships announcing a version nobody released.
+VERSION=$(/usr/bin/python3 -c "import json;print(json.load(open('.claude-plugin/plugin.json'))['version'])")
+
+APP="${CONTROL_BAR_APP:-build/$APP_NAME.app}"
+BIN="$APP/Contents/MacOS/$EXEC"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
@@ -23,17 +26,17 @@ swiftc -O -target x86_64-apple-macos12.0 Sources/*.swift -o "$BIN.x86_64" -frame
 lipo -create "$BIN.arm64" "$BIN.x86_64" -output "$BIN"
 rm -f "$BIN.arm64" "$BIN.x86_64"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>ClaudeStatusBar</string>
-  <key>CFBundleDisplayName</key><string>Claude Status Bar</string>
-  <key>CFBundleIdentifier</key><string>com.local.claudestatusbar</string>
-  <key>CFBundleExecutable</key><string>ClaudeStatusBar</string>
-  <key>CFBundleVersion</key><string>0.4.3</string>
-  <key>CFBundleShortVersionString</key><string>0.4.3</string>
+  <key>CFBundleName</key><string>$APP_NAME</string>
+  <key>CFBundleDisplayName</key><string>$APP_NAME</string>
+  <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+  <key>CFBundleExecutable</key><string>$EXEC</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>LSUIElement</key><true/>
@@ -44,7 +47,11 @@ PLIST
 
 # Bundle the hook scripts (so first-launch self-install works) and the app icon.
 mkdir -p "$APP/Contents/Resources"
-cp hooks/update.js hooks/lifecycle.js hooks/install.js hooks/uninstall.js "$APP/Contents/Resources/"
+cp hooks/update.js hooks/lifecycle.js hooks/install.js hooks/uninstall.js hooks/statusline.sh hooks/statusline.py "$APP/Contents/Resources/"
+# The MCP half runs out of the bundle in the brew/DMG channel — the plugin directory that
+# normally holds it does not exist there.
+mkdir -p "$APP/Contents/Resources/scripts"
+cp scripts/mcpbar.py "$APP/Contents/Resources/scripts/"
 cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp assets/completion.mp3 "$APP/Contents/Resources/completion.mp3"
 
@@ -56,14 +63,22 @@ cp assets/completion.mp3 "$APP/Contents/Resources/completion.mp3"
 #          --apple-id you@example.com --team-id W9JZ4932LA --password <app-specific-password>
 # Then `./build.sh --dmg` auto-signs + notarizes. Without a cert it falls back to an
 # ad-hoc dev build (runnable locally; users would need right-click > Open once).
-TEAM_ID="W9JZ4932LA"
-NOTARY_PROFILE="${NOTARY_PROFILE:-claude-statusbar}"
+# Was hardcoded to upstream's Apple Team ID, which is nobody's cert here: the grep never
+# matched, the script fell through to ad-hoc signing AND skipped notarization entirely, and
+# said so only in a line nobody reads. Unset now means "any Developer ID in the keychain",
+# and REQUIRE_NOTARIZE=1 makes a release build fail loudly instead of shipping unnotarized.
+TEAM_ID="${APPLE_TEAM_ID:-}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-claude-control-bar}"
 
 # `|| true` so a missing Developer ID cert (grep matches nothing → nonzero, which `set -eo pipefail`
 # would otherwise treat as a fatal error) falls through to the ad-hoc dev build below instead of
 # aborting the whole script.
 SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
   | grep "Developer ID Application" | grep "$TEAM_ID" | head -1 | sed -E 's/.*"(.*)"/\1/')" || true
+if [[ -z "$SIGN_ID" && "${REQUIRE_NOTARIZE:-}" == "1" ]]; then
+  echo "REQUIRE_NOTARIZE=1 but no Developer ID Application certificate found." >&2
+  exit 1
+fi
 
 # Strip extended attributes (Finder info, quarantine, etc.) that bundled resources can
 # carry — codesign rejects them ("resource fork, Finder information, ... not allowed").
@@ -73,7 +88,8 @@ if [[ -n "$SIGN_ID" ]]; then
   echo "Signing with Developer ID: $SIGN_ID"
   codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP"
 else
-  echo "No Developer ID cert for team $TEAM_ID found — ad-hoc signing (local dev build)."
+  echo "No Developer ID certificate found — ad-hoc signing. The result is NOT notarized:"
+  echo "  macOS will block the first launch. See README, section \"Gatekeeper\"."
   codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 fi
 echo "Built $APP"
@@ -93,26 +109,31 @@ if [[ "${1:-}" == "--dmg" ]]; then
   fi
 
   echo "Packaging DMG…"
-  DMG="build/ClaudeStatusBar.dmg"
+  DMG="build/$CASK_TOKEN.dmg"
   STAGE="build/dmg-stage"
   rm -rf "$STAGE" "$DMG" build/rw.dmg
   mkdir -p "$STAGE"
   cp -R "$APP" "$STAGE/"
   ln -s /Applications "$STAGE/Applications"
 
-  # Eject any stale "Claude Status Bar" volumes from earlier builds first. Otherwise a name
-  # collision mounts this one as "Claude Status Bar 2", the hardcoded /Volumes path below points
+  # Eject any stale "$APP_NAME" volumes from earlier builds first. Otherwise a name
+  # collision mounts this one as "$APP_NAME 2", the hardcoded /Volumes path below points
   # at the wrong volume (layout capture silently fails), and the stale mounts pile up in Finder.
-  for d in $(hdiutil info | awk '/Claude Status Bar/ {print $1}'); do hdiutil detach "$d" >/dev/null 2>&1 || true; done
+  for d in $(hdiutil info | awk -v name="$APP_NAME" 'index($0, name) {print $1}'); do hdiutil detach "$d" >/dev/null 2>&1 || true; done
 
   # Lay out the window on a read-write image to capture its .DS_Store, then build the final
   # image from the folder (see below).
-  hdiutil create -volname "Claude Status Bar" -srcfolder "$STAGE" -ov -format UDRW build/rw.dmg >/dev/null
+  hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDRW build/rw.dmg >/dev/null
   device="$(hdiutil attach -readwrite -noverify -noautoopen build/rw.dmg | grep -E '^/dev/' | head -1 | awk '{print $1}')"
   sleep 1
-  osascript <<'OSA' || echo "(Finder layout skipped — DMG still has the app + Applications shortcut)"
+  # Passed as an argument, not interpolated: this heredoc is quoted (AppleScript is full of $
+  # and backticks), so a shell variable written inside it would reach Finder as the literal
+  # text "$APP_NAME" and the layout step would silently do nothing.
+  osascript - "$APP_NAME" <<'OSA' || echo "(Finder layout skipped — DMG still has the app + Applications shortcut)"
+on run argv
+set volName to item 1 of argv
 tell application "Finder"
-  tell disk "Claude Status Bar"
+  tell disk volName
     open
     set current view of container window to icon view
     set toolbar visible of container window to false
@@ -122,33 +143,34 @@ tell application "Finder"
     set arrangement of vo to not arranged
     set icon size of vo to 100
     set text size of vo to 12
-    set position of item "Claude Status Bar.app" of container window to {130, 150}
+    set position of item (volName & ".app") of container window to {130, 150}
     set position of item "Applications" of container window to {350, 150}
     update without registering applications
     delay 1
     close
   end tell
 end tell
+end run
 OSA
   # Capture the layout Finder just wrote (.DS_Store), then discard the writable image and build
   # the final compressed image straight from the folder. Building from a folder never mounts a
   # writable volume, so macOS's fseventsd never creates a hidden .fseventsd in the shipped DMG.
   # (Removing .fseventsd from a mounted volume does not stick: the removal is itself an event
   # fseventsd logs, which recreates the folder.)
-  cp "/Volumes/Claude Status Bar/.DS_Store" "$STAGE/.DS_Store" 2>/dev/null || true
+  cp "/Volumes/$APP_NAME/.DS_Store" "$STAGE/.DS_Store" 2>/dev/null || true
   hdiutil detach "$device" >/dev/null || true
   rm -f build/rw.dmg
   # Scrub any hidden folder that may have accrued (.fseventsd, .Trashes, .Spotlight-V100, …),
   # keeping only the intentional .DS_Store that carries the window layout.
   find "$STAGE" -maxdepth 1 -name ".*" ! -name ".DS_Store" -exec rm -rf {} + 2>/dev/null || true
-  hdiutil create -volname "Claude Status Bar" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+  hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
   rm -rf "$STAGE"
 
   # Guard: the shipped image must hold nothing but the app, the Applications symlink, and the
   # .DS_Store layout file. Mount read-only and abort before notarizing if any stray hidden entry
   # slipped in (the recurring .fseventsd/.Trashes problem).
   vdev="$(hdiutil attach -nobrowse -noautoopen -readonly "$DMG" | grep -E '^/dev/' | tail -1 | awk '{print $1}')"
-  stray="$(find "/Volumes/Claude Status Bar" -maxdepth 1 -name ".*" ! -name ".DS_Store" 2>/dev/null)"
+  stray="$(find "/Volumes/$APP_NAME" -maxdepth 1 -name ".*" ! -name ".DS_Store" 2>/dev/null)"
   hdiutil detach "$vdev" >/dev/null 2>&1 || true
   if [[ -n "$stray" ]]; then
     echo "ERROR: DMG has stray hidden entries, aborting before notarize:"; echo "$stray"; exit 1

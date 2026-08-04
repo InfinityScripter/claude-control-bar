@@ -1,0 +1,224 @@
+import Cocoa
+
+// The MCP half of the app: what servers exist, whether they answered, which of their tools are
+// still in Claude's context, and what moved since the last look.
+//
+// Nothing here talks to a server. The picture is assembled by scripts/mcpbar.py — `claude mcp
+// list` for liveness, a JSON-RPC tools/list round trip for names, descriptions and parameters,
+// ~/.claude/settings.json for what the user switched off — and lands in mcp.json. This file only
+// reads that.
+
+struct MCPParam {
+    let name: String
+    let type: String
+    let required: Bool
+    let doc: String
+}
+
+struct MCPTool {
+    let name: String
+    let doc: String
+    let params: [MCPParam]
+    /// A denied tool is not merely blocked at call time — Claude Code drops it from the context
+    /// entirely, so this is the flag that decides whether it costs tokens at all.
+    /// Mutable so a click can be answered before the backend has finished thinking about it.
+    var enabled: Bool
+}
+
+struct MCPServer {
+    let name: String
+    var state: String   // ok | failed | pending | off
+    let source: String  // user | claude.ai | plugin | project
+    var status: String
+    /// What the server itself reported at startup. Can exceed `tools.count`: the count comes from
+    /// the server's own stderr, the names from a separate probe that some servers refuse.
+    let reportedTools: Int?
+    var tools: [MCPTool]
+
+    var disabled: Bool { state == "off" }
+    var enabledTools: Int { tools.filter(\.enabled).count }
+    var mutedTools: Int { tools.count - enabledTools }
+    /// Tools actually reaching Claude. Falls back to the reported count when names are unknown,
+    /// because "12" beats "—" for a server that plainly has tools.
+    var liveTools: Int { tools.isEmpty ? (reportedTools ?? 0) : enabledTools }
+}
+
+/// What moved between two reads. Drives both the notification and the "it changed" marker in the
+/// menu — the user asked to see that a count moved, not just its new value.
+struct MCPChange {
+    let at: Date
+    let up: [String]
+    let down: [String]
+    let appeared: [String]
+    let vanished: [String]
+    let toolDelta: Int
+
+    var isEmpty: Bool {
+        up.isEmpty && down.isEmpty && appeared.isEmpty && vanished.isEmpty && toolDelta == 0
+    }
+    /// Servers falling over is news worth interrupting for. A tool count moving is not — the user
+    /// usually moved it themselves, one click ago, in this very menu.
+    var deservesNotification: Bool { !up.isEmpty || !down.isEmpty }
+}
+
+private struct MCPSnapshot {
+    let states: [String: String]
+    let enabledTools: Int
+
+    func diff(to next: MCPSnapshot, at now: Date) -> MCPChange {
+        // Only servers present in BOTH reads can be said to have risen or fallen; one that just
+        // appeared has no previous state to have moved from.
+        let common = Set(states.keys).intersection(next.states.keys)
+        return MCPChange(
+            at: now,
+            up: common.filter { states[$0] != "ok" && next.states[$0] == "ok" }.sorted(),
+            down: common.filter { states[$0] == "ok" && next.states[$0] != "ok" }.sorted(),
+            appeared: Set(next.states.keys).subtracting(states.keys).sorted(),
+            vanished: Set(states.keys).subtracting(next.states.keys).sorted(),
+            toolDelta: next.enabledTools - enabledTools)
+    }
+}
+
+final class MCPModel {
+    /// How long a change stays visible in the menu after it happened.
+    static let changeWindow: TimeInterval = 45
+
+    private(set) var servers: [MCPServer] = []
+    private(set) var waitingAuth: [String] = []
+    private(set) var checkedAt: Double = 0
+    private(set) var error: String?
+    private(set) var change: MCPChange?
+
+    private let path: String
+    private var mtime: Date?
+    private var previous: MCPSnapshot?
+
+    init(path: String) { self.path = path }
+
+    var visible: [MCPServer] { servers.filter { !$0.disabled } }
+    var live: Int { visible.filter { $0.state == "ok" }.count }
+    var broken: Int { visible.count - live }
+    var toolsOn: Int { visible.reduce(0) { $0 + $1.liveTools } }
+    /// Everything the enabled servers offer, including what the user muted — the denominator the
+    /// "N of M tools" line needs.
+    var toolsTotal: Int {
+        visible.reduce(0) { $0 + max($1.tools.count, $1.reportedTools ?? 0) }
+    }
+
+    /// The change worth showing right now, or nil once it has aged out.
+    func freshChange(now: Date = Date()) -> MCPChange? {
+        guard let change, !change.isEmpty,
+              now.timeIntervalSince(change.at) < MCPModel.changeWindow else { return nil }
+        return change
+    }
+
+    /// Re-read only when the file actually changed. Returns true when anything moved, so the
+    /// caller can redraw without diffing again. Writes are atomic renames, so a bumped mtime
+    /// always means a whole new file — never a torn read.
+    @discardableResult
+    func reloadIfChanged(force: Bool = false) -> Bool {
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate])
+            as? Date
+        guard force || stamp != mtime else { return false }
+        mtime = stamp
+        guard let data = FileManager.default.contents(atPath: path),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+
+        checkedAt = root["checked_at"] as? Double ?? 0
+        waitingAuth = root["auth"] as? [String] ?? []
+        error = root["error"] as? String
+        servers = (root["servers"] as? [[String: Any]] ?? []).map(Self.server(from:))
+
+        let snapshot = MCPSnapshot(
+            states: Dictionary(servers.map { ($0.name, $0.state) }, uniquingKeysWith: { a, _ in a }),
+            enabledTools: toolsOn)
+        // The first read has nothing to compare against: announcing every server as "appeared" on
+        // launch would fire a notification storm for a picture that was already true.
+        if let previous {
+            let moved = previous.diff(to: snapshot, at: Date())
+            if !moved.isEmpty { change = moved }
+        }
+        previous = snapshot
+        return true
+    }
+
+    /// Answer the click now, before the backend has caught up. Flipping a tool means rewriting
+    /// ~/.claude/settings.json and re-deriving the whole picture, and until that lands the menu
+    /// would keep showing the old counts — which reads as "the switch did nothing". The backend's
+    /// own result overwrites this a moment later; if it disagrees, its version wins.
+    func setToolLocally(server: String, tool: String, enabled: Bool) {
+        guard let s = servers.firstIndex(where: { $0.name == server }),
+              let t = servers[s].tools.firstIndex(where: { $0.name == tool }) else { return }
+        servers[s].tools[t].enabled = enabled
+    }
+
+    func setServerLocally(_ name: String, enabled: Bool) {
+        guard let s = servers.firstIndex(where: { $0.name == name }) else { return }
+        // Not "ok": switching a server back on does not reconnect it. The list of servers is
+        // assembled when a session starts, so the truthful state until then is "pending".
+        servers[s].state = enabled ? "pending" : "off"
+        servers[s].status = enabled ? "on in a new session" : "disabled"
+    }
+
+    private static func server(from raw: [String: Any]) -> MCPServer {
+        let denied = Set(raw["deniedTools"] as? [String] ?? [])
+        let docs = raw["toolDocs"] as? [String: String] ?? [:]
+        let params = raw["toolParams"] as? [String: [[String: Any]]] ?? [:]
+        let tools = (raw["toolNames"] as? [String] ?? []).map { name in
+            MCPTool(
+                name: name,
+                doc: docs[name] ?? "",
+                params: (params[name] ?? []).map {
+                    MCPParam(
+                        name: $0["name"] as? String ?? "",
+                        type: $0["type"] as? String ?? "",
+                        required: $0["required"] as? Bool ?? false,
+                        doc: $0["description"] as? String ?? "")
+                },
+                enabled: !denied.contains(name))
+        }
+        return MCPServer(
+            name: raw["name"] as? String ?? "?",
+            state: raw["state"] as? String ?? "failed",
+            source: raw["source"] as? String ?? "user",
+            status: raw["status"] as? String ?? "",
+            reportedTools: raw["tools"] as? Int,
+            tools: tools)
+    }
+}
+
+/// Servers grouped the way they are configured, because that is where the user goes to change
+/// them: a plugin server is fixed in the plugin, a project one lives in the repo's .mcp.json.
+let mcpGroups: [(key: String, title: String)] = [
+    ("user", "Local config"),
+    ("claude.ai", "claude.ai connectors"),
+    ("plugin", "From plugins"),
+    ("project", "Project"),
+]
+
+/// Drops the bookkeeping prefix: "claude.ai Figma" -> "Figma", "plugin:figma:figma" -> "figma".
+func mcpShortName(_ name: String) -> String {
+    if name.hasPrefix("claude.ai ") { return String(name.dropFirst("claude.ai ".count)) }
+    if name.hasPrefix("plugin:") { return String(name.split(separator: ":").last ?? "") }
+    return name
+}
+
+func mcpGlyph(_ state: String) -> String {
+    switch state {
+    case "ok": return "●"
+    case "failed": return "✗"
+    case "pending": return "⏸"
+    case "off": return "○"
+    default: return "◌"
+    }
+}
+
+func mcpTint(_ state: String) -> NSColor {
+    switch state {
+    case "ok": return .systemGreen
+    case "failed": return .systemRed
+    case "off": return .tertiaryLabelColor
+    default: return .systemOrange
+    }
+}

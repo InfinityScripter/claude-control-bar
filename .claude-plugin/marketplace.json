@@ -1,16 +1,19 @@
 {
-  "name": "claude-status-bar",
-  "owner": { "name": "Mick Cesanek" },
-  "description": "Menu bar status indicator for Claude Code.",
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-control-bar",
+  "owner": {
+    "name": "Talalaev M"
+  },
+  "description": "Claude Code in the macOS menu bar: sessions, context window, MCP servers and tools, usage limits.",
   "plugins": [
     {
-      "name": "claude-status-bar",
-      "displayName": "Claude Status Bar",
+      "name": "claude-control-bar",
+      "displayName": "Claude Control Bar",
       "source": "./",
-      "description": "Menu bar indicator for Claude Code: animated spark, elapsed timer, and open/close lifecycle.",
-      "version": "0.4.3",
-      "homepage": "https://github.com/m1ckc3s/claude-status-bar",
-      "license": "MIT"
+      "version": "0.5.0",
+      "description": "Live sessions with context-window usage, MCP server and per-tool switches, and 5h/7d limit bars — in the macOS menu bar.",
+      "license": "MIT",
+      "homepage": "https://github.com/InfinityScripter/claude-control-bar"
     }
   ]
 }

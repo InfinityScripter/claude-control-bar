@@ -57,7 +57,7 @@ test("installs portable, quoted hook commands and replaces stale hooks", (t) => 
 
   const claudeDir = path.join(home, ".claude");
   const settingsPath = path.join(claudeDir, "settings.json");
-  const oldScript = path.join(claudeDir, "statusbar", "update.js");
+  const oldScript = path.join(claudeDir, "control-bar", "update.js");
   const unrelatedCommand = "echo keep-me";
   const original = {
     customSetting: true,
@@ -91,8 +91,8 @@ test("installs portable, quoted hook commands and replaces stale hooks", (t) => 
   const settings = readSettings(home);
   const allCommands = hookCommands(settings);
   const commands = statusBarCommands(settings);
-  const updatePath = path.join(claudeDir, "statusbar", "update.js");
-  const lifecyclePath = path.join(claudeDir, "statusbar", "lifecycle.js");
+  const updatePath = path.join(claudeDir, "control-bar", "update.js");
+  const lifecyclePath = path.join(claudeDir, "control-bar", "lifecycle.js");
 
   assert.equal(settings.customSetting, true);
   assert.equal(fs.existsSync(oldAgentPlist), false);
@@ -109,7 +109,7 @@ test("installs portable, quoted hook commands and replaces stale hooks", (t) => 
   fs.symlinkSync(process.execPath, path.join(fixtureBin, "node"));
   const statePath = path.join(
     claudeDir,
-    "statusbar",
+    "control-bar",
     "state.d",
     "quoted-path-test.json",
   );
@@ -145,7 +145,7 @@ test("installs portable, quoted hook commands and replaces stale hooks", (t) => 
     1,
   );
   assert.deepEqual(
-    JSON.parse(fs.readFileSync(`${settingsPath}.bak-statusbar`, "utf8")),
+    JSON.parse(fs.readFileSync(`${settingsPath}.bak-control-bar`, "utf8")),
     original,
   );
 

@@ -1,5 +1,16 @@
 # Acknowledgements
 
+Claude Control Bar is a fork of
+**[claude-status-bar](https://github.com/m1ckc3s/claude-status-bar)** by
+**[@m1ckc3s](https://github.com/m1ckc3s)** (Mick Cesanek), merged with
+[claude-mcp-bar](https://github.com/InfinityScripter/claude-mcp-bar). The sessions model, the
+animations, the self-launching lifecycle, the DMG pipeline and most of the Swift the app is
+built on are his work.
+
+Everyone credited below contributed to that upstream project; their work is in this one too.
+
+---
+
 Claude Status Bar's multi-session support grew out of several community contributions. Thank you to:
 
 - **[@BrennenRocks](https://github.com/BrennenRocks)**, [PR #13](https://github.com/m1ckc3s/claude-status-bar/pull/13): the per-session / multi-session implementation. Major contributions here.

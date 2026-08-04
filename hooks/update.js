@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Maps a Claude Code hook event to this session's file: ~/.claude/statusbar/state.d/<session_id>.json
+// Maps a Claude Code hook event to this session's file: ~/.claude/control-bar/state.d/<session_id>.json
 // Usage: node update.js <prompt|pre|post|notify|permreq|stop>
 
 const fs = require("fs");
@@ -7,7 +7,7 @@ const os = require("os");
 const path = require("path");
 const cp = require("child_process");
 
-const dir = path.join(os.homedir(), ".claude", "statusbar");
+const dir = path.join(os.homedir(), ".claude", "control-bar");
 const stateDir = path.join(dir, "state.d");
 // Written by the app's Quit menu item; suppresses the relaunch below so Quit sticks.
 // lifecycle.js removes it on the next SessionStart (a new session = fresh consent).
@@ -22,6 +22,103 @@ const TOOL_LABELS = {
 };
 
 const safeId = (s) => String(s || "").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 64) || "unknown";
+
+// --- context window ---------------------------------------------------------
+// Claude Code hands the used-context percentage to statusLine and to nothing else, and the
+// desktop app never runs statusLine (it drives the CLI headless, where there is no TUI to draw
+// a status line into). So the number is recomputed here from the session transcript, with the
+// same formula the CLI uses, and rides along in the session file the app already reads.
+
+const windowCache = path.join(dir, "model-windows.json");
+const DEFAULT_WINDOW = 200000;
+// Records that must not be measured: interrupted turns and Claude Code's own synthetic replies.
+const SKIP_TEXTS = new Set([
+  "[Request interrupted by user]",
+  "[Request interrupted by user for tool use]",
+  "No response requested.",
+]);
+
+const readJSON = (file) => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; } };
+
+// The model->window table is scraped out of the Claude Code binary by scripts/mcpbar.py and
+// cached; this hook only reads it. Scraping 226 MB on every tool call is not an option.
+const FAMILIES = ["opus", "sonnet", "haiku", "fable", "mythos"];
+const familyOf = (id) => id.split("-").find((part) => FAMILIES.includes(part)) || "";
+
+// Returns [window, exact]. The table is not a complete list of what a session can report:
+// transcripts record the served model name, and that name may not exist in the local registry
+// at all. Measured on Claude Code 2.1.205: the registry knows claude-opus-4-8 and maps the
+// alias "opus" onto it, while transcripts say claude-opus-5 — a name absent from the binary.
+// Falling straight through to the 200k default put a 154k-token session at 77% when the honest
+// figure was 15%, so an unknown name borrows the widest window in its own family instead.
+// Anthropic has never narrowed a family's window across generations, which is what makes the
+// borrow safe; it is still a guess, so the caller marks it assumed.
+function windowFor(model, models) {
+  const id = String(model || "").toLowerCase();
+  if (id.includes("[1m]")) return [1000000, true];
+  const base = id.replace(/-\d{8}$/, "");
+  if (models[base]) return [models[base], true];
+  const family = familyOf(base);
+  const kin = Object.keys(models).filter((k) => familyOf(k) === family).map((k) => models[k]);
+  return family && kin.length ? [Math.max(...kin), false] : [DEFAULT_WINDOW, false];
+}
+
+// used% = clamp(round((input + cache_creation + cache_read) / window * 100), 0, 100).
+// output_tokens is NOT in the numerator — checked against a live statusLine payload.
+function contextOf(transcript) {
+  let fd;
+  try {
+    fd = fs.openSync(transcript, "r");
+    const size = fs.fstatSync(fd).size;
+    if (!size) return null;
+    // Tail only: a long session's transcript runs to tens of megabytes, and the newest usage
+    // record is always at the end. 2 MB is generous — one turn plus a large tool result.
+    const span = Math.min(size, 2_000_000);
+    const buf = Buffer.alloc(span);
+    fs.readSync(fd, buf, 0, span, size - span);
+    let text = buf.toString("utf8");
+    // The read starts mid-line, and possibly mid-UTF-8-character; dropping the first partial
+    // line discards both problems at once.
+    if (size > span) text = text.slice(text.indexOf("\n") + 1);
+
+    const models = (readJSON(windowCache) || {}).models || {};
+    const lines = text.split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"usage"')) continue;
+      let rec;
+      try { rec = JSON.parse(lines[i]); } catch { continue; }
+      if (!rec || rec.type !== "assistant" || rec.isSidechain) continue;
+      const msg = rec.message || {};
+      if (msg.model === "<synthetic>") continue;
+      const blocks = msg.content;
+      if (Array.isArray(blocks) && blocks[0] && SKIP_TEXTS.has(blocks[0].text)) continue;
+      const usage = msg.usage || {};
+      if (typeof usage.input_tokens !== "number") continue;
+
+      const tokens = usage.input_tokens
+        + (usage.cache_creation_input_tokens || 0)
+        + (usage.cache_read_input_tokens || 0);
+      let [window, exact] = windowFor(msg.model, models);
+      let assumed = !exact;
+      if (tokens > window) {
+        // Observation beats the table: this many tokens could not physically fit a 200k window,
+        // so the session runs in the million one and the scraped table is behind. Showing the
+        // recomputed figure is more honest than pinning a fake 100%.
+        window = 1000000;
+        assumed = true;
+      }
+      return {
+        pct: Math.max(0, Math.min(100, Math.round((tokens / window) * 100))),
+        tokens, window, model: msg.model || "", assumed,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+  }
+}
 
 let raw = "";
 process.stdin.on("data", (d) => (raw += d));
@@ -96,7 +193,14 @@ process.stdin.on("end", () => {
   // stable for the session's life, on both CLI and desktop). The app uses kill(pid,0) for liveness.
   // started:true — any update.js event (prompt/tool/permission/stop) is real activity, so the session
   // graduates from "merely opened" to visible in the dropdown. Clicking a conversation never fires here.
-  const out = { state, label, tool: p.tool_name || "", project, cwd, sessionId: p.session_id || "", transcript: p.transcript_path || prev.transcript || "", entrypoint, term_program: termProgram, pid: process.ppid, started: true, startedAt, ts };
+  const transcript = p.transcript_path || prev.transcript || "";
+  // Carried over from prev when this event's transcript is unreadable (a compaction rewrites the
+  // file, and a read landing mid-rewrite finds no usage record) — a momentarily missing number
+  // would otherwise blank the context bar and read as "context freed".
+  const ctx = (transcript && contextOf(transcript)) || {
+    pct: prev.pct, tokens: prev.tokens, window: prev.window, model: prev.model, assumed: prev.assumed,
+  };
+  const out = { state, label, tool: p.tool_name || "", project, cwd, sessionId: p.session_id || "", transcript, entrypoint, term_program: termProgram, pid: process.ppid, started: true, startedAt, ts, ...ctx };
   try {
     fs.mkdirSync(stateDir, { recursive: true });
     const tmp = statePath + "." + process.pid + ".tmp";
@@ -109,9 +213,9 @@ process.stdin.on("end", () => {
   // other opener) and an app killed/crashed mid-session. Skipped after an explicit menu Quit.
   try {
     if (!fs.existsSync(quitMarker)) {
-      cp.execSync("pgrep -x ClaudeStatusBar", { stdio: "ignore" });
+      cp.execSync("pgrep -x ClaudeControlBar", { stdio: "ignore" });
     }
   } catch {
-    try { cp.spawn("open", ["-g", "-b", "com.local.claudestatusbar"], { stdio: "ignore", detached: true }).unref(); } catch {}
+    try { cp.spawn("open", ["-g", "-b", "io.github.infinityscripter.claude-control-bar"], { stdio: "ignore", detached: true }).unref(); } catch {}
   }
 });

@@ -1,7 +1,65 @@
 # Changelog
 
-All notable changes to Claude Status Bar are documented here. This project follows
+All notable changes to Claude Control Bar are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
+
+Entries up to and including 0.4.3 belong to
+[claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
+from, and are kept so the history reads continuously.
+
+## [0.5.0] - 2026-08-04
+
+Renamed to **Claude Control Bar** and merged with
+[claude-mcp-bar](https://github.com/InfinityScripter/claude-mcp-bar). The app no longer only
+reports on Claude Code — it switches parts of it off.
+
+### Added
+
+- **Context window usage per session**, in the row and in its tooltip. Claude Code gives that
+  number to `statusLine` and to nothing else, and the desktop app never runs `statusLine`, so it
+  is recomputed from the transcript with the CLI's own formula.
+- **MCP section**: servers grouped by where they are configured, each with a switch and an
+  `enabled/total` tool count; per-server tool lists and one flat **All tools** inventory.
+- **Tool cards on hover** — description and parameters, read from the server's own `tools/list`
+  response. Parameters are new data; the backend did not collect `inputSchema` before.
+- **Usage bars in the menu bar**: 5h limit, 7d limit and context, with the detail in the menu.
+- **A `changed:` line** naming what moved since the last check, plus a notification when a server
+  falls over. Tool counts change silently — that is usually you, one click ago.
+- `statusline --install`, which wraps an existing `statusLine` command to capture limits without
+  altering a byte of its output.
+- `CONTROL_BAR_DUMP_MENU=1` prints the menu the app would draw.
+
+### Fixed
+
+- **A model missing from the local registry no longer inflates the context percentage.** Claude
+  Code 2.1.205 knows `claude-opus-4-8` and aliases `opus` to it, while transcripts say
+  `claude-opus-5` — a name absent from the binary. Falling through to the 200k default put a
+  154k-token session at 77% when the honest figure was 15%. Unknown names now borrow their
+  family's widest window and are marked as inferred; a size observed from a real `statusLine`
+  payload replaces the guess outright.
+- **Switching a server no longer rewrites `~/.claude/settings.json` as a single line.** It is a
+  file people edit by hand.
+- **A session start no longer clears the whole state directory** when the app is not running.
+  Two sessions opening at once both saw it down, and the second wiped the first one's file;
+  liveness is the pid now.
+- **Reinstalling writes nothing when nothing differs**, instead of rewriting settings.json on
+  every launch.
+- The routine that cleaned up after an earlier rename deleted bundles **by upstream's id** —
+  i.e. this fork would have removed claude-status-bar from the user's disk. It now retires only
+  this project's own predecessors, to the Trash rather than by unlink.
+- `build.sh` no longer hardcodes a version, nor an Apple Team ID belonging to someone else (the
+  grep never matched, so it silently produced an unnotarized DMG while claiming otherwise).
+- A development build no longer installs hooks or touches installed apps.
+
+### Changed
+
+- New identity, frozen in `identity.env`: bundle id
+  `io.github.infinityscripter.claude-control-bar`, executable `ClaudeControlBar`, state directory
+  `~/.claude/control-bar/`. Menu bar managers key an item's visibility on the bundle id, so this
+  re-hides the item once — a one-time cost, paid deliberately rather than by inheriting an id
+  that is not ours.
+- The DMG is **not notarized**: this fork has no Apple Developer ID. The README says so plainly
+  where it previously claimed the opposite.
 
 ## [0.4.3] - 2026-07-31
 
