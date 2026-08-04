@@ -153,3 +153,42 @@ test("an unreadable transcript keeps the last known context instead of blanking 
   assert.equal(state.pct, 42);
   assert.equal(state.tokens, 84000);
 });
+
+// settings.json is shared with Claude Code and edited by hand. Both cases below are about not
+// destroying someone else's work in it.
+
+test("a settings write leaves no temp file and keeps the file's mode", () => {
+  const home = sandbox();
+  fs.writeFileSync(settingsPath(home), JSON.stringify({ hooks: {} }, null, 2) + "\n");
+  fs.chmodSync(settingsPath(home), 0o600);
+  run(installerPath, home);
+  const dir = path.join(home, ".claude");
+  assert.equal(fs.readdirSync(dir).filter((f) => f.endsWith(".tmp")).length, 0);
+  assert.equal(fs.statSync(settingsPath(home)).mode & 0o777, 0o600);
+  assert.ok(fs.readFileSync(settingsPath(home), "utf8").includes("control-bar"));
+});
+
+test("a settings file changed underneath us is left alone rather than clobbered", () => {
+  const home = sandbox();
+  fs.writeFileSync(settingsPath(home), JSON.stringify({ hooks: {} }, null, 2) + "\n");
+  // The installer reads settings.json, then checks the fingerprint again before renaming. A
+  // writer that lands in between must not be overwritten — its change would vanish silently and
+  // the .bak, taken once at first install, could not bring it back.
+  const out = execFileSync(
+    process.execPath,
+    ["-e", [
+      `require("node:child_process").execSync = () => { throw new Error("pgrep: no match"); };`,
+      `require("node:child_process").spawn = () => ({ unref() {} });`,
+      // Sneak a write in between the installer's read and its rename.
+      `const fs = require("node:fs");`,
+      `const real = fs.copyFileSync;`,
+      `fs.copyFileSync = (...a) => { real(...a); fs.writeFileSync(process.env.SETTINGS, JSON.stringify({ theirs: true }, null, 2) + "\\n"); };`,
+      `require(process.env.SCRIPT_PATH);`,
+    ].join("\n"), installerPath],
+    { env: { ...process.env, HOME: home, SCRIPT_PATH: installerPath, SETTINGS: settingsPath(home) },
+      input: "{}", stdio: "pipe" }
+  ).toString();
+  assert.match(out, /changed while we were working on it/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath(home), "utf8")), { theirs: true });
+  assert.equal(fs.readdirSync(path.join(home, ".claude")).filter((f) => f.endsWith(".tmp")).length, 0);
+});

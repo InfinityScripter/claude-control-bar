@@ -54,7 +54,34 @@ const cmd = (evt) =>
 const life = (evt) =>
   `PATH="/opt/homebrew/bin:/usr/local/bin\${PATH:+:$PATH}" node ${shellQuote(lifecycleDest)} ${evt}`;
 
+// A fingerprint of the file as we found it. Compared again just before the rename, because
+// settings.json is shared: Claude Code writes it, the user edits it, and a plain read-modify-write
+// would silently drop whatever landed in between. The one-off .bak only ever holds the state at
+// first install, so it cannot recover a change made months later.
+const stamp = () => {
+  try { const st = fs.statSync(settingsPath); return `${st.mtimeMs}:${st.size}`; } catch { return ""; }
+};
+
+// Temp file in the same directory, then rename. A truncating write that dies halfway — no space
+// left, a killed process — leaves the user with an empty settings.json and no working session.
+// rename() within one filesystem is atomic: a reader sees either the whole old file or the whole
+// new one, never a half of either.
+const writeSettingsAtomic = (text, readAt) => {
+  if (stamp() !== readAt) {
+    console.log("settings.json changed while we were working on it — leaving it alone.");
+    console.log("Nothing was written. The next launch will try again against the current file.");
+    return false;
+  }
+  let mode;
+  try { mode = fs.statSync(settingsPath).mode; } catch {}
+  const tmp = `${settingsPath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, text, mode === undefined ? undefined : { mode });
+  fs.renameSync(tmp, settingsPath);
+  return true;
+};
+
 let settings = {};
+const readAt = stamp();
 if (fs.existsSync(settingsPath)) {
   settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
   const bak = settingsPath + ".bak-control-bar";
@@ -99,8 +126,7 @@ addUnmatched("SessionEnd", life("end"));
 const next = JSON.stringify(settings, null, 2) + "\n";
 if (next === before) {
   console.log("Hooks already current in", settingsPath);
-} else {
-  fs.writeFileSync(settingsPath, next);
+} else if (writeSettingsAtomic(next, readAt)) {
   fs.mkdirSync(sbDir, { recursive: true });
   fs.writeFileSync(ownerPath, JSON.stringify({ channel: "app", pluginRoot: "", ts: Date.now() }));
   console.log("Installed control-bar hooks into", settingsPath);

@@ -130,7 +130,15 @@ process.stdin.on("end", () => {
   if (process.env.CLAUDE_STATUSBAR_DEBUG === "1") {
     try {
       fs.mkdirSync(dir, { recursive: true });
-      fs.appendFileSync(path.join(dir, "hooks.log"),
+      // Rotated at 1 MB, keeping one previous file. The line below carries an excerpt of the
+      // event's message, so this is a file that can hold fragments of what was typed — letting
+      // it grow without limit for the life of the install is not a debugging aid, it is a
+      // transcript nobody asked for.
+      const logPath = path.join(dir, "hooks.log");
+      try {
+        if (fs.statSync(logPath).size > 1_000_000) fs.renameSync(logPath, logPath + ".1");
+      } catch {}
+      fs.appendFileSync(logPath,
         `${new Date().toISOString()} [${event}] tool=${p.tool_name || "-"} mode=${p.permission_mode || "-"} msg=${JSON.stringify(p.message || "").slice(0, 160)} keys=${Object.keys(p).join(",")}\n`);
     } catch {}
   }

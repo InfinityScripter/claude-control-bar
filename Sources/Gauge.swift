@@ -12,6 +12,12 @@ struct Gauge {
     var fiveHour: Double?
     var sevenDay: Double?
 
+    /// Everything that changes what the bars look like, in one string — the part of the cache key
+    /// for a composed menu bar icon that this type owns.
+    var signature: String {
+        rows.map { "\($0.0)\(Int(($0.1 * 100).rounded()))" }.joined(separator: ",")
+    }
+
     var rows: [(String, Double)] {
         [("5h", fiveHour), ("7d", sevenDay)].compactMap { label, value in
             value.map { (label, $0) }

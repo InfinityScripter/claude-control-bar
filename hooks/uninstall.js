@@ -30,6 +30,26 @@ if (!hooksOnly) {
 
 if (!fs.existsSync(settingsPath)) { console.log("No settings.json; nothing to do."); process.exit(0); }
 
+// Same contract as install.js: fingerprint before, verify before the rename, write through a
+// temp file. Removing hooks is no less destructive than adding them — this path rewrites the
+// whole of a file Claude Code and the user both own.
+const stamp = () => {
+  try { const st = fs.statSync(settingsPath); return `${st.mtimeMs}:${st.size}`; } catch { return ""; }
+};
+const writeSettingsAtomic = (text, readAt) => {
+  if (stamp() !== readAt) {
+    console.log("settings.json changed while we were working on it — nothing removed.");
+    return false;
+  }
+  let mode;
+  try { mode = fs.statSync(settingsPath).mode; } catch {}
+  const tmp = `${settingsPath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, text, mode === undefined ? undefined : { mode });
+  fs.renameSync(tmp, settingsPath);
+  return true;
+};
+
+const readAt = stamp();
 const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
 // Compared against the re-serialised parse so the user's own formatting is not mistaken for a
 // change: the plugin runs this on every session start.
@@ -43,7 +63,6 @@ for (const evt of Object.keys(settings.hooks || {})) {
 const next = JSON.stringify(settings, null, 2) + "\n";
 if (next === before) {
   if (!hooksOnly) console.log("No control-bar hooks in", settingsPath);
-} else {
-  fs.writeFileSync(settingsPath, next);
+} else if (writeSettingsAtomic(next, readAt)) {
   console.log("Removed control-bar hooks from", settingsPath);
 }

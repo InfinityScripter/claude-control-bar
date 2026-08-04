@@ -456,6 +456,11 @@ final class StatusController: NSObject, NSMenuDelegate {
     var menuIsOpen = false                  // refresh the dropdown's per-session timers only while open
     var sessionMenuItems: [(item: NSMenuItem, id: String)] = []
     var activeBase = ""        // label without the elapsed clock
+    var renderedTitle: String? // what the status item is actually showing, to skip identical redraws
+    var lastLifecycleCheck: Double = 0  // the quit decision is sampled far slower than the UI
+    var turnLineCache: [String: (size: UInt64, mtime: Date, line: String?)] = [:]
+    var iconCache: [Int: NSImage] = [:]  // composed menu bar frames, rebuilt only when the look changes
+    var iconCacheKey = ""
     var startedAt: Double = 0  // unix seconds the current turn began (0 = no clock)
     var activeColor: NSColor? = nil
 
@@ -711,7 +716,12 @@ final class StatusController: NSObject, NSMenuDelegate {
         ]
         let nvmDir = "\(home)/.nvm/versions/node"
         if let versions = try? fm.contentsOfDirectory(atPath: nvmDir) {
-            for v in versions.sorted(by: >) { candidates.append("\(nvmDir)/\(v)/bin/node") }
+            // Component-wise, not alphabetical: as text "v9.11.2" sorts above "v20.19.0", so the
+            // newest-first intent picked the oldest Node on the machine — and the installer this
+            // runs uses APIs a Node that old does not have.
+            for v in versions.sorted(by: { versionIsNewer($0, than: $1) }) {
+                candidates.append("\(nvmDir)/\(v)/bin/node")
+            }
         }
         for path in candidates where fm.isExecutableFile(atPath: path) { return path }
 
@@ -756,6 +766,11 @@ final class StatusController: NSObject, NSMenuDelegate {
         let d = UserDefaults.standard
         let now = Date().timeIntervalSince1970
         if now - d.double(forKey: "lastUpdateCheck") < 86400 { return }
+        // Stamped here, before the requests, not in the success handler. Written on success only,
+        // an unreachable GitHub meant every subsequent menu open fired both requests again — the
+        // opposite of the once-a-day check PRIVACY.md promises, and worst exactly when the network
+        // is already in trouble. An attempt is what the throttle counts; the outcome is separate.
+        d.set(now, forKey: "lastUpdateCheck")
         guard let url = URL(string: releaseAPIURL) else { return }
         var req = URLRequest(url: url)
         req.setValue("ClaudeControlBar", forHTTPHeaderField: "User-Agent") // GitHub API requires a UA
@@ -765,7 +780,7 @@ final class StatusController: NSObject, NSMenuDelegate {
                   let tag = obj["tag_name"] as? String else { return }
             let ver = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
             UserDefaults.standard.set(ver, forKey: "latestVersion")
-            UserDefaults.standard.set(now, forKey: "lastUpdateCheck")
+            UserDefaults.standard.set(now, forKey: "lastUpdateSuccess")
         }.resume()
         guard let brewURL = URL(string: brewCaskAPIURL) else { return }
         URLSession.shared.dataTask(with: URLRequest(url: brewURL)) { data, _, _ in
@@ -777,9 +792,13 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     // Numeric component-wise compare so "0.0.10" > "0.0.9".
-    func versionIsNewer(_ a: String, than b: String) -> Bool {
-        let pa = a.split(separator: ".").map { Int($0) ?? 0 }
-        let pb = b.split(separator: ".").map { Int($0) ?? 0 }
+    /// Static because the Node search needs it too, and that runs before any instance exists.
+    /// A leading "v" is tolerated: release tags and nvm directories both carry one.
+    static func versionIsNewer(_ a: String, than b: String) -> Bool {
+        let parts = { (s: String) in
+            s.drop(while: { $0 == "v" }).split(separator: ".").map { Int($0) ?? 0 }
+        }
+        let pa = parts(a), pb = parts(b)
         for i in 0..<max(pa.count, pb.count) {
             let x = i < pa.count ? pa[i] : 0, y = i < pb.count ? pb[i] : 0
             if x != y { return x > y }
@@ -1071,13 +1090,13 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Version \(currentVersion)", action: nil, keyEquivalent: ""))
-        if let latest = UserDefaults.standard.string(forKey: "latestVersion"), versionIsNewer(latest, than: currentVersion) {
+        if let latest = UserDefaults.standard.string(forKey: "latestVersion"), Self.versionIsNewer(latest, than: currentVersion) {
             let width = CGFloat(uiConfig()["boxWidth"] ?? 300)
             let brewVer = UserDefaults.standard.string(forKey: "brewCaskVersion")
             if brewManaged {
                 // Silent until the cask catches up (autobump lag): never offer a command that
                 // would report "already up to date".
-                if let bv = brewVer, versionIsNewer(bv, than: currentVersion) {
+                if let bv = brewVer, Self.versionIsNewer(bv, than: currentVersion) {
                     let title = "Update to \(bv) via brew"
                     let it = NSMenuItem(title: title, action: nil, keyEquivalent: "")
                     it.view = CopyRowView(title: title, command: brewUpgradeCommand, width: width)
@@ -1299,7 +1318,12 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func workingLabel(_ s: Session) -> String {
-        if useThinkingWords, s.state == "thinking", let w = sessionWord[s.id], !w.isEmpty { return w + "…" }
+        // Off means no word, not a duller word. It used to fall through to the hook's own label,
+        // so unchecking "Thinking words" left the bar reading "Thinking…" — indistinguishable
+        // from the switch doing nothing, and reported as exactly that. The icon already says
+        // Claude is working and the timer says for how long.
+        guard useThinkingWords else { return "" }
+        if s.state == "thinking", let w = sessionWord[s.id], !w.isEmpty { return w + "…" }
         if !s.label.isEmpty { return s.label }
         return s.state == "tool" ? "Working…" : "Thinking…"
     }
@@ -1405,7 +1429,14 @@ final class StatusController: NSObject, NSMenuDelegate {
     // MARK: state polling
 
     func tick() {
-        checkLifecycle()
+        // Whether to quit is not a four-times-a-second question — the decision behind it is
+        // debounced by idleQuitDelay anyway, so checking at this rate only bought the app a
+        // steady CPU cost for an answer that cannot change meaningfully between looks.
+        let now = Date().timeIntervalSince1970
+        if now - lastLifecycleCheck >= 2 {
+            lastLifecycleCheck = now
+            checkLifecycle()
+        }
         reloadSessions()
         // Both are mtime checks against a file another process rewrites atomically, so this is
         // a stat() per tick, not a parse — the parse happens only when something actually moved.
@@ -1629,7 +1660,11 @@ final class StatusController: NSObject, NSMenuDelegate {
     func checkLifecycle() {
         let now = Date()
         if now.timeIntervalSince(launchedAt) < launchGrace { return }
-        if claudeDesktopRunning() || sessionCount() > 0 {
+        // Sessions first. Counting files in one directory is a directory read; the other side of
+        // this `||` asks LaunchServices about every running application over IPC, and a sample of
+        // the running app showed that one call was half of everything the timer did. In the case
+        // that matters — Claude is working, so a session file exists — it is now never reached.
+        if sessionCount() > 0 || claudeDesktopRunning() {
             notNeededSince = nil
             return
         }
@@ -1654,7 +1689,21 @@ final class StatusController: NSObject, NSMenuDelegate {
     // Last actual turn line (a user/assistant message), ignoring the bookkeeping lines Claude Code
     // appends after an interrupt (system/away_summary, last-prompt, ai-title, mode, permission-mode).
     // Those would otherwise hide the "interrupted by user" marker and freeze the amber dot.
+    /// Re-read only when the transcript has actually moved. Sampling showed this — 8 KB read,
+    /// decoded and split, per active session, four times a second — among the timer's top costs,
+    /// and a file that has not changed cannot have gained an "interrupted by user" marker since
+    /// the last look. One stat() replaces the whole thing in the common case.
     func lastTurnLine(ofFileAt path: String) -> String? {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        let size = (attrs?[.size] as? NSNumber)?.uint64Value ?? 0
+        let mtime = attrs?[.modificationDate] as? Date ?? .distantPast
+        if let hit = turnLineCache[path], hit.size == size, hit.mtime == mtime { return hit.line }
+        let line = readLastTurnLine(ofFileAt: path)
+        turnLineCache[path] = (size, mtime, line)
+        return line
+    }
+
+    private func readLastTurnLine(ofFileAt path: String) -> String? {
         guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? fh.close() }
         let size = (try? fh.seekToEnd()) ?? 0
@@ -1692,16 +1741,46 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func animStep() {
         frameIdx = (frameIdx + 1) % frameCount
-        statusItem.button?.image = decorate(iconImage(color: activeColor, frame: frameIdx))
+        statusItem.button?.image = cachedIcon(frame: frameIdx)
         applyTitle() // refresh the elapsed clock
+    }
+
+    /// The animation cycles through a small fixed set of frames forever, and each one is a bitmap
+    /// composite with the limit bars drawn over it. Rebuilding the same handful of images twenty
+    /// times a second was a large part of what the app did while Claude worked.
+    ///
+    /// Everything that can change what a frame looks like is in the key — the appearance included,
+    /// because a cached image must not outlive a switch between a light and a dark menu bar.
+    func cachedIcon(frame: Int) -> NSImage? {
+        let key = [animStyle.rawValue,
+                   activeColor.map { "\($0)" } ?? "template",
+                   currentGauge().signature,
+                   NSApp.effectiveAppearance.name.rawValue].joined(separator: "|")
+        if key != iconCacheKey {
+            iconCacheKey = key
+            iconCache.removeAll()
+        }
+        if let hit = iconCache[frame] { return hit }
+        let made = decorate(iconImage(color: activeColor, frame: frame))
+        iconCache[frame] = made
+        return made
     }
 
     func applyTitle() {
         guard let button = statusItem.button else { return }
-        var text = activeBase
+        // Joined rather than concatenated: with the word switched off the old form left the
+        // separator behind, so the bar read "  4m 12s" with a hole where the word had been.
+        var parts: [String] = []
+        if !activeBase.isEmpty { parts.append(activeBase) }
         if showTimer, startedAt > 0 {
-            text += "  " + elapsed(max(0, Int(Date().timeIntervalSince1970 - startedAt)))
+            parts.append(elapsed(max(0, Int(Date().timeIntervalSince1970 - startedAt))))
         }
+        let text = parts.joined(separator: "  ")
+        // Assigning a title re-lays-out and redraws the whole status item. This is called on
+        // every animation frame — twenty times a second — and the text it would write is the
+        // same one nineteen times out of twenty, since the clock only moves once a second.
+        guard text != renderedTitle else { return }
+        renderedTitle = text
         if text.isEmpty {
             button.imagePosition = .imageOnly
             button.attributedTitle = NSAttributedString(string: "")

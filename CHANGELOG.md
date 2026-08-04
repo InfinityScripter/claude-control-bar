@@ -53,6 +53,30 @@ reports on Claude Code — it switches parts of it off.
 - `build.sh` no longer hardcodes a version, nor an Apple Team ID belonging to someone else (the
   grep never matched, so it silently produced an unnotarized DMG while claiming otherwise).
 - A development build no longer installs hooks or touches installed apps.
+- **"Thinking words" switched off now removes the word.** It used to fall through to the plain
+  "Thinking…", which beside an unchecked box is indistinguishable from a broken switch.
+- **Roughly half the CPU the app used while Claude works.** Sampling the running process put
+  `claudeDesktopRunning()` — which asks LaunchServices about every running application, over IPC,
+  on the main thread — at half of everything the 0.4s timer did. It is now reached only when no
+  session exists at all, and the quit decision it feeds is sampled every 2s rather than 2.5 times
+  a second. The transcript tail is re-read only when the file has actually moved, the animation's
+  frames are composed once per look instead of twenty times a second, and the status item title
+  is reassigned only when the text it would show has changed. Measured on an M4: 10.2% of a core
+  before, 4.7–5.9% after, with the timer's share of a sample falling from 112 to 19.
+- **`settings.json` is written through a temp file and renamed**, and left alone entirely if it
+  changed between our read and our write. A truncating write that died halfway left an empty
+  settings file; a read-modify-write silently dropped whatever Claude Code or the user had
+  written in between.
+- **The once-a-day update check is once a day even when it fails.** The timestamp was stored only
+  on success, so an unreachable GitHub meant both requests fired again on every menu open —
+  contradicting PRIVACY.md, and hammering hardest exactly when the network was already unwell.
+- **The newest Node is picked numerically.** Version directories were sorted as text, so
+  `v9.11.2` outranked `v20.19.0` and the installer could run under a Node too old for the file
+  APIs it uses.
+- **The debug log is capped at 1 MB and rotated.** It carries an excerpt of each event's message,
+  so an uncapped file is a transcript nobody asked for.
+- **PRIVACY.md now lists what is read locally** — transcripts, the `statusLine` payload,
+  `settings.json`, the MCP tool lists — not only what crosses the network.
 
 ### Changed
 
