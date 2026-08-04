@@ -27,8 +27,12 @@ struct MCPTool {
 
 struct MCPServer {
     let name: String
-    var state: String   // ok | failed | pending | off
+    var state: String   // ok | failed | pending | off | unknown (remote project server, unprobed)
     let source: String  // user | claude.ai | plugin | project
+    /// The project a local/project-scoped server belongs to. These exist only for the session
+    /// working in that directory — the row has to say which one, or two sessions in different
+    /// projects read the menu as contradicting itself.
+    let project: String?
     var status: String
     /// What the server itself reported at startup. Can exceed `tools.count`: the count comes from
     /// the server's own stderr, the names from a separate probe that some servers refuse.
@@ -193,6 +197,7 @@ final class MCPModel {
             name: raw["name"] as? String ?? "?",
             state: raw["state"] as? String ?? "failed",
             source: raw["source"] as? String ?? "user",
+            project: raw["project"] as? String,
             status: raw["status"] as? String ?? "",
             reportedTools: raw["tools"] as? Int,
             tools: tools)

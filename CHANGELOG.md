@@ -75,6 +75,34 @@ reports on Claude Code — it switches parts of it off.
   APIs it uses.
 - **The debug log is capped at 1 MB and rotated.** It carries an excerpt of each event's message,
   so an uncapped file is a transcript nobody asked for.
+- **Two parallel toggles no longer lose one of the changes.** Every click runs as its own
+  process; both read the same settings.json and the second write erased the first (measured:
+  43 lost of 50 runs of two concurrent toggles). The whole read-modify-write now holds an
+  exclusive file lock — 12 concurrent toggles, 12 surviving changes, covered by a test that
+  runs real processes.
+- **File permissions survive a toggle.** The atomic-write temp file was born with the process
+  umask, so a 0600 settings.json became 0644 — and it can carry MCP env values. The original
+  mode is copied onto the replacement; tested 0600 → 0600.
+- **The MCP map is anchored to projects.** `claude mcp list` answers for the directory it runs
+  in, so local- and project-scoped servers were invisible or misclassified. The global check is
+  now pinned to a fixed cwd, and servers from live sessions' project configs (`projects[cwd]`
+  in ~/.claude.json and the project's .mcp.json) are enumerated and probed from their own
+  directory, labelled with their project. A remote project server says "not checked" rather
+  than inventing a colour.
+- **The statusLine capture keeps the whole object.** Install used to save only `command`, so
+  `padding`, `refreshInterval` and `hideVimModeIndicator` vanished on install and did not come
+  back on uninstall. The full object is saved, only `command` is swapped, and uninstall
+  restores it exactly.
+- **A failed build can no longer destroy the installed app.** build.sh removed the app first
+  and compiled after; a half-installed CLT or a full disk left nothing but a log. It now
+  builds and signs a staging bundle and swaps only after the binary and plist verify —
+  and two sessions starting at once can no longer run two builds (a lock file, loser skips).
+- **The capture stopped rewriting an unchanged limits.json on every redraw**, and the debug
+  log rotation from earlier applies here too.
+- **CONTRIBUTING.md describes this project**, not upstream's display-only contract, and
+  PRIVACY.md discloses that the health check starts your configured MCP servers on a schedule.
+- `/limits-capture` — a slash command that installs, removes or inspects the statusLine
+  capture without asking the user to guess the plugin's versioned path.
 - **PRIVACY.md now lists what is read locally** — transcripts, the `statusLine` payload,
   `settings.json`, the MCP tool lists — not only what crosses the network.
 - **Limits are real now, not whatever a terminal last said.** The 5h/7d figures come from

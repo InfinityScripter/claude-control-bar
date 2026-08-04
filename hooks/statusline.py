@@ -62,8 +62,17 @@ def capture_limits(payload):
             "used_percentage": int(round(float(block["used_percentage"]))),
             "resets_at": block.get("resets_at"),
         }
-    if len(record) > 2:
-        atomic_write(LIMITS, record)
+    if len(record) <= 2:
+        return
+    # Unchanged values are not rewritten while the file is fresh. The status line can redraw
+    # every second with refreshInterval set, and the figures move on the scale of minutes —
+    # rewriting an identical record each redraw is pure disk churn. The timestamp is allowed
+    # to age up to a minute, so "measured N min ago" stays honest without a write per redraw.
+    previous = read_json(LIMITS) or {}
+    same = all(previous.get(k) == v for k, v in record.items() if k not in ("ts", "source"))
+    if same and record["ts"] - (previous.get("ts") or 0) < 60:
+        return
+    atomic_write(LIMITS, record)
 
 
 def learn_window(payload):

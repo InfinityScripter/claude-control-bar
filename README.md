@@ -44,6 +44,10 @@ That final launch matters: it is what wires up the Claude Code hooks.
 
 ### DMG
 
+> [!NOTE]
+> No release has been published yet — the Releases page is empty until a `v0.5.0` tag exists.
+> `./build.sh --dmg` produces the image locally. Until a release is up, use the plugin channel.
+
 1. Download the latest `claude-control-bar.dmg` from [Releases](../../releases).
 2. Drag **Claude Control Bar** into Applications.
 3. Launch it once — that installs the hooks.
@@ -84,12 +88,15 @@ Two things worth saying out loud:
 - The token Claude Code stores after `claude setup-token` lacks the profile scope this endpoint
   wants; the normal browser sign-in has it.
 
-There is also a passive second source: a `statusLine` wrapper
-(`mcpbar.py statusline --install`) that reads the same figures out of the payload Claude Code
-hands a status line command, byte-for-byte transparently to whatever status line you already
-have. It costs nothing but only fires while a terminal CLI is redrawing its TUI — the desktop
-app never runs `statusLine` at all, which is exactly why the poll above is the default. The
-same payload also states the real context window of the model that answered, which is
+There is also a passive second source: a `statusLine` wrapper — `/limits-capture install` as a
+slash command (it knows where the plugin lives), or
+`/usr/bin/python3 "/Applications/Claude Control Bar.app/Contents/Resources/scripts/mcpbar.py" statusline --install`
+for a DMG install. It reads the same figures out of the payload Claude Code hands a status line
+command, byte-for-byte transparently to whatever status line you already have — the full
+`statusLine` object, `padding` and `refreshInterval` included, is saved and restored whole on
+uninstall. It costs nothing but only fires while a terminal CLI is redrawing its TUI — the
+desktop app never runs `statusLine` at all, which is exactly why the poll above is the default.
+The same payload also states the real context window of the model that answered, which is
 remembered — see below.
 
 ## Context window

@@ -97,6 +97,21 @@ class Capture(unittest.TestCase):
             self.statusline.learn_window(junk)
 
 
+    def test_повторение_той_же_картины_не_переписывает_файл(self):
+        """statusLine с refreshInterval перерисовывается каждую секунду, цифры движутся
+        минутами — идентичная запись на каждой перерисовке была бы чистым дёрганьем диска."""
+        payload = {"rate_limits": {"five_hour": {"used_percentage": 12, "resets_at": 1}}}
+        self.statusline.capture_limits(payload)
+        path = os.path.join(self.tmp, "limits.json")
+        first = os.stat(path).st_mtime_ns
+        self.statusline.capture_limits(payload)
+        self.assertEqual(os.stat(path).st_mtime_ns, first)
+        # Изменившееся значение пишется сразу, минуты не ждёт.
+        self.statusline.capture_limits(
+            {"rate_limits": {"five_hour": {"used_percentage": 13, "resets_at": 1}}})
+        self.assertEqual(self.limits()["five_hour"]["used_percentage"], 13)
+
+
 class Wrapper(unittest.TestCase):
     """Обёртка обязана отдать вложенной команде ровно те байты, что пришли ей."""
 

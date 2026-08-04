@@ -14,8 +14,14 @@ Claude Control Bar collects no data and has no servers. Everything it does happe
   the menu shows an update line.
 
 Nothing is sent to the developer — GitHub, Homebrew and Anthropic see that a request arrived;
-the developer never does. That is the whole list. There is no telemetry, no crash reporting and
-no analytics.
+the developer never does. Those are the only requests the app makes for itself. There is no
+telemetry, no crash reporting and no analytics.
+
+One indirect kind of traffic is worth naming: the MCP health check runs `claude mcp list` and a
+`tools/list` round trip, which **starts your configured MCP servers** — every ten minutes, and
+after a toggle. A remote (HTTP/SSE) server sees a connection each time; a corporate one may log
+it; a stdio server runs briefly as a local process. That is your own configuration doing what it
+does when a session starts, but the app is what triggers it on a schedule.
 
 ## What it reads on your machine
 

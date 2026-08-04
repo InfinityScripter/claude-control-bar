@@ -337,6 +337,148 @@ class Toggles(unittest.TestCase):
         self.assertEqual(after["allow"], ["Bash"])
 
 
+class ConcurrentToggles(unittest.TestCase):
+    """Гонка настоящими процессами, не имитацией: каждый клик в приложении — отдельный
+    процесс на глобальной очереди. До файловой блокировки два одновременных переключения
+    теряли одно из двух изменений в 43 прогонах из 50."""
+
+    def test_параллельные_переключения_не_теряют_друг_друга(self):
+        import subprocess
+
+        home = tempfile.mkdtemp()
+        os.makedirs(os.path.join(home, ".claude"), exist_ok=True)
+        settings = os.path.join(home, ".claude", "settings.json")
+        with open(settings, "w") as fh:
+            json.dump({"hooks": {"keep": "me"}}, fh)
+        script = ("import sys; sys.path.insert(0, %r); import mcpbar; "
+                  "mcpbar.toggle_server(sys.argv[1], turn_off=True)"
+                  % os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+        procs = [
+            subprocess.Popen([sys.executable, "-c", script, f"srv{i}"],
+                             env={**os.environ, "HOME": home})
+            for i in range(12)
+        ]
+        for p in procs:
+            self.assertEqual(p.wait(timeout=60), 0)
+        with open(settings) as fh:
+            after = json.load(fh)
+        denied = {d["serverName"] for d in after.get("deniedMcpServers", [])}
+        self.assertEqual(denied, {f"srv{i}" for i in range(12)})
+        self.assertEqual(after.get("hooks"), {"keep": "me"})
+
+    def test_права_файла_переживают_переключатель(self):
+        import subprocess
+
+        home = tempfile.mkdtemp()
+        os.makedirs(os.path.join(home, ".claude"), exist_ok=True)
+        settings = os.path.join(home, ".claude", "settings.json")
+        with open(settings, "w") as fh:
+            json.dump({}, fh)
+        os.chmod(settings, 0o600)
+        script = ("import sys; sys.path.insert(0, %r); import mcpbar; "
+                  "mcpbar.toggle_server('x', turn_off=True)"
+                  % os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+        subprocess.run([sys.executable, "-c", script], env={**os.environ, "HOME": home}, check=True)
+        # Временный файл рождается с umask 0644; без явного chmod он подменял собой
+        # файл 0600 — и env-значения MCP-серверов становились читаемы всем локальным.
+        self.assertEqual(os.stat(settings).st_mode & 0o777, 0o600)
+
+
+class StatusLineObject(unittest.TestCase):
+    """Установка перехвата обязана пережить ВСЕ поля statusLine, не только command:
+    padding, refreshInterval и hideVimModeIndicator — поддерживаемые настройки Claude Code,
+    и первая версия install молча их съедала, а uninstall не возвращал."""
+
+    ORIGINAL = {
+        "type": "command", "command": "printf old",
+        "padding": 2, "refreshInterval": 5, "hideVimModeIndicator": True,
+    }
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        claude = os.path.join(self.home, ".claude")
+        os.makedirs(os.path.join(claude, "control-bar"), exist_ok=True)
+        self.settings = os.path.join(claude, "settings.json")
+        with open(self.settings, "w") as fh:
+            json.dump({"statusLine": dict(self.ORIGINAL)}, fh)
+        self.patched = {
+            "SETTINGS": self.settings,
+            "ROOT": os.path.join(claude, "control-bar"),
+            "STATUSLINE_INNER": os.path.join(claude, "control-bar", "statusline-inner-command"),
+            "STATUSLINE_SAVED": os.path.join(claude, "control-bar", "statusline-saved.json"),
+        }
+        self.saved = {k: getattr(mcpbar, k) for k in self.patched}
+        for k, v in self.patched.items():
+            setattr(mcpbar, k, v)
+        # Обёртка ищется рядом со скриптом; в тестовом прогоне она есть в репозитории.
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(mcpbar, k, v)
+
+    def read(self):
+        with open(self.settings) as fh:
+            return json.load(fh)
+
+    def test_установка_сохраняет_дополнительные_поля_живыми(self):
+        mcpbar.statusline_install()
+        after = self.read()["statusLine"]
+        self.assertIn("statusline.sh", after["command"])
+        self.assertEqual(after["padding"], 2)
+        self.assertEqual(after["refreshInterval"], 5)
+        self.assertTrue(after["hideVimModeIndicator"])
+
+    def test_откат_возвращает_объект_целиком(self):
+        mcpbar.statusline_install()
+        mcpbar.statusline_uninstall()
+        self.assertEqual(self.read()["statusLine"], self.ORIGINAL)
+
+    def test_откат_без_исходного_statusline_убирает_ключ(self):
+        with open(self.settings, "w") as fh:
+            json.dump({}, fh)
+        mcpbar.statusline_install()
+        mcpbar.statusline_uninstall()
+        self.assertNotIn("statusLine", self.read())
+
+
+class ProjectServers(unittest.TestCase):
+    """Серверы local- и project-scope видны только из каталога проекта, поэтому общий
+    `claude mcp list` (его cwd закреплён на корне) их не показывает — они добираются
+    из конфигурации по каталогам живых сессий."""
+
+    def test_оба_scope_читаются_и_дедуплицируются(self):
+        cwd = tempfile.mkdtemp()
+        with open(os.path.join(cwd, ".mcp.json"), "w") as fh:
+            json.dump({"mcpServers": {
+                "repo-tool": {"command": "./run.sh"},
+                "shared": {"command": "project-wins-not"},
+            }}, fh)
+        config = {"projects": {cwd: {"mcpServers": {
+            "local-tool": {"command": "echo"},
+            "shared": {"command": "local-wins"},
+        }}}}
+        found = mcpbar.project_server_configs([cwd], config)
+        self.assertEqual(set(found), {"repo-tool", "local-tool", "shared"})
+        # local имеет приоритет над project — как в самом Claude Code.
+        self.assertEqual(found["shared"][0]["command"], "local-wins")
+        self.assertEqual(found["repo-tool"][1], cwd)
+
+    def test_проект_без_конфигурации_даёт_пусто(self):
+        self.assertEqual(mcpbar.project_server_configs([tempfile.mkdtemp()], {}), {})
+
+    def test_удалённый_сервер_проекта_честно_не_проверен(self):
+        entry = mcpbar.probe_project_server(
+            "api", {"type": "http", "url": "https://x/mcp"}, "/tmp/proj")
+        self.assertEqual(entry["state"], "unknown")
+        self.assertEqual(entry["source"], "project")
+        self.assertEqual(entry["project"], "proj")
+
+    def test_упавший_stdio_сервер_проекта_помечен_красным(self):
+        entry = mcpbar.probe_project_server(
+            "dead", {"command": "/nonexistent-binary-xyz"}, "/tmp/proj")
+        self.assertEqual(entry["state"], mcpbar.FAILED)
+
+
 class UsageEndpoint(unittest.TestCase):
     """Разбор ответа api/oauth/usage. Сеть в тестах не участвует — только чистые функции."""
 

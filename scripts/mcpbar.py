@@ -89,6 +89,8 @@ STRINGS = {
     "auth.hint": ("/mcp to authorise", "/mcp → авторизовать"),
     "server.off": ("disabled", "выключен"),
     "server.restart": ("on, from the next session", "включён, со следующей сессии"),
+    "server.project": ("project {dir}", "проект {dir}"),
+    "server.remote": ("remote, not health-checked", "удалённый, статус не проверяется"),
     "open.settings": ("Open settings.json", "Открыть settings.json"),
     "server.muted": ("({n} disabled)", "({n} выключено)"),
     "tools.none": ("— tools", "— инстр."),
@@ -148,10 +150,20 @@ def read_json(path, default=None):
 def write_json(path, data, indent=None):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.{os.getpid()}.tmp"
+    # Права исходника переезжают на замену. Временный файл рождается с umask процесса,
+    # и без этого settings.json с правами 0600 после первого переключателя становился
+    # 0644 — а в нём бывают env-значения MCP-серверов.
+    mode = None
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except OSError:
+        pass
     with open(tmp, "w") as fh:
         json.dump(data, fh, ensure_ascii=False, indent=indent)
         if indent:
             fh.write("\n")
+    if mode is not None:
+        os.chmod(tmp, mode)
     os.replace(tmp, path)
 
 
@@ -204,7 +216,14 @@ def parse_list_line(line):
 
 
 def run_health_check():
-    """`claude mcp list` — единственный источник живого статуса. Флага --json у неё нет."""
+    """`claude mcp list` — единственный источник живого статуса. Флага --json у неё нет.
+
+    cwd закреплён на корне намеренно: ответ этой команды зависит от каталога запуска
+    (local- и project-scope серверы видны только из своего проекта), а этот вызов строит
+    ОБЩУЮ часть карты — user, плагины, коннекторы. Серверы проектов добираются отдельно,
+    по каталогам живых сессий, в project_server_configs(). Без закрепления картина зависела
+    бы от того, откуда случайно запущено приложение.
+    """
     import subprocess
 
     claude = find_claude()
@@ -212,7 +231,7 @@ def run_health_check():
         return [], t("err.nobinary")
     try:
         proc = subprocess.run(
-            [claude, "mcp", "list"], capture_output=True, text=True, timeout=120
+            [claude, "mcp", "list"], capture_output=True, text=True, timeout=120, cwd="/"
         )
     except subprocess.TimeoutExpired:
         return [], t("err.timeout")
@@ -287,7 +306,7 @@ def describe_tool(tool):
     }
 
 
-def ask_server_for_tools(name, config, timeout=20):
+def ask_server_for_tools(name, config, timeout=20, cwd=None):
     """Спросить у сервера его инструменты по протоколу MCP (JSON-RPC поверх stdio).
 
     Ни логи, ни транскрипты описаний не содержат — их знает только сам сервер.
@@ -307,6 +326,9 @@ def ask_server_for_tools(name, config, timeout=20):
             [command] + list(config.get("args") or []),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, bufsize=1, env={**os.environ, **(config.get("env") or {})},
+            # Сервер проекта запускается из своего проекта: относительные пути в его
+            # команде и конфиге считаются от каталога, в котором живёт .mcp.json.
+            cwd=cwd,
         )
     except Exception:
         return None
@@ -499,6 +521,71 @@ def lookup_tools(index, name):
     return []
 
 
+def session_cwds():
+    """Каталоги проектов живых сессий, по state.d (живость — pid, как и везде)."""
+    cwds = []
+    for path in glob.glob(os.path.join(SESSIONS, "*.json")):
+        info = read_json(path) or {}
+        try:
+            os.kill(int(info.get("pid")), 0)
+        except (OSError, ValueError, TypeError):
+            continue
+        cwd = info.get("cwd")
+        if cwd and os.path.isdir(cwd) and cwd not in cwds:
+            cwds.append(cwd)
+    return cwds
+
+
+def project_server_configs(cwds, global_config):
+    """Конфигурации MCP-серверов, привязанных к проектам живых сессий.
+
+    `claude mcp list` отвечает только про каталог, из которого запущена, — поэтому серверы
+    двух официальных проектных scope'ов в общей проверке не видны вовсе:
+    local — ~/.claude.json → projects[<cwd>].mcpServers, project — <cwd>/.mcp.json.
+    Возвращает name → (config, cwd, scope); при совпадении имени в двух проектах остаётся
+    первый по порядку сессий — двух строк с одним именем меню различить не может.
+    """
+    projects = (global_config or {}).get("projects") or {}
+    found = {}
+    for cwd in cwds:
+        for configs in (
+            (projects.get(cwd) or {}).get("mcpServers") or {},
+            (read_json(os.path.join(cwd, ".mcp.json")) or {}).get("mcpServers") or {},
+        ):
+            for name, config in configs.items():
+                if isinstance(config, dict):
+                    found.setdefault(name, (config, cwd))
+    return found
+
+
+def probe_project_server(name, config, cwd):
+    """Живая строка для сервера проекта: stdio опрашивается по-настоящему, из каталога
+    проекта; удалённый (http/sse) не проверяется — честное «не проверяется» вместо
+    выдуманного зелёного кружка."""
+    base = os.path.basename(cwd.rstrip("/")) or cwd
+    entry = {
+        "name": name, "target": config.get("command") or config.get("url") or "",
+        "source": "project", "project": base,
+        "toolNames": [], "toolDocs": {}, "toolParams": {}, "tools": None,
+    }
+    if config.get("type", "stdio") != "stdio":
+        entry["state"] = "unknown"
+        entry["status"] = t("server.remote") + " · " + t("server.project", dir=base)
+        return entry
+    tools = ask_server_for_tools(name, config, cwd=cwd)
+    if tools is None:
+        entry["state"] = FAILED
+        entry["status"] = "✘ " + t("server.project", dir=base)
+        return entry
+    entry["state"] = OK
+    entry["status"] = "✔ " + t("server.project", dir=base)
+    entry["toolNames"] = sorted(t["name"] for t in tools)
+    entry["toolDocs"] = {t["name"]: t["description"] for t in tools if t.get("description")}
+    entry["toolParams"] = {t["name"]: t["params"] for t in tools if t.get("params")}
+    entry["tools"] = len(tools)
+    return entry
+
+
 def attach_tools(servers):
     """Проставить каждому серверу инструменты: имена, описания и счётчик.
 
@@ -618,7 +705,37 @@ def patch_state_after_toggle():
     return data
 
 
+def settings_lock():
+    """Эксклюзивная межпроцессная блокировка на всё время «прочитал → изменил → записал».
+
+    Каждый клик по переключателю приложение запускает отдельным процессом на глобальной
+    очереди, так что два быстрых клика реально работают параллельно. Атомарной записи мало:
+    оба процесса читают одну версию файла, и чья запись вторая — тот и затёр чужое изменение
+    (замер до блокировки: 43 потери на 50 прогонов двух одновременных переключений).
+    Блокировка снимается сама при выходе процесса, зависший держатель не вечен.
+    """
+    import fcntl
+    from contextlib import contextmanager
+
+    @contextmanager
+    def held():
+        os.makedirs(ROOT, exist_ok=True)
+        with open(os.path.join(ROOT, "settings.lock"), "w") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+
+    return held()
+
+
 def toggle_server(name, turn_off):
+    with settings_lock():
+        return _toggle_server_locked(name, turn_off)
+
+
+def _toggle_server_locked(name, turn_off):
     settings = read_json(SETTINGS) or {}
     current = settings.get("deniedMcpServers") or []
     kept = [
@@ -639,6 +756,11 @@ def toggle_server(name, turn_off):
 
 
 def toggle_tool(rule, turn_off):
+    with settings_lock():
+        return _toggle_tool_locked(rule, turn_off)
+
+
+def _toggle_tool_locked(rule, turn_off):
     settings = read_json(SETTINGS) or {}
     perms = settings.setdefault("permissions", {})
     current = list(perms.get("deny") or [])
@@ -663,6 +785,10 @@ def toggle_tool(rule, turn_off):
 # ──────────────────────────────────────────────────────── перехват statusLine
 
 STATUSLINE_INNER = os.path.join(ROOT, "statusline-inner-command")
+# Весь исходный объект statusLine, не только command: у него есть поддерживаемые поля
+# (padding, refreshInterval, hideVimModeIndicator), и «сохранить только команду» значило
+# молча снести их при установке и не вернуть при откате.
+STATUSLINE_SAVED = os.path.join(ROOT, "statusline-saved.json")
 
 
 def find_statusline_wrapper():
@@ -704,12 +830,20 @@ def statusline_install():
     settings = read_json(SETTINGS) or {}
     backup_settings()
     os.makedirs(ROOT, exist_ok=True)
-    # Дословно, включая пустую строку: по ней же делается откат.
+    original = settings.get("statusLine")
+    # Целиком, включая None для «его не было»: по этой записи делается откат.
+    write_json(STATUSLINE_SAVED, original)
+    # Команду — отдельным файлом: её на каждой перерисовке читает bash-обёртка,
+    # и парсить JSON ей нечем.
     tmp = STATUSLINE_INNER + ".tmp"
     with open(tmp, "w") as fh:
         fh.write(current + "\n")
     os.replace(tmp, STATUSLINE_INNER)
-    settings["statusLine"] = {"type": "command", "command": f'bash "{wrapper}"'}
+    # Подменяется ровно одно поле. padding, refreshInterval, hideVimModeIndicator и что
+    # там ещё настроено — остаются и продолжают действовать с обёрткой.
+    installed = dict(original) if isinstance(original, dict) else {}
+    installed.update({"type": "command", "command": f'bash "{wrapper}"'})
+    settings["statusLine"] = installed
     write_settings(settings)
     return f"установлен; прежняя команда сохранена: {current or '(её не было)'}"
 
@@ -726,11 +860,24 @@ def statusline_uninstall():
         pass
     settings = read_json(SETTINGS) or {}
     backup_settings()
-    if saved:
+    if os.path.exists(STATUSLINE_SAVED):
+        # Полный объект как он был. None означает «statusLine не был настроен вовсе».
+        original = read_json(STATUSLINE_SAVED)
+        if isinstance(original, dict):
+            settings["statusLine"] = original
+        else:
+            settings.pop("statusLine", None)
+    elif saved:
+        # Установка старой версией: полного объекта нет, есть только команда.
         settings["statusLine"] = {"type": "command", "command": saved}
     else:
         settings.pop("statusLine", None)
     write_settings(settings)
+    for leftover in (STATUSLINE_SAVED, STATUSLINE_INNER):
+        try:
+            os.remove(leftover)
+        except OSError:
+            pass
     return f"возвращено: {saved or '(statusLine удалён)'}"
 
 
@@ -1046,12 +1193,21 @@ def refresh():
         write_json(STATE, stale)
         return stale
 
-    local = set((read_json(CONFIG) or {}).get("mcpServers") or {})
+    config = read_json(CONFIG) or {}
+    local = set(config.get("mcpServers") or {})
     for entry in servers:
         entry["source"] = classify(entry["name"], local)
 
     # Строго после health-check: он переписывает stderr-логи, из которых берутся числа.
     attach_tools(servers)
+
+    # Серверы проектов живых сессий — отдельным проходом: общая проверка выше их не видит
+    # (её cwd закреплён на корне). Совпадение имени с глобальным сервером — пропуск: это
+    # почти наверняка тот же сервер, и одна строка честнее двух неразличимых.
+    seen = {s["name"] for s in servers}
+    for name, (server_config, cwd) in project_server_configs(session_cwds(), config).items():
+        if name not in seen:
+            servers.append(probe_project_server(name, server_config, cwd))
 
     # Таблицу размеров окон держим свежей здесь, хотя сама она нужна не нам, а Node-хуку:
     # выскребается она из бинаря Claude Code (226 МБ) и в хуке, который срабатывает на

@@ -1,61 +1,70 @@
 # Contributing
 
-Thanks for your interest. This is a tiny menu bar app and I'd like to keep it that way.
+This is a fork of [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar) merged with
+[claude-mcp-bar](https://github.com/InfinityScripter/claude-mcp-bar), and its scope is wider
+than upstream's: it shows Claude Code's live status **and** controls what Claude has to work
+with. The upstream contract ("display only, one network request") does not describe this
+project — this file does.
 
-It does one thing: show Claude Code's live status. It stays local (the only network call is a daily update check), free (no API key, no spend), and small (a status bar, not a dashboard).
+## What this app is
 
-It's also inspired a bunch of forks and ports, Codex versions, Linux, Windows, other agents, and I love seeing that. If your idea is one of those, it almost certainly belongs in your own fork, not here. This app is Claude Code on macOS, and I want to keep it that.
+Three parts, deliberately separated:
+
+- **Sessions** — hooks write one small state file per event; the app draws them. Context usage
+  is computed from the transcript.
+- **MCP** — a Python backend runs `claude mcp list` and a `tools/list` round trip on a slow
+  timer, and switches servers/tools by editing `~/.claude/settings.json`.
+- **Limits** — a five-minute poll of Anthropic's usage endpoint, plus an optional `statusLine`
+  capture.
+
+So yes: this app *does* change machine state (settings.json, the statusLine wrapper) and *does*
+make network requests (Anthropic usage endpoint, a daily update check, and it starts the user's
+own MCP servers when health-checking). Every one of those is documented in
+[PRIVACY.md](PRIVACY.md), reversible, and has an off switch or an uninstall path. Keep it that
+way — a change that breaks any of those three properties won't be merged.
 
 ## What's welcome
 
-Bug fixes, performance wins, animation and visual polish, better session focus, and compatibility fixes (macOS versions, CPU architectures, terminals). New crab animations and icon styles are especially welcome.
-
-Also the [known issues](https://github.com/m1ckc3s/claude-status-bar/blob/main/TROUBLESHOOTING.md#known-issues) in TROUBLESHOOTING.md: some behavior that looks like a bug is understood and intentional.
+Bug fixes, performance wins (measure before and after — `sample` and `ps -o time=` beat
+adjectives), honest-UX improvements, compatibility fixes, tests that reproduce a real defect.
+Visual polish and new animations too.
 
 ## Won't be merged
 
-- Sending your conversation, files, or project to any API or relay.
-- Anything that costs money or needs an API key.
-- Usage meters, cost dashboards, analytics, or telemetry.
-- Heavy work in the hooks. They run on every event, so they write one small state file and exit: no network, no per-prompt API calls.
-- Hardcoding for one locale, provider, relay, or terminal.
-- New settings stores or dependencies for a minor feature when what's already there works.
-- Changing how your machine behaves: preventing sleep, holding power assertions, running privileged helpers, or any background action beyond showing status. The app displays state, it doesn't act on your system.
-- Codex support, ports to Linux or Windows, or support for other agents. Great projects, but as your own fork. This one is Claude Code on macOS.
+- Telemetry, analytics, or anything that sends user data to anyone other than the services
+  already named in PRIVACY.md.
+- Anything that costs money or needs an API key beyond what Claude Code itself has.
+- Heavy work in the per-event hooks — they run on every Claude event and must write one small
+  file and exit. (The slow-timer backend is where expensive work lives.)
+- Undisclosed state changes: if it edits a file the user owns or opens a network connection,
+  PRIVACY.md and the README must say so in the same PR.
+- Support for other agents or platforms. Claude Code on macOS.
 
 ## Building
 
-You'll need macOS 12+, the Swift toolchain (Xcode Command Line Tools), and Node.js (the hooks run on Node).
+macOS 12+, Swift toolchain (Command Line Tools), Node.js, and the system `/usr/bin/python3`.
 
 ```bash
-./build.sh          # -> build/ClaudeStatusBar.app
+./build.sh          # -> "build/Claude Control Bar.app"
 ./build.sh --dmg    # also builds a .dmg
 ```
 
-Signing and notarization use the maintainer's Developer ID; without it you get an ad-hoc build, which is fine for testing. Launch it, start a Claude Code session, and the icon appears.
-
-Build off the latest `main` so you're not fixing something that already changed.
+The build stages into a temporary bundle and swaps only on success, so a failed compile never
+destroys an installed copy.
 
 ## Testing
 
-Before you open a PR, actually run it. "Builds clean" is not testing.
-
-Test it on both surfaces, because they behave differently:
-
-- the **Claude desktop app**, and
-- the **CLI, in a terminal**.
-
-And tell me which terminal you used (Terminal.app, Ghostty, iTerm2, WezTerm, and so on). Behavior genuinely differs between them. For any visual or timing change, attach a screenshot or a short screen recording.
-
-
-## What to expect
-
-This is a solo hobby project. Replies can be slow, and I may decline a perfectly good PR because it adds complexity or scope I don't want to carry. That's not a knock on your work. When in doubt keep the change small, and check the [known issues](https://github.com/m1ckc3s/claude-status-bar/blob/main/TROUBLESHOOTING.md#known-issues) first: some behavior that looks like a bug is intentional and already understood, timing, lifecycle, and self-quit especially.
+CI runs the Python, Node and Swift suites plus a build and identity checks — `git push` tells
+you most of it. But before a PR, run the app: both surfaces (desktop app and terminal CLI)
+behave differently, and say which terminal you used. For visual changes attach a screenshot;
+`CONTROL_BAR_DUMP_MENU=1` prints the menu as text.
 
 ## Commits
 
-[Conventional Commits](https://www.conventionalcommits.org/): `feat`, `fix`, `chore`, `refactor`, `style`, `docs`, `perf`. Branches: `type/kebab-case-description`.
+[Conventional Commits](https://www.conventionalcommits.org/): `feat`, `fix`, `chore`,
+`refactor`, `docs`, `perf`. Explain *why* in the body — most fixes here exist because something
+was measured, and the measurement belongs in the message.
 
 ## License
 
-MIT. By contributing, you agree your contributions are licensed under it.
+MIT, same as upstream. Copyright for the original work remains with Mick Cesanek.

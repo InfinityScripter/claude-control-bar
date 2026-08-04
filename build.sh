@@ -11,10 +11,18 @@ cd "$(dirname "$0")"
 VERSION=$(/usr/bin/python3 -c "import json;print(json.load(open('.claude-plugin/plugin.json'))['version'])")
 
 APP="${CONTROL_BAR_APP:-build/$APP_NAME.app}"
-BIN="$APP/Contents/MacOS/$EXEC"
 
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+# Everything is built and signed in a staging bundle beside the target, and the installed app
+# is replaced only once the new one is complete. The old order — rm -rf first, compile after —
+# meant a failed compile (half-installed CLT, full disk, an SDK quirk) destroyed the user's
+# last working copy and left nothing but a log; the plugin channel runs this unattended on
+# session start, where that is the difference between "update failed" and "app gone".
+STAGE_APP="$APP.staging.$$"
+BIN="$STAGE_APP/Contents/MacOS/$EXEC"
+trap 'rm -rf "$STAGE_APP"' EXIT
+
+rm -rf "$STAGE_APP"
+mkdir -p "$STAGE_APP/Contents/MacOS"
 
 echo "Compiling universal binary (arm64 + x86_64)…"
 # Universal binary so it runs natively on both Apple Silicon and Intel (each Mac uses its own
@@ -26,7 +34,7 @@ swiftc -O -target x86_64-apple-macos12.0 Sources/*.swift -o "$BIN.x86_64" -frame
 lipo -create "$BIN.arm64" "$BIN.x86_64" -output "$BIN"
 rm -f "$BIN.arm64" "$BIN.x86_64"
 
-cat > "$APP/Contents/Info.plist" <<PLIST
+cat > "$STAGE_APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -46,14 +54,14 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 # Bundle the hook scripts (so first-launch self-install works) and the app icon.
-mkdir -p "$APP/Contents/Resources"
-cp hooks/update.js hooks/lifecycle.js hooks/install.js hooks/uninstall.js hooks/statusline.sh hooks/statusline.py "$APP/Contents/Resources/"
+mkdir -p "$STAGE_APP/Contents/Resources"
+cp hooks/update.js hooks/lifecycle.js hooks/install.js hooks/uninstall.js hooks/statusline.sh hooks/statusline.py "$STAGE_APP/Contents/Resources/"
 # The MCP half runs out of the bundle in the brew/DMG channel — the plugin directory that
 # normally holds it does not exist there.
-mkdir -p "$APP/Contents/Resources/scripts"
-cp scripts/mcpbar.py "$APP/Contents/Resources/scripts/"
-cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-cp assets/completion.mp3 "$APP/Contents/Resources/completion.mp3"
+mkdir -p "$STAGE_APP/Contents/Resources/scripts"
+cp scripts/mcpbar.py "$STAGE_APP/Contents/Resources/scripts/"
+cp assets/AppIcon.icns "$STAGE_APP/Contents/Resources/AppIcon.icns"
+cp assets/completion.mp3 "$STAGE_APP/Contents/Resources/completion.mp3"
 
 # --- Signing / notarization ---
 # For a clean (no Gatekeeper warning) release you need, set up once on this Mac:
@@ -82,16 +90,22 @@ fi
 
 # Strip extended attributes (Finder info, quarantine, etc.) that bundled resources can
 # carry — codesign rejects them ("resource fork, Finder information, ... not allowed").
-xattr -cr "$APP"
+xattr -cr "$STAGE_APP"
 
 if [[ -n "$SIGN_ID" ]]; then
   echo "Signing with Developer ID: $SIGN_ID"
-  codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP"
+  codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$STAGE_APP"
 else
   echo "No Developer ID certificate found — ad-hoc signing. The result is NOT notarized:"
   echo "  macOS will block the first launch. See README, section \"Gatekeeper\"."
-  codesign --force --sign - "$APP" >/dev/null 2>&1 || true
+  codesign --force --sign - "$STAGE_APP" >/dev/null 2>&1 || true
 fi
+# The swap happens only past this line: binary present and executable, plist well-formed.
+test -x "$BIN"
+/usr/bin/plutil -lint "$STAGE_APP/Contents/Info.plist" >/dev/null
+rm -rf "$APP"
+mv "$STAGE_APP" "$APP"
+trap - EXIT
 echo "Built $APP"
 
 if [[ "${1:-}" == "--dmg" ]]; then

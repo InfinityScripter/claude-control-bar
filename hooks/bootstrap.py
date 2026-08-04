@@ -163,10 +163,24 @@ def main():
         return 0
 
     if bundle_version(USER_APP) != plugin_version():
-        if not build(USER_APP):
+        # One build at a time. Claude Code runs every matching SessionStart hook in parallel,
+        # so two terminals opened together both notice the version gap and both start a
+        # multi-minute compile of the same plugin directory. The loser of this race skips:
+        # the winner's result is the same bundle it would have produced.
+        import fcntl
+        os.makedirs(ROOT, exist_ok=True)
+        lock = open(os.path.join(ROOT, "build.lock"), "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
             return 0
-        # The previous version is still resident; a fresh build has to replace it.
-        subprocess.run(["/usr/bin/pkill", "-x", EXEC], capture_output=True)
+        try:
+            if not build(USER_APP):
+                return 0
+            # The previous version is still resident; a fresh build has to replace it.
+            subprocess.run(["/usr/bin/pkill", "-x", EXEC], capture_output=True)
+        finally:
+            lock.close()
 
     if not running():
         subprocess.Popen(["/usr/bin/open", "-g", "-b", BUNDLE_ID],
