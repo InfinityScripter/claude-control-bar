@@ -88,7 +88,7 @@ STRINGS = {
     "head.limits": ("LIMITS", "ЛИМИТЫ"),
     "auth.hint": ("/mcp to authorise", "/mcp → авторизовать"),
     "server.off": ("disabled", "выключен"),
-    "server.restart": ("on in a new session", "включён, нужна новая сессия"),
+    "server.restart": ("on, from the next session", "включён, со следующей сессии"),
     "open.settings": ("Open settings.json", "Открыть settings.json"),
     "server.muted": ("({n} disabled)", "({n} выключено)"),
     "tools.none": ("— tools", "— инстр."),
@@ -604,7 +604,9 @@ def patch_state_after_toggle():
         if entry["disabled"]:
             entry["state"] = OFF
         elif entry.get("state") == OFF:
-            # Включили обратно: до следующей проверки честнее сказать «неизвестно».
+            # Включили обратно: до следующей проверки честнее сказать «неизвестно», а не
+            # рисовать зелёный кружок. Проверка приезжает следом — приложение заказывает её
+            # сразу после переключения, а не ждёт своего десятиминутного таймера.
             entry["state"] = PENDING
             entry["status"] = t("server.restart")
         entry["deniedTools"] = [

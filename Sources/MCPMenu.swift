@@ -286,6 +286,10 @@ extension StatusController {
                 .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
             ])
         item.isEnabled = false
+        // Worth saying exactly once, next to the change that prompts the question: a switch here
+        // edits settings.json, and Claude Code builds a session's server and tool list when the
+        // session starts. A tab that is already open keeps what it had.
+        item.toolTip = "Applies to new sessions — an open one keeps the tools it started with"
         return item
     }
 
@@ -305,7 +309,11 @@ extension StatusController {
         guard let server = mcp.servers.first(where: { $0.name == name }) else { return "—" }
         switch server.state {
         case "ok", "off": return toolCount(name)
-        case "pending": return "new session"
+        // The actionable fact, not the internal state name. A re-enabled server is on — but
+        // Claude Code assembles a session's server list when the session starts, so an already
+        // open one keeps what it had. The row explains itself in its tooltip, and resolves to a
+        // real count once the check ordered by the toggle comes back.
+        case "pending": return "next session"
         default: return "failed"
         }
     }
@@ -324,7 +332,14 @@ extension StatusController {
             isOn: !server.disabled, indent: 14, width: mcpRowWidth,
             chevron: !server.tools.isEmpty
         ) { [weak self] on in self?.setMCPServer(name, enabled: on) }
-        row.toolTip = server.state == "ok" ? name : name + " · " + server.status
+        switch server.state {
+        case "ok": row.toolTip = name
+        case "pending":
+            row.toolTip = name + "\nSwitched on. Claude Code builds a session's list of servers"
+                + " when the session starts, so one that is already open keeps what it had."
+                + "\nThe tool count returns here once the check finishes."
+        default: row.toolTip = name + " · " + server.status
+        }
         head.view = row
         guard !server.tools.isEmpty else { return [head] }
 

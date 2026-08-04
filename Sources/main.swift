@@ -357,15 +357,20 @@ final class StatusController: NSObject, NSMenuDelegate {
         path: (root as NSString).appendingPathComponent("mcp.json"))
     var limits: Limits?
     var mcpBusy = false
+    var recheckTimer: Timer?
     /// Every label in the open menu that shows a count. NSMenu will not let rows be added or
     /// removed while it is tracking, but the items it already holds can be rewritten — which is
     /// how switching one tool moves its server's total and the grand total on the spot, instead
     /// of leaving both stale until the menu is reopened.
     var mcpCountLabels: [() -> Void] = []
-    /// How often the MCP picture is rebuilt from scratch. `claude mcp list` takes seconds, so it
-    /// is not on the render path — but without it the picture never updates at all, which is how
-    /// a server that had reconnected went on showing a red cross indefinitely.
+    /// How often the MCP picture is rebuilt from scratch in the background. Measured at ~34s a
+    /// run, essentially all of it `claude mcp list` starting every configured server and waiting
+    /// — which is why it is not on the render path. Without it the picture never updates at all,
+    /// which is how a server that had reconnected went on showing a red cross indefinitely.
     static let mcpRefreshInterval: TimeInterval = 600
+    /// Opening the menu rebuilds the picture if it is older than this. Short enough that what is
+    /// on screen is worth trusting, long enough that opening the menu repeatedly is free.
+    static let mcpOpenStaleAfter: TimeInterval = 120
     var lastGauge: (Gauge, Bool)?
     /// Everything the MCP half needs to run: the interpreter and the script. Written by the
     /// plugin's bootstrap hook so the app survives the plugin moving between versions; falls
@@ -833,6 +838,19 @@ final class StatusController: NSObject, NSMenuDelegate {
         mcp.setServerLocally(name, enabled: enabled)
         refreshCounts()
         runBackend(["toggle-server", name, enabled ? "--on" : "--off"])
+        scheduleRecheck()
+    }
+
+    /// A toggle leaves the row saying "checking…", and something has to go and check. Waiting for
+    /// the ten-minute timer meant a server switched back on sat unresolved long enough to read as
+    /// broken. Debounced, because flipping several servers in a row should cost one check, not one
+    /// each — a full check re-runs `claude mcp list` and a tools/list round trip per server.
+    func scheduleRecheck() {
+        recheckTimer?.invalidate()
+        let timer = Timer(timeInterval: 2.5, repeats: false) { [weak self] _ in self?.refreshMCP() }
+        // .common, so it fires while the menu is open — which is exactly when toggles happen.
+        RunLoop.main.add(timer, forMode: .common)
+        recheckTimer = timer
     }
 
     func setMCPTool(_ rule: String, enabled: Bool) {
@@ -917,10 +935,11 @@ final class StatusController: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         mcpCountLabels.removeAll()
-        // Opening the menu is the moment the picture is looked at, so it is also the moment to
-        // notice it has gone stale. The rebuild is asynchronous; this open shows what is known,
-        // the next one shows the truth.
-        if !mcpBusy, Date().timeIntervalSince1970 - mcp.checkedAt > Self.mcpRefreshInterval {
+        // Opening the menu is the moment the picture gets looked at, so it is the moment to
+        // notice it has gone stale. Not on EVERY open, though: a check costs about 34 seconds
+        // and nearly all of it is `claude mcp list`, which starts every configured MCP server
+        // and waits for each to answer. Two minutes means a burst of opens costs one check.
+        if !mcpBusy, Date().timeIntervalSince1970 - mcp.checkedAt > Self.mcpOpenStaleAfter {
             refreshMCP()
         }
         checkForUpdate() // refreshes the update cache for next open (gated to once a day)
