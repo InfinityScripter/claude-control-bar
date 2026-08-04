@@ -32,10 +32,8 @@ a clock or a percentage) is usually enough. Cmd-drag rearranges menu bar items.
 **The icon doesn't appear at all?**
 - Make sure a Claude session is actually running, not just a terminal window open. Start a new session (or restart Claude Code) and the bar appears automatically.
 - A session that was already running *before* you installed won't show up until you start a fresh session.
-- Confirm it's running with `pgrep -x ClaudeStatusBar`: a number means it's running (it may just be hidden), no output means it exited because no Claude session is active.
-- If first-launch setup never took, run the installer manually: `node "/Applications/ClaudeStatusBar.app/Contents/Resources/install.js"`
-
-**Installed via Homebrew?** Everything brew-specific (install, updates, the v0.4.0 rename transition, brew errors) lives in [HOMEBREW.md](HOMEBREW.md).
+- Confirm it's running with `pgrep -x ClaudeControlBar`: a number means it's running (it may just be hidden), no output means it exited because no Claude session is active.
+- If first-launch setup never took, run the installer manually: `node "/Applications/Claude Control Bar.app/Contents/Resources/install.js"`. Installed as a plugin, the app lives in `~/Applications` instead.
 
 **Seeing 2 icons?** The desktop app shows its own menu bar icon (the quick-screenshot one). To avoid two icons sitting side by side, open Claude's **Settings → General** and turn that built-in menu bar item off.
 

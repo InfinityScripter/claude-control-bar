@@ -1,5 +1,5 @@
 name: 🐛 Bug Report
-description: Report a bug or unexpected behavior in Claude Status Bar
+description: Report a bug or unexpected behavior in Claude Control Bar
 title: "[BUG] "
 labels: ["bug"]
 body:
@@ -9,11 +9,9 @@ body:
         Thank you for taking the time to report a bug. Please fill out the sections below to help us understand and fix the issue.
 
         **Before submitting, please check:**
-        - You're using the [latest version](https://github.com/m1ckc3s/claude-status-bar/releases/latest)
-        - This issue hasn't already been reported by searching [existing issues](https://github.com/m1ckc3s/claude-status-bar/issues)
+        - You're using the [latest version](https://github.com/InfinityScripter/claude-control-bar/releases/latest)
+        - This issue hasn't already been reported by searching [existing issues](https://github.com/InfinityScripter/claude-control-bar/issues)
         - This is a bug, not a feature request or support question
-
-        Are you having trouble with brew? See the [Homebrew guide](https://github.com/m1ckc3s/claude-status-bar/blob/main/HOMEBREW.md).
 
   - type: checkboxes
     id: preflight
@@ -21,9 +19,9 @@ body:
       label: Preflight Checklist
       description: Please confirm before submitting
       options:
-        - label: I have searched [existing issues](https://github.com/m1ckc3s/claude-status-bar/issues) and the [known issues](https://github.com/m1ckc3s/claude-status-bar/blob/main/TROUBLESHOOTING.md#known-issues) and this hasn't been reported yet
+        - label: I have searched [existing issues](https://github.com/InfinityScripter/claude-control-bar/issues) and the [known issues](https://github.com/InfinityScripter/claude-control-bar/blob/main/TROUBLESHOOTING.md#known-issues) and this hasn't been reported yet
           required: true
-        - label: I have checked the [Troubleshooting guide](https://github.com/m1ckc3s/claude-status-bar/blob/main/TROUBLESHOOTING.md) and my issue isn't covered there
+        - label: I have checked the [Troubleshooting guide](https://github.com/InfinityScripter/claude-control-bar/blob/main/TROUBLESHOOTING.md) and my issue isn't covered there
           required: true
         - label: This is a single bug report (please file separate reports for different bugs)
           required: true
@@ -64,8 +62,8 @@ body:
     id: app-version
     attributes:
       label: App version
-      description: Shown at the bottom of the menu bar dropdown (e.g. Version 0.4.0)
-      placeholder: e.g. 0.4.0
+      description: Shown at the bottom of the menu bar dropdown (e.g. Version 0.5.0)
+      placeholder: e.g. 0.5.0
     validations:
       required: true
 
@@ -74,8 +72,9 @@ body:
     attributes:
       label: How did you install it?
       options:
-        - Homebrew (brew install)
+        - Claude Code plugin (/plugin install)
         - DMG (downloaded from Releases)
+        - Built from source (./build.sh)
         - Not sure
     validations:
       required: true

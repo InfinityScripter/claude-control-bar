@@ -19,7 +19,10 @@ Then, only if something is wrong:
 - `✗` — the server did not come up. Reinstalling it through the supported command is usually
   faster than debugging the transport: `claude mcp remove <name> --scope user`, then
   `claude mcp add` again.
-- `⏸` — a server from a project `.mcp.json` that has not been approved for this project yet.
+- `⏸` — a server from a project `.mcp.json` that has not been approved for this project yet. It
+  is listed, not started: approving it is a decision for a human, in `/mcp`.
+- `·` — a remote (HTTP/SSE) server of a project. Not health-checked, so neither green nor red
+  would be honest.
 - `◌` — needs OAuth. A human does that through `/mcp` in an interactive session. Do not ask for
   or enter tokens.
 - `○` — the user switched this server off through `deniedMcpServers`. Not a fault.

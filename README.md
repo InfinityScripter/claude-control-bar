@@ -5,9 +5,10 @@ change what it has to work with, without opening anything.
 
 - **Sessions** — an animated icon while Claude thinks or runs a tool, a yellow dot when it needs
   your permission, a live turn timer, and **how full each session's context window is**.
-- **MCP** — every server, whether it answered, and a switch on each one. Every tool, with its
-  description and parameters on hover, and a switch on each of those too. A muted tool is not
-  merely blocked at call time: Claude Code drops it from the context entirely.
+- **MCP** — every server, whether it answered, and a switch on each one. Every tool with a switch
+  of its own, and — for servers configured in `~/.claude.json` — its description and parameters on
+  hover. A muted tool is not merely blocked at call time: Claude Code drops it from the context
+  entirely.
 - **Limits** — 5-hour and 7-day usage as bars in the menu bar itself, spelled out with reset
   times in the menu.
 
@@ -31,16 +32,10 @@ with the plugin.
 
 ### Homebrew
 
-> [!NOTE]
-> Not available yet. The cask needs a tap and a published release; `./build.sh --dmg` produces
-> the image, and the menu's update check already looks for a `claude-control-bar` cask so it
-> works the day one exists. Until then, use the plugin or the DMG.
-
-```bash
-brew install --cask claude-control-bar && open -a "Claude Control Bar"
-```
-
-That final launch matters: it is what wires up the Claude Code hooks.
+There is no cask. It would need its own tap and a published release, and neither exists yet —
+so there is no `brew install` line here to copy, because it would fail. The menu's update check
+already looks for a `claude-control-bar` cask, so the day one exists it starts working on its
+own. Until then: the plugin above, or the DMG below.
 
 ### DMG
 
@@ -125,7 +120,14 @@ observed from a real `statusLine` payload replaces the guess permanently.
 - **Limits** — 5h and 7d usage with reset countdowns and the age of the reading.
 - **MCP** — servers grouped by where they are configured (local config, claude.ai connectors,
   plugins, project `.mcp.json`), each on one row with `enabled/total` tools, a switch, and its
-  tool list as a submenu off the same row.
+  tool list as a submenu off the same row. Tool descriptions and parameters come from asking the
+  server itself, which this app only does for servers in `~/.claude.json`; plugin servers
+  therefore show names without cards.
+- **A server from a project's `.mcp.json` is listed but never started.** That file ships with the
+  repository, and Claude Code asks you once before trusting anything in it. This app has no way
+  to show you that question, so it does not answer it on your behalf: the row says *approve in
+  Claude Code* and no command from that file is run until you have. Servers you added yourself
+  are unaffected.
 - **changed:** — what moved since the last check, because a count that is merely different next
   time tells you nothing about whether you moved it or a server did. Servers going down also
   raise a notification; tool counts do not, since that is usually you, one click ago.
@@ -165,8 +167,11 @@ Three parts, deliberately separated:
 | `scripts/mcpbar.py` | `claude mcp list`, a JSON-RPC `tools/list` round trip for names and parameters, the switches |
 | `Sources/*.swift` | Draws. Computes nothing. |
 
-The app's only network activity is a once-a-day update check against GitHub's and Homebrew's
-public APIs ([details](PRIVACY.md)).
+It does reach the network, in three places: the limits poll to `api.anthropic.com` every five
+minutes (off switch in Options), a once-a-day update check against GitHub's and Homebrew's public
+APIs, and the MCP health check — which starts your own servers, and remote ones are your servers
+talking to whoever they talk to. Every file it writes and every request it makes is listed in
+[PRIVACY.md](PRIVACY.md).
 
 There is also a slash command, `/mcp-health`, that prints the same MCP map as text.
 
@@ -174,7 +179,10 @@ There is also a slash command, `/mcp-health`, that prints the same MCP map as te
 
 - macOS 12+
 - [Claude Code](https://claude.com/claude-code) (CLI or the Desktop app)
-- Node.js, and the system `/usr/bin/python3` (Command Line Tools)
+- Node.js, and the system `/usr/bin/python3`
+- Xcode Command Line Tools (`xcode-select --install`) — the plugin channel compiles the app on
+  your own machine with `swiftc`, so without them the first build has nothing to build with. Not
+  needed for the DMG.
 
 ## Menu bar space
 
@@ -192,8 +200,9 @@ prints the menu it would draw, which beats hunting for an item that may be parke
 
 ```bash
 node "/Applications/Claude Control Bar.app/Contents/Resources/uninstall.js"   # removes only our hooks
-brew uninstall --zap claude-control-bar                                      # app + every file it created
 ```
+
+Then drag the app to the Trash. State it created lives in `~/.claude/control-bar/`.
 
 Installed as a plugin: `/plugin uninstall claude-control-bar` removes the hooks, then drag
 `~/Applications/Claude Control Bar.app` to the Trash. If you installed the `statusLine` capture,

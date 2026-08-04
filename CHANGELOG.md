@@ -32,8 +32,46 @@ reports on Claude Code — it switches parts of it off.
   altering a byte of its output.
 - `CONTROL_BAR_DUMP_MENU=1` prints the menu the app would draw.
 
+### Security
+
+- **A server configured in a project's `.mcp.json` is listed but never started.** The health
+  check read that file straight out of the repository and handed its `command` to a subprocess,
+  with none of the approval flags Claude Code gates it on — so cloning a repository and opening
+  Claude Code in it was enough for a command from someone else's config to run on the next
+  check, approved or not, switched off in this app or not. Servers you added yourself are
+  unaffected; the row for a project one now says *approve in Claude Code* and stays inert until
+  you have.
+- **A backup of `settings.json` can no longer be wider than the file it copies.** The backup was
+  created fresh, so there was no mode to inherit and the usual `umask 022` made it `0644` while
+  the original stood at `0600` — and that file holds the `env` of MCP servers, tokens included.
+  Backups now take the source's mode, never wider than the owner.
+- **A settings file that will not parse is left alone.** Reading swallowed every error and
+  returned "no file", so one click while the user had the file open in an editor mid-edit
+  replaced all of their settings with a single deny rule — and the backup step, reading the same
+  unparseable file, wrote nothing either. A parse failure now aborts the toggle.
+- **A change made by someone else between our read and our write is no longer overwritten.** The
+  lock only ever held back this app's own processes; Claude Code and the user's editor do not
+  take it. The file's fingerprint is now re-checked immediately before the replace, and a
+  mismatch abandons the write.
+
 ### Fixed
 
+- **A `settings.json` symlinked into a dotfiles repository stays a symlink.** The atomic replace
+  swapped the link itself for a regular file, so the dotfiles original quietly stopped receiving
+  changes — no error, just a sync that had died. Both the Python backend and the Node hooks now
+  resolve the link and write through to its target.
+- **`/mcp-health` no longer dies on a project's HTTP server.** That case produces the state
+  `unknown`, which had no entry in the glyph table the report indexes directly, so one correctly
+  configured remote server in any open project took the whole command down with a `KeyError`.
+- **Turning off "Limits via Anthropic API" now removes the figures.** The switch stopped future
+  polls but nothing cleared what had already been fetched, so the bars kept showing old
+  percentages with no sign they had stopped moving. Readings that came from the API are dropped
+  when the API is off; a statusLine capture is the user's own second source and stays.
+- **Two MCP checks can no longer run at once.** The backend ran on a concurrent queue with a
+  plain boolean for "busy", so a toggle during a check started a second pass over the same
+  servers and the same cache files, and whichever finished first announced that the work was
+  done. The queue is serial now, in-flight operations are counted rather than flagged, and a
+  refresh asked for while one is already running is dropped instead of queued.
 - **A model missing from the local registry no longer inflates the context percentage.** Claude
   Code 2.1.205 knows `claude-opus-4-8` and aliases `opus` to it, while transcripts say
   `claude-opus-5` — a name absent from the binary. Falling through to the 200k default put a
@@ -146,7 +184,7 @@ reports on Claude Code — it switches parts of it off.
 ## [0.4.0] - 2026-07-22
 
 ### Added
-- **Homebrew!** Install (or switch over from an existing DMG install) with `brew install --cask claude-status-bar && open -a "Claude Status Bar"`. The launch at the end is required: it installs the Claude Code hooks, and on a switch-over it also removes your old copy. See [HOMEBREW.md](HOMEBREW.md) for the full story.
+- **Homebrew!** Install (or switch over from an existing DMG install) with `brew install --cask claude-status-bar && open -a "Claude Status Bar"`. The launch at the end is required: it installs the Claude Code hooks, and on a switch-over it also removes your old copy. See [upstream's HOMEBREW.md](https://github.com/m1ckc3s/claude-status-bar/blob/main/HOMEBREW.md) for the full story.
 - **The update line in the menu is now brew-aware.** Installed via brew: "Update via brew" appears with a copy button (click, paste in your terminal) and only once Homebrew can actually deliver the new version (the cask lags a release by up to a day). Installed via DMG: "Update available" opens the releases page as before, plus a "Switch to Homebrew" copy button.
 - **Completion sound is back**, now as a Completion Sound menu with a length threshold (Off / 1 min+ / 5 min+ / 15 min+) instead of a single on/off toggle. It chimes when a turn that ran at least the chosen length finishes, per session, and is off by default.
 
@@ -279,6 +317,7 @@ reports on Claude Code — it switches parts of it off.
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[0.5.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.5.0
 [0.4.3]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.4.3
 [0.4.2]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.4.2
 [0.4.0]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.4.0
