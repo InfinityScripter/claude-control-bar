@@ -7,6 +7,87 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.5.3] - 2026-08-05
+
+### Security
+
+- **`statusline --install` cannot wipe `settings.json` any more.** The two switches in the menu
+  are careful about that file — a lock for the whole read-modify-write, a fingerprint checked
+  again just before the rename, and a refusal to treat an unparseable file as an empty one. The
+  status line installer, one function away, had none of it: it read through `read_json(...) or {}`
+  and wrote with no fingerprint at all. Reproduced against the pre-fix code: with the file
+  momentarily invalid — someone editing it by hand — a single `--install` replaced the whole of
+  it, `permissions.deny` and the `env` block with its tokens included, with one `statusLine` key.
+  No backup was left either, because `backup_settings()` on a file it cannot read quietly returns
+  nothing. Both install and uninstall now use the same contract as the switches, and refuse
+  rather than guess.
+
+### Fixed
+
+- **Switching a tool off actually switches it off, for plugin servers and claude.ai connectors.**
+  The deny rule was assembled from the server's display name, and no real tool name contains a
+  space or a colon: `plugin:claude-mem:mcp-search` reaches Claude Code as
+  `plugin_claude-mem_mcp-search`, and a connector under its uuid. The rule matched nothing, so
+  the tool loaded into every new session while the switch sat off and the "N of M tools on" count
+  promised a saving that was not happening — the panel agreeing with itself, since the same wrong
+  string was used to read the state back. The spelling Claude Code actually uses is now resolved
+  once, in the backend, from the transcripts and the desktop connector cache, and the app is
+  handed it rather than rebuilding it. On the development machine that is five servers whose
+  switches did nothing. Turning a tool back on also clears the old rule, which would otherwise sit
+  in `settings.json` forever, matching nothing.
+- **A working session is no longer shown as idle.** The transcript's last line was searched for
+  `interrupted by user` anywhere in the raw JSONL, and a tool result is itself a `"type":"user"`
+  record — so Claude reading any file that contains the phrase (three of this repository's own
+  files do) stopped the animation and the timer mid-turn, and cost a session waiting on permission
+  its amber alert. Measured across this machine's transcripts: 27 lines carry the phrase without
+  being an interrupt, against 2 that are one. The record is now parsed and the marker matched
+  exactly.
+- **"A server went down" notifications are delivered.** They were posted for the app's whole life
+  without ever asking for permission, and macOS does not prompt on delivery — it declines, with
+  nothing but an `NSLog` to say so. Permission is now requested the first time there is something
+  to report, so the prompt arrives attached to a real event rather than at first launch.
+- **The panel stops starting servers the user switched off.** Collecting tool descriptions runs
+  each server's own command, and the list came from `~/.claude.json` with no regard for the
+  switches — so a disabled server was launched twice an hour by the very panel that shows it as
+  off (reproduced: a disabled server whose command was `touch marker` created the marker). Its
+  answer was not even used.
+- **`--install` and `--uninstall` recognise their own status line, not any file called
+  `statusline.sh`.** That is the name in Claude Code's own documented example, so a user with
+  their own status line was told "already installed" and, on uninstall, had their command deleted
+  by an operation that promises to undo only its own work.
+- **Both channels' hooks can no longer fire at once on a machine using nvm, volta or asdf.** The
+  plugin claimed ownership of the hooks before trying to remove the app channel's copies, and it
+  looked for node in three fixed paths. Where node lives elsewhere the removal could not run, the
+  claim was already written, and `install.js` — which reads that claim and stands down — never
+  reclaimed them: two sets of hooks, every event, permanently. The claim is now written only once
+  the duplicates are gone, and node is looked for where the app itself looks for it.
+- **A saved multi-line status line command is run whole.** The wrapper read one line of it.
+- **A pre-release is no longer treated as newer than the release it precedes.** `0.6.0-rc.1`
+  compared above `0.6.0`, because an unparsable component became `0` and left the version one
+  component longer.
+- **A check asked for while another is running is no longer dropped.** A toggle schedules a
+  re-check; if a scheduled refresh was already in flight — one that started before the toggle and
+  cannot know about it — the new request was discarded and the row stayed stale until the
+  ten-minute timer came round.
+- **A backend that dies says so.** Its exit code and stderr both went to `/dev/null`, so a script
+  failing on a traceback was indistinguishable from one with nothing to report.
+- **A dangling `settings.json` symlink stays a symlink.** `realpath` throws on one, and the
+  fallback wrote a regular file over the link — the exact dotfiles breakage the resolution exists
+  to prevent. A `settings.json` that does not parse now stops the installer with a sentence
+  instead of an unhandled stack trace.
+- **Assorted:** the saved status line command is written `0600` like everything else in the state
+  directory; a log or transcript vanishing mid-sort no longer takes down the whole refresh; the
+  refresh lock outlives the refresh it guards; the triage bot points at this repository's issue
+  forms rather than the upstream project's; the DMG cleanliness guard inspects the volume
+  `hdiutil` actually mounted rather than an assumed path.
+
+### Documentation
+
+- PRIVACY.md now lists everything that is read, including `~/.claude.json` (which holds MCP server
+  `env` blocks), Claude Code's MCP logs, the desktop connector cache and the OAuth token behind
+  the limits poll — and says that the dated `settings.json` backups live beside the original
+  rather than in the state directory.
+
 ## [0.5.2] - 2026-08-04
 
 ### Security
@@ -385,6 +466,8 @@ reports on Claude Code — it switches parts of it off.
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[0.5.3]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.5.3
+[0.5.2]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.5.2
 [0.5.1]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.5.1
 [0.5.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.5.0
 [0.4.3]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.4.3

@@ -27,6 +27,13 @@ struct MCPTool {
 
 struct MCPServer {
     let name: String
+    /// How Claude Code spells this server INSIDE a tool name — `mcp__<toolPrefix>__<tool>`, which
+    /// is what a permissions.deny rule has to match. Not the display name: a claude.ai connector
+    /// travels under its uuid and `plugin:claude-mem:mcp-search` under
+    /// `plugin_claude-mem_mcp-search`. Resolved by mcpbar.py, which is the side that can see the
+    /// transcripts and the desktop cache, and carried here rather than recomputed — the second
+    /// copy of that logic is exactly what produced rules that matched nothing.
+    let toolPrefix: String
     var state: String   // ok | failed | pending | off | unknown (remote project server, unprobed)
     let source: String  // user | claude.ai | plugin | project
     /// The project a local/project-scoped server belongs to. These exist only for the session
@@ -196,8 +203,10 @@ final class MCPModel {
                 },
                 enabled: !denied.contains(name))
         }
+        let name = raw["name"] as? String ?? "?"
         return MCPServer(
-            name: raw["name"] as? String ?? "?",
+            name: name,
+            toolPrefix: raw["toolPrefix"] as? String ?? name,
             state: raw["state"] as? String ?? "failed",
             source: raw["source"] as? String ?? "user",
             project: raw["project"] as? String,

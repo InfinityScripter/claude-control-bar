@@ -67,6 +67,22 @@ const stamp = () => {
   try { const st = fs.statSync(settingsPath); return `${st.mtimeMs}:${st.size}`; } catch { return ""; }
 };
 
+// Where the bytes actually belong. settings.json is commonly a symlink into ~/dotfiles, and
+// renaming over the link replaces the link itself with a regular file — the dotfiles original
+// then silently stops receiving changes and the user's sync is broken without a single error
+// message. realpath answers that for a live link; for a DANGLING one (dotfiles not cloned yet)
+// it throws, and the old fallback to the link path performed the exact replacement this resolve
+// exists to prevent — so the link is followed by hand instead.
+const resolveSettingsPath = () => {
+  try { return fs.realpathSync(settingsPath); } catch {}
+  try {
+    if (fs.lstatSync(settingsPath).isSymbolicLink()) {
+      return path.resolve(path.dirname(settingsPath), fs.readlinkSync(settingsPath));
+    }
+  } catch {}
+  return settingsPath;
+};
+
 // Temp file in the same directory, then rename. A truncating write that dies halfway — no space
 // left, a killed process — leaves the user with an empty settings.json and no working session.
 // rename() within one filesystem is atomic: a reader sees either the whole old file or the whole
@@ -79,11 +95,7 @@ const writeSettingsAtomic = (text, readAt) => {
   }
   let mode;
   try { mode = fs.statSync(settingsPath).mode; } catch {}
-  // Resolved first: settings.json is commonly a symlink into ~/dotfiles, and renaming over the
-  // link replaces the link itself with a regular file — the dotfiles original then silently
-  // stops receiving changes and the user's sync is broken without a single error message.
-  let target = settingsPath;
-  try { target = fs.realpathSync(settingsPath); } catch {}
+  const target = resolveSettingsPath();
   const tmp = `${target}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, text, mode === undefined ? undefined : { mode });
   fs.renameSync(tmp, target);
@@ -93,7 +105,17 @@ const writeSettingsAtomic = (text, readAt) => {
 let settings = {};
 const readAt = stamp();
 if (fs.existsSync(settingsPath)) {
-  settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+  try {
+    settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+  } catch (err) {
+    // Said out loud and left alone. An unhandled parse error killed the install with a stack
+    // trace nobody sees (the app starts this without a terminal), so the symptom was an app
+    // with no sessions in it and no explanation anywhere. Rewriting the file from {} instead
+    // would be far worse: it would take the user's own settings with it.
+    console.error("settings.json does not parse — hooks not installed:", err.message);
+    console.error("Fix " + settingsPath + " and the next launch will install them.");
+    process.exit(1);
+  }
   const bak = settingsPath + ".bak-control-bar";
   if (!fs.existsSync(bak)) fs.copyFileSync(settingsPath, bak);
 }

@@ -1,7 +1,8 @@
 import Cocoa
 
-// Checks on the MCP model, compiled against Sources/MCPModel.swift:
-//   swiftc -O Sources/MCPModel.swift tests/model-test.swift -o /tmp/t -framework Cocoa && /tmp/t
+// Checks on the MCP model and the transcript reader:
+//   swiftc -O Sources/MCPModel.swift Sources/Transcript.swift tests/model/main.swift \
+//     -o /tmp/t -framework Cocoa && /tmp/t
 // There is no test target in this project (it builds with a bare swiftc, no Xcode project), so
 // this is a plain executable that exits non-zero on the first failure.
 
@@ -96,6 +97,39 @@ check(!model.isChecking("wiki", backendBusy: false),
 check(!model.isChecking("yt", backendBusy: true),
       "a server that already answered does not spin")
 check(!model.isChecking("nosuch", backendBusy: true), "an unknown server does not spin")
+
+// A tool's deny rule is built from the prefix the transcript proves Claude Code uses, not from
+// the display name. Built from the name, the rule matched no tool at all: the switch went off,
+// the tool kept loading, and the "N/M tools on" count promised a saving that never happened.
+let prefixed = try! JSONSerialization.data(withJSONObject: ["servers": [
+    ["name": "claude.ai Figma", "toolPrefix": "b6d68fb1", "state": "ok", "source": "claude.ai",
+     "toolNames": ["get_screenshot"]],
+    ["name": "wiki", "state": "ok", "source": "user", "toolNames": ["GetPageById"]],
+]])
+try! prefixed.write(to: URL(fileURLWithPath: path))
+check(model.reloadIfChanged(force: true), "re-reads the prefixed picture")
+check(model.servers.first { $0.name == "claude.ai Figma" }?.toolPrefix == "b6d68fb1",
+      "a connector carries the prefix its tools actually use")
+check(model.servers.first { $0.name == "wiki" }?.toolPrefix == "wiki",
+      "a server without one falls back to its own name")
+
+// The interrupt marker, told apart from a line that merely quotes it. A tool result is itself a
+// "type":"user" record, so reading any file containing the phrase used to stop the animation and
+// the timer in the middle of a turn that was still running.
+check(Transcript.wasInterrupted(
+    #"{"type":"user","message":{"content":"[Request interrupted by user]"}}"#),
+      "the marker as a plain string is an interrupt")
+check(Transcript.wasInterrupted(
+    #"{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}"#),
+      "the marker inside a text block is an interrupt too")
+check(!Transcript.wasInterrupted(
+    #"{"type":"user","message":{"content":[{"type":"tool_result","content":"…interrupted by user…"}]}}"#),
+      "a tool result quoting the phrase is NOT an interrupt")
+check(!Transcript.wasInterrupted(
+    #"{"type":"assistant","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#),
+      "and neither is an assistant message that types it out")
+check(!Transcript.wasInterrupted("not json at all, interrupted by user"),
+      "a line that does not parse is not an interrupt")
 
 try? FileManager.default.removeItem(atPath: dir)
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")

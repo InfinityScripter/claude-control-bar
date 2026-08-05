@@ -86,29 +86,78 @@ def running():
     return subprocess.run(["/usr/bin/pgrep", "-x", EXEC], capture_output=True).returncode == 0
 
 
+def version_key(name):
+    """Newest-first ordering for nvm's directory names. Component-wise, like the app's own
+    search: as text "v9.11.2" sorts above "v20.19.0", and the installer this runs uses APIs the
+    older one does not have."""
+    parts = []
+    for chunk in name.lstrip("v").split("."):
+        if not chunk.isdigit():
+            break
+        parts.append(int(chunk))
+    return parts
+
+
+def find_node():
+    """Node wherever it actually lives — the same places the app looks (see locateNode()).
+
+    Three fixed paths cover a system or Homebrew install and nothing else. On a machine using
+    nvm, volta or asdf there was no node here at all, so the app channel's hooks could not be
+    removed — while the app itself, which does know those layouts, had installed them and kept
+    them working. Both sets then fired on every event, forever: the exact duplication the lease
+    below exists to prevent.
+    """
+    candidates = [
+        "/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node",
+        os.path.join(HOME, ".volta", "bin", "node"),
+        os.path.join(HOME, ".asdf", "shims", "node"),
+    ]
+    nvm = os.path.join(HOME, ".nvm", "versions", "node")
+    try:
+        versions = sorted(os.listdir(nvm), key=version_key, reverse=True)
+    except OSError:
+        versions = []
+    candidates += [os.path.join(nvm, v, "bin", "node") for v in versions]
+    return next((p for p in candidates if os.access(p, os.X_OK)), None)
+
+
+def app_hooks_present():
+    """Whether settings.json still holds hooks pointing into our directory."""
+    for entries in ((read_json(SETTINGS) or {}).get("hooks") or {}).values():
+        for entry in entries or []:
+            for hook in (entry or {}).get("hooks") or []:
+                if ROOT in (hook.get("command") or ""):
+                    return True
+    return False
+
+
+def clear_app_channel_hooks():
+    """Remove the app channel's duplicate hooks. True when settings.json is free of them."""
+    if not app_hooks_present():
+        return True
+    node, uninstall = find_node(), os.path.join(PLUGIN_ROOT, "hooks", "uninstall.js")
+    if not node or not os.path.exists(uninstall):
+        return False
+    subprocess.run([node, uninstall, "--hooks-only"], capture_output=True, timeout=20)
+    return not app_hooks_present()
+
+
 def claim_hooks():
-    """Declare the plugin the owner of the hooks and clear the app channel's duplicates.
+    """Declare the plugin the owner of the hooks, once the app channel's duplicates are gone.
 
     Both channels install the same eight hooks, and Claude Code merges plugin hooks with the
     ones in settings.json and runs every match — there is no deduplication anywhere. Someone
     with both installed pays two node processes per tool call, forever. The plugin wins because
     Claude Code removes its own hooks on `plugin uninstall`, while hooks written into
     settings.json outlive an uninstall the app may never get the chance to run.
+
+    Claimed after the removal, not before. Written first, the claim froze the duplication in
+    place whenever the removal failed: install.js reads owner.json, sees the plugin, and returns
+    without touching the hooks it would otherwise have reclaimed.
     """
-    write_json(OWNER, {"channel": "plugin", "pluginRoot": PLUGIN_ROOT,
-                       "version": plugin_version()})
-    # Cheap guard: only spawn node when settings.json actually mentions our directory.
-    try:
-        with open(SETTINGS) as fh:
-            if ROOT not in fh.read():
-                return
-    except OSError:
-        return
-    uninstall = os.path.join(PLUGIN_ROOT, "hooks", "uninstall.js")
-    node = next((p for p in ("/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node")
-                 if os.access(p, os.X_OK)), None)
-    if node and os.path.exists(uninstall):
-        subprocess.run([node, uninstall, "--hooks-only"], capture_output=True, timeout=20)
+    if clear_app_channel_hooks():
+        write_json(OWNER, {"channel": "plugin", "pluginRoot": PLUGIN_ROOT,
+                           "version": plugin_version()})
 
 
 def write_paths():

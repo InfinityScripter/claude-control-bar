@@ -404,7 +404,8 @@ final class StatusController: NSObject, NSMenuDelegate {
     let idleQuitDelay: TimeInterval = 3 // "not needed" must persist this long before quitting
     // "Hide idle after" setting (seconds): hide a resting session's ROW once it's been quiet this long.
     // Render-only — it never deletes the file or affects liveness (that's pid-driven now), and the
-    // most-recent session is always kept visible (floor at one). 0 = Never. Defaults to 30 min.
+    // most-recent session is always kept visible (floor at one). 0 = Never. Defaults to 15 min.
+    // No UI writes it: it is a `defaults write` knob for someone who wants a different number.
     var stalePruneAge: TimeInterval { UserDefaults.standard.object(forKey: "hideIdleAfter") as? Double ?? 900 }
 
     struct Session {
@@ -831,9 +832,16 @@ final class StatusController: NSObject, NSMenuDelegate {
     // Numeric component-wise compare so "0.0.10" > "0.0.9".
     /// Static because the Node search needs it too, and that runs before any instance exists.
     /// A leading "v" is tolerated: release tags and nvm directories both carry one.
+    ///
+    /// Everything from the first non-numeric component on is dropped, so a pre-release compares as
+    /// its own base version and never above it. Mapping an unparsable component to 0 instead had
+    /// "0.6.0-rc.1" split into 0, 6, "0-rc" -> 0, 1 — one component longer than "0.6.0" and
+    /// therefore newer, which is backwards: a release candidate would have been offered as an
+    /// update to the release it precedes.
     static func versionIsNewer(_ a: String, than b: String) -> Bool {
         let parts = { (s: String) in
-            s.drop(while: { $0 == "v" }).split(separator: ".").map { Int($0) ?? 0 }
+            s.drop(while: { $0 == "v" }).split(separator: ".")
+                .prefix(while: { Int($0) != nil }).map { Int($0) ?? 0 }
         }
         let pa = parts(a), pb = parts(b)
         for i in 0..<max(pa.count, pb.count) {
@@ -897,8 +905,23 @@ final class StatusController: NSObject, NSMenuDelegate {
             task.executableURL = URL(fileURLWithPath: self.backend.python)
             task.arguments = [self.backend.script] + arguments
             task.standardOutput = FileHandle.nullDevice
-            task.standardError = FileHandle.nullDevice
-            do { try task.run(); task.waitUntilExit() } catch {
+            // stderr and the exit code used to go to /dev/null together, so a backend that died
+            // on a traceback looked exactly like one that had nothing to report — the menu simply
+            // showed the previous picture and said nothing. Read into a pipe (not inherited: a
+            // GUI process's stderr is the system log, where it is nobody's) and surfaced only on
+            // a non-zero exit, so a healthy run stays as quiet as it was.
+            let errors = Pipe()
+            task.standardError = errors
+            do {
+                try task.run()
+                let stderr = errors.fileHandleForReading.readDataToEndOfFile()
+                task.waitUntilExit()
+                if task.terminationStatus != 0 {
+                    let text = String(data: stderr.suffix(2000), encoding: .utf8) ?? ""
+                    NSLog("ClaudeControlBar: mcpbar.py \(arguments.first ?? "") exited"
+                          + " \(task.terminationStatus): \(text)")
+                }
+            } catch {
                 NSLog("ClaudeControlBar: \(self.backend.python) failed: \(error)")
             }
             DispatchQueue.main.async {
@@ -918,13 +941,26 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     /// True from the moment a full check is asked for until it has finished.
     var refreshQueued = false
+    /// A check asked for while one was already running. Dropping it outright was wrong: the run
+    /// in flight started BEFORE the toggle and cannot know about it, so a server switched off
+    /// mid-check kept its old row until the ten-minute timer came round — a stale answer that
+    /// reads as the click having done nothing.
+    var refreshAgain = false
 
     /// Refreshes coalesce: a second full check queued behind one still running buys nothing but
-    /// another half-minute of every configured server being started again.
+    /// another half-minute of every configured server being started again. It is remembered, not
+    /// discarded, and runs once as soon as the current one lands.
     @objc func refreshMCP() {
-        guard !refreshQueued else { return }
+        guard !refreshQueued else { refreshAgain = true; return }
         refreshQueued = true
-        runBackend(["refresh"]) { [weak self] in self?.refreshQueued = false }
+        runBackend(["refresh"]) { [weak self] in
+            guard let self else { return }
+            self.refreshQueued = false
+            if self.refreshAgain {
+                self.refreshAgain = false
+                self.refreshMCP()
+            }
+        }
     }
 
     /// One usage poll: mcpbar.py reads the account limits from Anthropic's usage endpoint —
@@ -978,8 +1014,14 @@ final class StatusController: NSObject, NSMenuDelegate {
         recheckTimer = timer
     }
 
-    func setMCPTool(_ rule: String, enabled: Bool) {
-        runBackend(["toggle-tool", rule, enabled ? "--on" : "--off"])
+    /// The rule goes first for an older mcpbar.py, which reads exactly one positional argument;
+    /// `--server`/`--tool` is what a current one uses, because only it can turn a display name
+    /// into the spelling Claude Code actually uses inside a tool name. Building the rule here was
+    /// the bug: for a plugin or a claude.ai connector it produced `mcp__claude.ai Figma__…`,
+    /// which matches no tool at all — the switch went off and the tool kept loading.
+    func setMCPTool(server: String, tool: String, prefix: String, enabled: Bool) {
+        runBackend(["toggle-tool", "mcp__\(prefix)__\(tool)",
+                    "--server", server, "--tool", tool, enabled ? "--on" : "--off"])
     }
 
     @objc func openSettingsJSON() {
@@ -1033,14 +1075,26 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
     }
 
+    /// Notifications were posted without permission ever being asked for — `requestAuthorization`
+    /// appears nowhere in this project's history — so macOS declined every one of them: an app
+    /// sitting at `.notDetermined` is not prompted on delivery, the request simply fails, and the
+    /// only trace was an NSLog nobody reads. Asked here rather than
+    /// at launch, so the prompt arrives attached to a real event — a server that just fell over —
+    /// instead of ambushing the first launch. After the first answer this returns the stored
+    /// decision without prompting again.
     func notify(title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
-        UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        ) { error in if let error { NSLog("ClaudeControlBar: notification failed: \(error)") } }
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            if let error { NSLog("ClaudeControlBar: notification permission: \(error)") }
+            guard granted else { return }
+            center.add(
+                UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+            ) { error in if let error { NSLog("ClaudeControlBar: notification failed: \(error)") } }
+        }
     }
 
     // MARK: menu
@@ -1765,7 +1819,7 @@ final class StatusController: NSObject, NSMenuDelegate {
             let cap: Double = s.state == "permission" ? 7200 : 900
             if now - s.ts > cap { return "idle" }
             if !s.transcript.isEmpty, let last = lastTurnLine(ofFileAt: s.transcript),
-               last.contains("interrupted by user") { return "idle" }
+               Transcript.wasInterrupted(last) { return "idle" }
             return s.state
         }
         return s.state == "done" ? "idle" : s.state

@@ -196,6 +196,102 @@ class PatchStateAfterToggle(unittest.TestCase):
         self.assertIn("призрак", names)
 
 
+class ToolPrefix(unittest.TestCase):
+    """Приставка, которой Claude Code зовёт инструмент, — не то же самое, что отображаемое имя
+    сервера, а правило deny собирается именно из неё."""
+
+    def test_плагинный_сервер(self):
+        self.assertEqual(mcpbar.tool_prefix("plugin:claude-mem:mcp-search"),
+                         "plugin_claude-mem_mcp-search")
+
+    def test_коннектор_без_uuid(self):
+        self.assertEqual(mcpbar.tool_prefix("claude.ai Control Chrome"), "Control_Chrome")
+
+    def test_коннектор_с_uuid(self):
+        """Коннекторы десктопа живут в контексте под uuid, а не под своим названием."""
+        self.assertEqual(
+            mcpbar.tool_prefix("claude.ai Google Calendar", uuid="b3c4de1c-0f19"),
+            "b3c4de1c-0f19")
+
+    def test_обычный_сервер_остаётся_собой(self):
+        self.assertEqual(mcpbar.tool_prefix("wiki"), "wiki")
+
+    def test_транскрипт_сильнее_догадки(self):
+        """uuid — только догадка: если транскрипт знает сервер под именем, побеждает имя."""
+        self.assertEqual(
+            mcpbar.tool_prefix("claude.ai Figma", {"figma": ["get_screenshot"]}, "b6d68fb1"),
+            "Figma")
+
+    def test_правило_из_отображаемого_имени_ничего_не_запрещало(self):
+        """Тумблер гас, а инструмент грузился в каждой новой сессии: правило не совпадало."""
+        prefix = mcpbar.tool_prefix("plugin:claude-mem:mcp-search")
+        self.assertTrue(mcpbar.tool_denied([f"mcp__{prefix}__search"], prefix, "search"))
+        self.assertFalse(
+            mcpbar.tool_denied(["mcp__plugin:claude-mem:mcp-search__search"], prefix, "search"))
+
+
+class StaleToolRules(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        root = self._dir.name
+        self.settings = os.path.join(root, "settings.json")
+        state = os.path.join(root, "mcp.json")
+        with open(state, "w") as fh:
+            json.dump({"servers": [{"name": "claude.ai Figma", "toolPrefix": "b6d68fb1"}]}, fh)
+        self.saved = {k: getattr(mcpbar, k) for k in ("SETTINGS", "ROOT", "STATE")}
+        mcpbar.SETTINGS, mcpbar.ROOT, mcpbar.STATE = self.settings, root, state
+
+    def tearDown(self):
+        for key, value in self.saved.items():
+            setattr(mcpbar, key, value)
+        self._dir.cleanup()
+
+    def test_приставка_берётся_из_состояния(self):
+        rule, stale = mcpbar.rule_for_tool("claude.ai Figma", "get_screenshot")
+        self.assertEqual(rule, "mcp__b6d68fb1__get_screenshot")
+        self.assertIn("mcp__claude.ai Figma__get_screenshot", stale)
+
+    def test_включение_убирает_и_старое_нерабочее_правило(self):
+        """Иначе строка, которая ничего не запрещает, осталась бы в настройках навсегда."""
+        with open(self.settings, "w") as fh:
+            json.dump({"permissions": {"deny": ["mcp__claude.ai Figma__get_screenshot"]}}, fh)
+        rule, stale = mcpbar.rule_for_tool("claude.ai Figma", "get_screenshot")
+        mcpbar.toggle_tool(rule, turn_off=False, stale=stale)
+        with open(self.settings) as fh:
+            self.assertNotIn("permissions", json.load(fh))
+
+
+class DisabledServersStayDown(unittest.TestCase):
+    """Опрос описаний — это Popen команды сервера, то есть панель поднимала процесс, который
+    пользователь её же тумблером погасил."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        root = self._dir.name
+        self.saved = {k: getattr(mcpbar, k) for k in ("CONFIG", "SETTINGS", "DESCRIPTIONS")}
+        mcpbar.CONFIG = os.path.join(root, "claude.json")
+        mcpbar.SETTINGS = os.path.join(root, "settings.json")
+        mcpbar.DESCRIPTIONS = os.path.join(root, "descriptions.json")
+        with open(mcpbar.CONFIG, "w") as fh:
+            json.dump({"mcpServers": {"выключенный": {"command": "true"},
+                                      "живой": {"command": "true"}}}, fh)
+        with open(mcpbar.SETTINGS, "w") as fh:
+            json.dump({"deniedMcpServers": [{"serverName": "выключенный"}]}, fh)
+        self.asked = []
+        self._ask = mcpbar.ask_server_for_tools
+        mcpbar.ask_server_for_tools = lambda name, config, **kw: self.asked.append(name)
+
+    def tearDown(self):
+        mcpbar.ask_server_for_tools = self._ask
+        for key, value in self.saved.items():
+            setattr(mcpbar, key, value)
+        self._dir.cleanup()
+
+    def test_выключенный_сервер_не_запускается_за_описаниями(self):
+        mcpbar.refresh_descriptions()
+        self.assertEqual(self.asked, ["живой"])
+
+
 class ContextWindow(unittest.TestCase):
     def test_подбор_окна(self):
         windows = {"claude-opus-5": 1_000_000, "claude-sonnet-4-5": 200_000}
@@ -285,8 +381,14 @@ class ContextWindow(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
         self.tmp = self._dir.name
+        # WINDOW_CACHE подменяется тоже: model_windows() ПИШЕТ таблицу, и без подмены тест лез
+        # в настоящий ~/.claude/control-bar живой установки — то есть менял состояние машины,
+        # на которой запущен, и падал там, где домашнего каталога нет вовсе.
+        self._window_cache = mcpbar.WINDOW_CACHE
+        mcpbar.WINDOW_CACHE = os.path.join(self.tmp, "model-windows.json")
 
     def tearDown(self):
+        mcpbar.WINDOW_CACHE = self._window_cache
         self._dir.cleanup()
 
 
@@ -447,6 +549,41 @@ class StatusLineObject(unittest.TestCase):
         mcpbar.statusline_install()
         mcpbar.statusline_uninstall()
         self.assertNotIn("statusLine", self.read())
+
+    def test_битый_settings_не_затирается_установкой(self):
+        """Тот же контракт, что у тумблеров: невалидный файл — отказ, а не «файла нет».
+
+        Без него `read_json(...) or {}` читал оборванный JSON как пустые настройки, и файл
+        целиком — вместе с permissions.deny и env, где лежат токены серверов, — заменялся одним
+        ключом statusLine. Резервной копии не оставалось тоже: backup_settings() на нечитаемом
+        файле молча возвращает None.
+        """
+        broken = '{"statusLine": {"command": "printf old"},'
+        with open(self.settings, "w") as fh:
+            fh.write(broken)
+        mcpbar.statusline_install()
+        with open(self.settings) as fh:
+            self.assertEqual(fh.read(), broken)
+        self.assertFalse(os.path.exists(self.patched["STATUSLINE_SAVED"]))
+
+    def test_чужая_строка_состояния_не_считается_нашей(self):
+        """statusline.sh — имя из официального примера в документации Claude Code. По подстроке
+        install отвечал «уже установлен» и не делал ничего, а uninstall удалял чужую команду."""
+        foreign = 'bash "$HOME/.claude/statusline.sh"'
+        with open(self.settings, "w") as fh:
+            json.dump({"statusLine": {"type": "command", "command": foreign}}, fh)
+        self.assertFalse(mcpbar.statusline_state()[1])
+        mcpbar.statusline_uninstall()
+        self.assertEqual(self.read()["statusLine"]["command"], foreign)
+        mcpbar.statusline_install()
+        self.assertIn("statusline.sh", self.read()["statusLine"]["command"])
+        self.assertEqual(mcpbar.read_json(self.patched["STATUSLINE_SAVED"])["command"], foreign)
+
+    def test_команда_кладётся_с_правами_владельца(self):
+        """В сохранённой команде бывает что угодно, включая ключи; каталог живёт под 0600."""
+        mcpbar.statusline_install()
+        mode = os.stat(self.patched["STATUSLINE_INNER"]).st_mode & 0o777
+        self.assertEqual(mode, mcpbar.SECURE_FILE)
 
 
 class ProjectServers(unittest.TestCase):

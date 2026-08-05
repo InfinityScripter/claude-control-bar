@@ -28,8 +28,12 @@ if [ -f "$SELF_DIR/statusline.py" ]; then
   printf '%s' "$payload" | /usr/bin/python3 "$SELF_DIR/statusline.py" >/dev/null 2>&1 &
 fi
 
+# read -d '' takes the whole file, not its first line: a saved command may well be several lines
+# (a shell function, a pipeline broken across lines), and reading one line silently handed the
+# user back a fragment of their own status line.
 inner=""
-[ -f "$ROOT/statusline-inner-command" ] && IFS= read -r inner < "$ROOT/statusline-inner-command"
+[ -f "$ROOT/statusline-inner-command" ] && IFS= read -r -d '' inner < "$ROOT/statusline-inner-command"
+inner="${inner%$'\n'}"   # the installer's own trailing newline is not part of the command
 # Self-wrapping guard. The installer refuses to wrap itself, but the sidecar file is plain text
 # a human can edit — and a wrapper calling itself forks until the machine gives up.
 case "$inner" in *statusline.sh*) inner="" ;; esac

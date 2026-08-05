@@ -23,5 +23,5 @@ jobs:
             await github.rest.issues.createComment({ owner, repo, issue_number, body: [
               "🤖 Beep. Automated note, no offense meant: this issue was filed outside the issue forms (usually via the GitHub CLI or an agent), so it skipped the preflight checklist and didn't get labeled as a bug or a feature request.",
               "",
-              "Nothing is closed and a human will read this either way. You can speed things up by replying with which one this is (bug or feature request), or by refiling through the [issue forms](https://github.com/m1ckc3s/claude-status-bar/issues/new/choose).",
+              `Nothing is closed and a human will read this either way. You can speed things up by replying with which one this is (bug or feature request), or by refiling through the [issue forms](https://github.com/${owner}/${repo}/issues/new/choose).`,
             ].join("\n") });

@@ -410,7 +410,7 @@ extension StatusController {
     private func toolRow(_ tool: MCPTool, of server: MCPServer, indent: CGFloat) -> NSMenuItem {
         let item = NSMenuItem()
         item.title = (tool.enabled ? "on   " : "off  ") + tool.name
-        let name = tool.name, serverName = server.name
+        let name = tool.name, serverName = server.name, prefix = server.toolPrefix
         let row = MCPRowView(
             // No glyph: the switch on the right already says on or off. A tick that repeats it
             // has to be kept in sync with it, and it was not — it stayed green under a switch
@@ -425,7 +425,7 @@ extension StatusController {
             // takes long enough that the counts would sit stale until the menu is reopened.
             self.mcp.setToolLocally(server: serverName, tool: name, enabled: on)
             self.refreshCounts()
-            self.setMCPTool("mcp__\(serverName)__\(name)", enabled: on)
+            self.setMCPTool(server: serverName, tool: name, prefix: prefix, enabled: on)
         }
         // Kept alongside the card: the card needs a hover to appear, the tooltip is what
         // VoiceOver and a keyboard-driven pass over the menu can still reach.

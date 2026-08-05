@@ -36,6 +36,17 @@ if (!fs.existsSync(settingsPath)) { console.log("No settings.json; nothing to do
 const stamp = () => {
   try { const st = fs.statSync(settingsPath); return `${st.mtimeMs}:${st.size}`; } catch { return ""; }
 };
+// See install.js: a settings.json symlinked into ~/dotfiles must keep being a symlink, including
+// when the link dangles and realpath refuses to answer.
+const resolveSettingsPath = () => {
+  try { return fs.realpathSync(settingsPath); } catch {}
+  try {
+    if (fs.lstatSync(settingsPath).isSymbolicLink()) {
+      return path.resolve(path.dirname(settingsPath), fs.readlinkSync(settingsPath));
+    }
+  } catch {}
+  return settingsPath;
+};
 const writeSettingsAtomic = (text, readAt) => {
   if (stamp() !== readAt) {
     console.log("settings.json changed while we were working on it — nothing removed.");
@@ -43,9 +54,7 @@ const writeSettingsAtomic = (text, readAt) => {
   }
   let mode;
   try { mode = fs.statSync(settingsPath).mode; } catch {}
-  // See install.js: a settings.json symlinked into ~/dotfiles must keep being a symlink.
-  let target = settingsPath;
-  try { target = fs.realpathSync(settingsPath); } catch {}
+  const target = resolveSettingsPath();
   const tmp = `${target}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, text, mode === undefined ? undefined : { mode });
   fs.renameSync(tmp, target);
@@ -53,7 +62,14 @@ const writeSettingsAtomic = (text, readAt) => {
 };
 
 const readAt = stamp();
-const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+let settings;
+try {
+  settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+} catch (err) {
+  // Removing hooks from a file we cannot read means rewriting it from a guess. Say so and stop.
+  console.error("settings.json does not parse — nothing removed:", err.message);
+  process.exit(1);
+}
 // Compared against the re-serialised parse so the user's own formatting is not mistaken for a
 // change: the plugin runs this on every session start.
 const before = JSON.stringify(settings, null, 2) + "\n";

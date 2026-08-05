@@ -14,6 +14,7 @@ MCP-картину ведёт этот скрипт (mcp.json), рисует в�
     toggle-server    выключить/включить сервер целиком
     toggle-tool      выключить/включить отдельный инструмент
     statusline       перехват лимитов: --install / --uninstall / без флага — статус
+    limits           спросить лимиты аккаунта у эндпоинта и переписать limits.json
     doctor           проверить окружение и показать, что откуда берётся
 """
 
@@ -45,7 +46,10 @@ DESKTOP_SESSIONS = os.path.join(
 TRANSCRIPTS = os.path.join(CLAUDE, "projects", "*", "*.jsonl")
 
 TTL = int(os.environ.get("CONTROL_BAR_TTL", "600"))
-LOCK_TTL = 120
+# Не меньше, чем сама проверка в худшем случае: `claude mcp list` ждёт ответа до 120 секунд и
+# зовётся ещё раз на каждый проект живой сессии. При прежних 120 секундах лок протухал посреди
+# работы, и следующий запуск statusLine поднимал вторую такую же проверку поверх первой.
+LOCK_TTL = 600
 
 OK, FAILED, PENDING, AUTH, OFF = "ok", "failed", "pending", "auth", "off"
 UNKNOWN = "unknown"
@@ -125,6 +129,22 @@ STRINGS = {
     "doc.nofile": ("no file", "нет файла"),
     "doc.nostate": ("not collected yet", "ещё не собрано"),
     "lang": ("interface language", "язык интерфейса"),
+    "sl.nowrapper": ("statusline.sh not found next to the script",
+                     "statusline.sh не найден рядом со скриптом"),
+    "sl.already": ("already installed", "уже установлен"),
+    "sl.busy": ("settings.json is being edited by someone else — nothing written",
+                "settings.json прямо сейчас правит кто-то ещё — ничего не записано"),
+    "sl.installed": ("installed; previous command saved: {cmd}",
+                     "установлен; прежняя команда сохранена: {cmd}"),
+    "sl.nocommand": ("(there was none)", "(её не было)"),
+    "sl.notours": ("not installed — the statusLine is not ours, leaving it alone",
+                   "не установлен — statusLine не наш, ничего не трогаю"),
+    "sl.restored": ("restored: {cmd}", "возвращено: {cmd}"),
+    "sl.removed": ("(statusLine removed)", "(statusLine удалён)"),
+    "sl.on": ("capture on", "перехват включён"),
+    "sl.off": ("capture off", "перехват выключен"),
+    "sl.current": ("current command: {cmd}", "текущая команда: {cmd}"),
+    "sl.unset": ("(statusLine not configured)", "(statusLine не настроен)"),
 }
 
 
@@ -185,6 +205,19 @@ def read_json(path, default=None):
             return json.load(fh)
     except Exception:
         return default
+
+
+def mtime(path):
+    """Время правки, 0 для исчезнувшего файла.
+
+    Ключ сортировки не имеет права бросать. Логи MCP и транскрипты переписывает Claude Code, и
+    файл, пропавший между glob() и sorted(), ронял OSError'ом весь refresh — вместе с картой,
+    которую он собирал.
+    """
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0
 
 
 def write_json(path, data, indent=None, mode=None):
@@ -350,7 +383,7 @@ def counts_from_logs():
     best = {}
     for folder in glob.glob(MCP_LOGS):
         server = os.path.basename(folder)[len("mcp-logs-") :]
-        logs = sorted(glob.glob(folder + "/*.jsonl"), key=os.path.getmtime, reverse=True)
+        logs = sorted(glob.glob(folder + "/*.jsonl"), key=mtime, reverse=True)
         for log in logs[:3]:
             count = None
             try:
@@ -362,9 +395,9 @@ def counts_from_logs():
             except OSError:
                 continue
             if count is not None:
-                mtime = os.path.getmtime(log)
-                if server not in best or mtime > best[server][1]:
-                    best[server] = (count, mtime)
+                stamp = mtime(log)
+                if server not in best or stamp > best[server][1]:
+                    best[server] = (count, stamp)
                 break
     return {k: v[0] for k, v in best.items()}
 
@@ -495,7 +528,16 @@ def refresh_descriptions(force=False):
     import threading
 
     cached = read_json(DESCRIPTIONS) or {}
-    servers = (read_json(CONFIG) or {}).get("mcpServers") or {}
+    # Выключенный сервер не запускаем. Опрос — это Popen его собственной команды, то есть панель
+    # своими руками поднимала процесс, который пользователь её же тумблером погасил (проверено:
+    # выключенный сервер с командой `touch marker` этот marker создавал). Ответ при этом даже не
+    # нужен: выключенный сервер в контекст не попадает, описывать в карточке нечего.
+    off = set(denied_servers())
+    servers = {
+        name: config
+        for name, config in ((read_json(CONFIG) or {}).get("mcpServers") or {}).items()
+        if name not in off
+    }
     fresh_until = time.time() - DESCRIPTIONS_TTL
     # Формат записи версионируем: в первой версии параметров инструментов не было,
     # и без этой проверки карточка при наведении оставалась бы пустой ещё сутки —
@@ -532,17 +574,25 @@ def refresh_descriptions(force=False):
 
 
 def connectors_from_desktop():
-    """Коннекторы claude.ai в stderr молчат — их схемы кеширует десктоп-приложение."""
+    """Коннекторы claude.ai в stderr молчат — их схемы кеширует десктоп-приложение.
+
+    Кроме инструментов отсюда берётся uuid: именно он, а не отображаемое имя, стоит внутри
+    имён инструментов коннектора (mcp__b3c4de1c-…__create_event), и без него правило deny
+    собиралось из «claude.ai Google Calendar» и не совпадало ни с чем.
+    """
     files = sorted(
         glob.glob(DESKTOP_SESSIONS + "/**/*.json", recursive=True),
-        key=os.path.getmtime,
+        key=mtime,
         reverse=True,
     )
     for path in files[:200]:
         remote = (read_json(path) or {}).get("remoteMcpServersConfig")
         if remote:
             return {
-                s["name"]: [describe_tool(t) for t in (s.get("tools") or [])]
+                s["name"]: {
+                    "uuid": s.get("uuid") or "",
+                    "tools": [describe_tool(t) for t in (s.get("tools") or [])],
+                }
                 for s in remote
             }
     return {}
@@ -554,7 +604,7 @@ def tool_names_from_transcripts():
     Claude Code пишет записи deferred_tools_delta с полными именами вида mcp__wiki__GetPageById.
     Свежий по mtime файл может дельт не содержать (транскрипты субагентов), поэтому ищем перебором.
     """
-    files = sorted(glob.glob(TRANSCRIPTS), key=os.path.getmtime, reverse=True)
+    files = sorted(glob.glob(TRANSCRIPTS), key=mtime, reverse=True)
     for path in files[:60]:
         names = []
         try:
@@ -605,13 +655,32 @@ def short_name(name):
     return name
 
 
-def lookup_tools(index, name):
-    """В транскрипте сервер зовётся иначе, чем в списке, — пробуем несколько написаний."""
-    for candidate in (name, short_name(name), name.replace("_", "-")):
-        hit = index.get(candidate.lower())
-        if hit:
-            return hit
-    return []
+def sanitized_prefix(name):
+    """Отображаемое имя, приведённое к тому виду, в котором оно может стоять внутри имени
+    инструмента: приставка «claude.ai » снимается, всё, кроме букв, цифр, дефиса и
+    подчёркивания, становится подчёркиванием."""
+    bare = name[len("claude.ai ") :] if name.startswith("claude.ai ") else name
+    return re.sub(r"[^A-Za-z0-9_-]", "_", bare)
+
+
+def tool_prefix(name, index=None, uuid=""):
+    """Как сервер зовётся ВНУТРИ имени инструмента: mcp__<приставка>__<инструмент>.
+
+    Это не то же самое, что отображаемое имя, и правило deny строится именно отсюда. Настоящие
+    имена инструментов не содержат ни пробелов, ни двоеточий: plugin:claude-mem:mcp-search живёт
+    в контексте как plugin_claude-mem_mcp-search, а коннектор claude.ai — под своим uuid. Правило,
+    собранное из отображаемого имени, не совпадало ни с одним инструментом: тумблер в панели
+    гас, а инструмент продолжал грузиться в каждой новой сессии — и счётчик «N/M tools on»
+    обещал экономию контекста, которой не было.
+
+    Транскрипт знает настоящие приставки, поэтому кандидат, который в нём нашёлся, побеждает
+    догадку; догадка нужна для сервера, которым ещё ни разу не пользовались.
+    """
+    candidates = [c for c in (uuid, sanitized_prefix(name), name) if c]
+    for candidate in candidates:
+        if index and candidate.lower() in index:
+            return candidate
+    return candidates[0]
 
 
 def session_cwds():
@@ -670,13 +739,18 @@ def attach_tools(servers):
 
     for entry in servers:
         bare = short_name(entry["name"])
+        connector = connectors.get(bare) or {}
         described = []
         if entry["name"] in asked:
             described = asked[entry["name"]]["tools"]
-        elif bare in connectors:
-            described = connectors[bare]
-        names = sorted(t["name"] for t in described) if described \
-            else lookup_tools(index, entry["name"])
+        elif connector:
+            described = connector["tools"]
+        prefix = tool_prefix(entry["name"], index, connector.get("uuid", ""))
+        # Приставка едет в состояние: правило deny собирает приложение, и второй экземпляр этой
+        # логики в Swift разошёлся бы с этим — ровно так и появилось правило, которое ничего
+        # не запрещало.
+        entry["toolPrefix"] = prefix
+        names = sorted(t["name"] for t in described) if described else index.get(prefix.lower(), [])
 
         entry["toolNames"] = names
         entry["toolDocs"] = {t["name"]: t["description"] for t in described if t.get("description")}
@@ -707,11 +781,15 @@ def denied_tools():
     return [rule for rule in (perms.get("deny") or []) if rule.startswith("mcp__")]
 
 
-def tool_denied(rules, server, tool):
-    """Инструмент погашен правилом на весь сервер, точным именем или глобом."""
-    full = f"mcp__{server}__{tool}"
+def tool_denied(rules, prefix, tool):
+    """Инструмент погашен правилом на весь сервер, точным именем или глобом.
+
+    Первым аргументом идёт приставка из tool_prefix(), а не отображаемое имя: правило пишется
+    ровно теми буквами, которыми Claude Code зовёт инструмент, иначе оно ничего не запрещает.
+    """
+    full = f"mcp__{prefix}__{tool}"
     for rule in rules:
-        if rule == f"mcp__{server}" or rule == full:
+        if rule == f"mcp__{prefix}" or rule == full:
             return True
         if rule.endswith("*") and full.startswith(rule[:-1]):
             return True
@@ -762,6 +840,7 @@ def patch_state_after_toggle():
         data.setdefault("servers", []).append({
             "name": name, "target": "", "status": t("server.off"), "state": OFF,
             "source": classify(name, local), "tools": None, "toolNames": [], "toolDocs": {},
+            "toolPrefix": tool_prefix(name),
         })
     for entry in data.get("servers", []):
         entry["disabled"] = entry["name"] in off
@@ -775,7 +854,7 @@ def patch_state_after_toggle():
             entry["status"] = t("server.restart")
         entry["deniedTools"] = [
             tool for tool in entry.get("toolNames", [])
-            if tool_denied(rules, entry["name"], tool)
+            if tool_denied(rules, entry.get("toolPrefix") or entry["name"], tool)
         ]
     data["denyRules"] = rules
     write_json(STATE, data)
@@ -834,18 +913,33 @@ def _toggle_server_locked(name, turn_off):
     return write_settings(settings, expect=seen)
 
 
-def toggle_tool(rule, turn_off):
+def rule_for_tool(server, tool):
+    """Правило deny для инструмента — и написания, которыми оно когда-то собиралось ошибочно.
+
+    Приставку берём из состояния: её посчитал refresh, когда видел и транскрипты, и кеш
+    десктопа. Ошибочные написания уходят вместе с рабочим правилом, иначе строка, которая
+    ничего не запрещает, осталась бы в настройках пользователя навсегда.
+    """
+    known = {s["name"]: s.get("toolPrefix") for s in (load_state() or {}).get("servers", [])}
+    prefix = known.get(server) or tool_prefix(server)
+    rule = f"mcp__{prefix}__{tool}"
+    wrong = {f"mcp__{p}__{tool}" for p in (server, short_name(server), sanitized_prefix(server))}
+    return rule, sorted(wrong - {rule})
+
+
+def toggle_tool(rule, turn_off, stale=()):
     with settings_lock():
-        return _toggle_tool_locked(rule, turn_off)
+        return _toggle_tool_locked(rule, turn_off, stale)
 
 
-def _toggle_tool_locked(rule, turn_off):
+def _toggle_tool_locked(rule, turn_off, stale=()):
     settings, seen = read_settings_for_edit()
     if settings is None:
         return False
     perms = settings.setdefault("permissions", {})
     current = list(perms.get("deny") or [])
-    kept = [r for r in current if r != rule]
+    drop = {rule, *stale}
+    kept = [r for r in current if r not in drop]
     if turn_off:
         kept.append(rule)
     if kept == current:
@@ -888,9 +982,37 @@ def find_statusline_wrapper():
     return None
 
 
+def statusline_ours(command):
+    """Наша ли это команда statusLine.
+
+    Не по подстроке «statusline.sh»: это имя из официального примера в документации Claude
+    Code, так что своя строка состояния пользователя опознавалась как наша — install молча
+    отвечал «уже установлен» и не делал ничего, а uninstall удалял чужую команду, которую
+    никогда не сохранял. Признак теперь конкретный: команда указывает на файл, который лежит
+    рядом с ЭТИМ скриптом (или на файл нашей же прошлой версии — путь плагина несёт в себе
+    номер версии и переезжает при каждом обновлении, поэтому опорой служит сохранённая при
+    установке запись).
+    """
+    if "statusline.sh" not in command:
+        return False
+    import shlex
+
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    wrapper = find_statusline_wrapper()
+    if wrapper:
+        mine = os.path.realpath(wrapper)
+        if any(os.path.realpath(w) == mine for w in words if w.endswith("statusline.sh")):
+            return True
+    # Обёртка от прошлой версии: её файла на месте уже нет, но след установки остался.
+    return os.path.exists(STATUSLINE_SAVED) or os.path.exists(STATUSLINE_INNER)
+
+
 def statusline_state():
     current = ((read_json(SETTINGS) or {}).get("statusLine") or {}).get("command") or ""
-    return current.strip(), "statusline.sh" in current
+    return current.strip(), statusline_ours(current)
 
 
 def statusline_install():
@@ -899,66 +1021,85 @@ def statusline_install():
     Лимиты Claude Code не хранит на диске вовсе — они живут в памяти процесса и выходят
     наружу единственной дверью, payload'ом statusLine. Поэтому единственный бесплатный
     способ их увидеть — встать в эту дверь, ничего в ней не сломав.
+
+    Пишется тем же контрактом, что и тумблеры: блокировка на всё время правки,
+    read_settings_for_edit() вместо `read_json(...) or {}` и отпечаток при записи. Без него
+    невалидный в этот момент settings.json (человек правит руками) читался как пустой, и файл
+    целиком — вместе с permissions.deny и env, где лежат токены — заменялся одним ключом
+    statusLine; резервной копии не оставалось тоже, backup_settings() на нечитаемом файле
+    молча возвращает None.
     """
     wrapper = find_statusline_wrapper()
     if not wrapper:
-        return "statusline.sh не найден рядом со скриптом"
-    current, ours = statusline_state()
-    if ours:
-        return "уже установлен"
+        return t("sl.nowrapper")
+    with settings_lock():
+        settings, seen = read_settings_for_edit()
+        if settings is None:
+            return t("sl.busy")
+        current = (settings.get("statusLine") or {}).get("command") or ""
+        current = current.strip()
+        if statusline_ours(current):
+            return t("sl.already")
 
-    settings = read_json(SETTINGS) or {}
-    backup_settings()
-    os.makedirs(ROOT, mode=SECURE_DIR, exist_ok=True)
-    original = settings.get("statusLine")
-    # Целиком, включая None для «его не было»: по этой записи делается откат.
-    write_json(STATUSLINE_SAVED, original)
-    # Команду — отдельным файлом: её на каждой перерисовке читает bash-обёртка,
-    # и парсить JSON ей нечем.
-    tmp = STATUSLINE_INNER + ".tmp"
-    with open(tmp, "w") as fh:
-        fh.write(current + "\n")
-    os.replace(tmp, STATUSLINE_INNER)
-    # Подменяется ровно одно поле. padding, refreshInterval, hideVimModeIndicator и что
-    # там ещё настроено — остаются и продолжают действовать с обёрткой.
-    installed = dict(original) if isinstance(original, dict) else {}
-    installed.update({"type": "command", "command": f'bash "{wrapper}"'})
-    settings["statusLine"] = installed
-    write_settings(settings)
-    return f"установлен; прежняя команда сохранена: {current or '(её не было)'}"
+        backup_settings()
+        os.makedirs(ROOT, mode=SECURE_DIR, exist_ok=True)
+        original = settings.get("statusLine")
+        # Целиком, включая None для «его не было»: по этой записи делается откат.
+        write_json(STATUSLINE_SAVED, original)
+        # Команду — отдельным файлом: её на каждой перерисовке читает bash-обёртка,
+        # и парсить JSON ей нечем. Права 0600, как у всего в этом каталоге: с umask копия
+        # чужой команды рождалась читаемой всей машине.
+        tmp = STATUSLINE_INNER + ".tmp"
+        with os.fdopen(
+            os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SECURE_FILE), "w"
+        ) as fh:
+            fh.write(current + "\n")
+        os.replace(tmp, STATUSLINE_INNER)
+        # Подменяется ровно одно поле. padding, refreshInterval, hideVimModeIndicator и что
+        # там ещё настроено — остаются и продолжают действовать с обёрткой.
+        installed = dict(original) if isinstance(original, dict) else {}
+        installed.update({"type": "command", "command": f'bash "{wrapper}"'})
+        settings["statusLine"] = installed
+        if not write_settings(settings, expect=seen):
+            return t("sl.busy")
+        return t("sl.installed", cmd=current or t("sl.nocommand"))
 
 
 def statusline_uninstall():
-    current, ours = statusline_state()
-    if not ours:
-        return "не установлен — statusLine не наш, ничего не трогаю"
-    saved = ""
-    try:
-        with open(STATUSLINE_INNER) as fh:
-            saved = fh.read().strip()
-    except OSError:
-        pass
-    settings = read_json(SETTINGS) or {}
-    backup_settings()
-    if os.path.exists(STATUSLINE_SAVED):
-        # Полный объект как он был. None означает «statusLine не был настроен вовсе».
-        original = read_json(STATUSLINE_SAVED)
-        if isinstance(original, dict):
-            settings["statusLine"] = original
-        else:
-            settings.pop("statusLine", None)
-    elif saved:
-        # Установка старой версией: полного объекта нет, есть только команда.
-        settings["statusLine"] = {"type": "command", "command": saved}
-    else:
-        settings.pop("statusLine", None)
-    write_settings(settings)
-    for leftover in (STATUSLINE_SAVED, STATUSLINE_INNER):
+    with settings_lock():
+        settings, seen = read_settings_for_edit()
+        if settings is None:
+            return t("sl.busy")
+        current = ((settings.get("statusLine") or {}).get("command") or "").strip()
+        if not statusline_ours(current):
+            return t("sl.notours")
+        saved = ""
         try:
-            os.remove(leftover)
+            with open(STATUSLINE_INNER) as fh:
+                saved = fh.read().strip()
         except OSError:
             pass
-    return f"возвращено: {saved or '(statusLine удалён)'}"
+        backup_settings()
+        if os.path.exists(STATUSLINE_SAVED):
+            # Полный объект как он был. None означает «statusLine не был настроен вовсе».
+            original = read_json(STATUSLINE_SAVED)
+            if isinstance(original, dict):
+                settings["statusLine"] = original
+            else:
+                settings.pop("statusLine", None)
+        elif saved:
+            # Установка старой версией: полного объекта нет, есть только команда.
+            settings["statusLine"] = {"type": "command", "command": saved}
+        else:
+            settings.pop("statusLine", None)
+        if not write_settings(settings, expect=seen):
+            return t("sl.busy")
+        for leftover in (STATUSLINE_SAVED, STATUSLINE_INNER):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
+        return t("sl.restored", cmd=saved or t("sl.removed"))
 
 
 # ──────────────────────────────────────────────────────────── лимиты по OAuth
@@ -1347,13 +1488,15 @@ def refresh():
             "name": name, "target": was.get("target", ""), "status": t("server.off"),
             "state": OFF, "source": classify(name, local),
             "tools": was.get("tools"), "toolNames": was.get("toolNames", []),
+            "toolPrefix": was.get("toolPrefix") or tool_prefix(name),
         })
     for entry in servers:
         entry["disabled"] = entry["name"] in off
         if entry["disabled"]:
             entry["state"] = OFF
         entry["deniedTools"] = [
-            t for t in entry.get("toolNames", []) if tool_denied(rules, entry["name"], t)
+            t for t in entry.get("toolNames", [])
+            if tool_denied(rules, entry.get("toolPrefix") or entry["name"], t)
         ]
 
     # Кеш «нужна авторизация» не чистится сам: сервер мог с тех пор подняться,
@@ -1543,6 +1686,13 @@ def doctor():
 
 # ──────────────────────────────────────────────────────────── точка входа
 
+def flag_value(argv, flag):
+    try:
+        return argv[argv.index(flag) + 1]
+    except (ValueError, IndexError):
+        return ""
+
+
 def main(argv):
     command = argv[0] if argv else "report"
     rest = argv[1:]
@@ -1564,12 +1714,23 @@ def main(argv):
             print(statusline_uninstall())
         else:
             current, ours = statusline_state()
-            print(("перехват включён" if ours else "перехват выключен")
-                  + f"\nтекущая команда: {current or '(statusLine не настроен)'}")
+            print(t("sl.on" if ours else "sl.off")
+                  + "\n" + t("sl.current", cmd=current or t("sl.unset")))
     elif command in ("toggle-server", "toggle-tool"):
-        target = rest[0]
         turn_off = "--off" in rest
-        changed = (toggle_server if command == "toggle-server" else toggle_tool)(target, turn_off)
+        if command == "toggle-server":
+            changed = toggle_server(rest[0], turn_off)
+        else:
+            # Приложение присылает и готовое правило (первым словом), и сервер с инструментом
+            # по отдельности. Правило нужно старым сборкам скрипта, пара — этой: только здесь
+            # известно, какими буквами Claude Code зовёт инструмент, и правило из отображаемого
+            # имени сервера не запрещало ничего.
+            server, tool = flag_value(rest, "--server"), flag_value(rest, "--tool")
+            if server and tool:
+                rule, stale = rule_for_tool(server, tool)
+            else:
+                rule, stale = rest[0], ()
+            changed = toggle_tool(rule, turn_off, stale)
         # Меню ждёт мгновенного отклика, поэтому по умолчанию только пересчёт признаков.
         # Полная проверка — по явному --refresh.
         refresh() if "--refresh" in rest else patch_state_after_toggle()

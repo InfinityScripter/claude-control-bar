@@ -183,9 +183,20 @@ OSA
   # Guard: the shipped image must hold nothing but the app, the Applications symlink, and the
   # .DS_Store layout file. Mount read-only and abort before notarizing if any stray hidden entry
   # slipped in (the recurring .fseventsd/.Trashes problem).
-  vdev="$(hdiutil attach -nobrowse -noautoopen -readonly "$DMG" | grep -E '^/dev/' | tail -1 | awk '{print $1}')"
-  stray="$(find "/Volumes/$APP_NAME" -maxdepth 1 -name ".*" ! -name ".DS_Store" 2>/dev/null)"
+  # Mount point taken from hdiutil's own answer, not assembled from the volume name: a leftover
+  # mount of the same name (a failed detach on the previous run) makes macOS mount this one as
+  # "…  1", and the guard would then inspect the OLD image and pass an image it never looked at.
+  attached="$(hdiutil attach -nobrowse -noautoopen -readonly "$DMG" | grep -E '^/dev/' | tail -1)"
+  vdev="$(printf '%s' "$attached" | awk '{print $1}')"
+  vmount="$(printf '%s' "$attached" | awk '{ $1=""; $2=""; sub(/^[ \t]+/, ""); print }')"
+  stray=""
+  if [[ -n "$vmount" ]]; then
+    stray="$(find "$vmount" -maxdepth 1 -name ".*" ! -name ".DS_Store" 2>/dev/null || true)"
+  fi
   hdiutil detach "$vdev" >/dev/null 2>&1 || true
+  if [[ -z "$vmount" ]]; then
+    echo "ERROR: could not tell where the DMG mounted, refusing to ship it unchecked"; exit 1
+  fi
   if [[ -n "$stray" ]]; then
     echo "ERROR: DMG has stray hidden entries, aborting before notarize:"; echo "$stray"; exit 1
   fi
