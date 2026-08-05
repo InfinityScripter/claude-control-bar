@@ -1,5 +1,7 @@
 # Claude Control Bar
 
+https://github.com/user-attachments/assets/39381f85-c8ce-4d32-8baa-dce67d39ee7e
+
 A macOS menu bar app for **Claude Code**. It shows what Claude is doing right now — and lets you
 change what it has to work with, without opening anything.
 
