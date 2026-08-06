@@ -459,7 +459,8 @@ final class StatusController: NSObject, NSMenuDelegate {
     var activeBase = ""        // label without the elapsed clock
     var renderedTitle: String? // what the status item is actually showing, to skip identical redraws
     var lastLifecycleCheck: Double = 0  // the quit decision is sampled far slower than the UI
-    var turnLineCache: [String: (size: UInt64, mtime: Date, line: String?)] = [:]
+    var notificationsDenied = false     // the one macOS permission this app has; see notify()
+    var turnLineCache: [String: (size: UInt64, mtime: Date, interrupted: Bool, turnTs: Double?)] = [:]
     var iconCache: [Int: NSImage] = [:]  // composed menu bar frames, rebuilt only when the look changes
     var iconCacheKey = ""
     var startedAt: Double = 0  // unix seconds the current turn began (0 = no clock)
@@ -570,6 +571,7 @@ final class StatusController: NSObject, NSMenuDelegate {
             [weak self] _ in self?.pollLimits()
         }
         pollLimits()
+        refreshNotificationAuthStatus()
         tick()
         try? FileManager.default.removeItem(atPath: (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/quit-intent"))
         // CONTROL_BAR_DUMP_MENU=1 builds the dropdown once, prints it and quits. Looking at the
@@ -1080,20 +1082,56 @@ final class StatusController: NSObject, NSMenuDelegate {
     /// sitting at `.notDetermined` is not prompted on delivery, the request simply fails, and the
     /// only trace was an NSLog nobody reads. Asked here rather than
     /// at launch, so the prompt arrives attached to a real event — a server that just fell over —
-    /// instead of ambushing the first launch. After the first answer this returns the stored
-    /// decision without prompting again.
+    /// instead of ambushing the first launch.
+    ///
+    /// A refusal is remembered, not retried: macOS shows the system dialog once per app, ever —
+    /// no later version, reinstall or second `requestAuthorization` brings it back, only the user
+    /// in System Settings. So a denial used to be swallowed whole, and someone who declined a year
+    /// ago could never learn why alerts stopped. It now sets `notificationsDenied`, which the menu
+    /// answers with a row that opens the right Settings pane.
     func notify(title: String, body: String) {
+        // UNUserNotificationCenter.current() traps (NSInternalInconsistencyException,
+        // "bundleProxyForCurrentProcess is nil") when the process runs outside an .app bundle —
+        // which is exactly how the diagnostic modes (CONTROL_BAR_DUMP_MENU/DIAGNOSE) and ad-hoc
+        // builds run the bare binary. No bundle, no notification delivery anyway.
+        guard Bundle.main.bundleIdentifier != nil else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
         let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
-            if let error { NSLog("ClaudeControlBar: notification permission: \(error)") }
-            guard granted else { return }
+        let deliver = {
             center.add(
                 UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
             ) { error in if let error { NSLog("ClaudeControlBar: notification failed: \(error)") } }
+        }
+        center.getNotificationSettings { [weak self] settings in
+            if settings.authorizationStatus == .notDetermined {
+                center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+                    if let error { NSLog("ClaudeControlBar: notification permission: \(error)") }
+                    // The system now holds the stored answer; the one canonical mapping reads it
+                    // back, rather than a second spelling (!granted) drifting beside it.
+                    self?.refreshNotificationAuthStatus()
+                    if granted { deliver() }
+                }
+                return
+            }
+            let denied = settings.authorizationStatus == .denied
+            // Written on the allowed path too: flipping the switch back on in System Settings
+            // must clear the menu row on the next event, not only on the next menu open.
+            DispatchQueue.main.async { self?.notificationsDenied = denied }
+            if !denied { deliver() }
+        }
+    }
+
+    /// The stored answer, refreshed at launch and on every menu open: flipping the switch in
+    /// System Settings must clear the menu row without a restart.
+    func refreshNotificationAuthStatus() {
+        guard Bundle.main.bundleIdentifier != nil else { return }  // see notify(): traps bundle-less
+        UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
+            DispatchQueue.main.async {
+                self?.notificationsDenied = settings.authorizationStatus == .denied
+            }
         }
     }
 
@@ -1103,6 +1141,9 @@ final class StatusController: NSObject, NSMenuDelegate {
     // to live-update the per-session elapsed clocks. menuNeedsUpdate rebuilds the rows on each open.
     func menuWillOpen(_ menu: NSMenu) {
         menuIsOpen = true
+        // Async by nature, so the answer lands a beat after menuNeedsUpdate has built the rows —
+        // it serves the NEXT open. Fresh enough: the launch-time check covers the first one.
+        refreshNotificationAuthStatus()
     }
     func menuDidClose(_ menu: NSMenu) {
         menuIsOpen = false
@@ -1306,9 +1347,31 @@ final class StatusController: NSObject, NSMenuDelegate {
                 }
             }
         }
+        if notificationsDenied {
+            let n = NSMenuItem(title: "Notifications are off — open System Settings",
+                               action: #selector(openNotificationSettings), keyEquivalent: "")
+            n.target = self
+            n.toolTip = "macOS asks once per app, ever. Alerts like \"MCP server went down\" stay"
+                + " muted until notifications are switched back on in System Settings."
+            menu.addItem(n)
+        }
         let q = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         q.target = self
         menu.addItem(q)
+    }
+
+    // Deep link into this app's own Notifications pane. URL(string:) only checks syntax; whether
+    // the pane id still resolves is decided by System Settings at open() — the scheme is
+    // undocumented and has shifted between macOS releases — so a failed open falls back to
+    // Settings' root: a landing page and a Console trace instead of a click that does nothing.
+    @objc func openNotificationSettings() {
+        var link = "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+        if let id = Bundle.main.bundleIdentifier { link += "?id=" + id }
+        if let url = URL(string: link), NSWorkspace.shared.open(url) { return }
+        NSLog("ClaudeControlBar: notification settings pane did not open")
+        if let root = URL(string: "x-apple.systempreferences:com.apple.systempreferences") {
+            NSWorkspace.shared.open(root)
+        }
     }
 
     func header(_ title: String) -> NSMenuItem {
@@ -1775,6 +1838,7 @@ final class StatusController: NSObject, NSMenuDelegate {
             if dead {
                 try? FileManager.default.removeItem(atPath: (stateDir as NSString).appendingPathComponent(id + ".json"))
                 sessions[id] = nil; fileMTimes[id + ".json"] = nil; prevState[id] = nil; sessionWord[id] = nil; turnStart[id] = nil
+                if !s.transcript.isEmpty { turnLineCache[s.transcript] = nil }  // keyed by path, not id
                 continue
             }
             sessions[id] = s
@@ -1830,10 +1894,22 @@ final class StatusController: NSObject, NSMenuDelegate {
     // collapses to rest.
     func effectiveState(_ s: Session, now: Double) -> String {
         if s.state == "thinking" || s.state == "tool" || s.state == "permission" {
-            let cap: Double = s.state == "permission" ? 7200 : 900
+            // 30 minutes for permission, not the 2 hours it once was: with the transcript nets
+            // below this is a last resort, and a frozen amber dot outranks every live session.
+            let cap: Double = s.state == "permission" ? 1800 : 900
             if now - s.ts > cap { return "idle" }
-            if !s.transcript.isEmpty, let last = lastTurnLine(ofFileAt: s.transcript),
-               Transcript.wasInterrupted(last) { return "idle" }
+            if !s.transcript.isEmpty {
+                let facts = turnFacts(ofFileAt: s.transcript)
+                if facts.interrupted { return "idle" }
+                // While a permission prompt waits, the transcript is silent — the tool_use that
+                // opened it is already on disk. So a turn record younger than the prompt means
+                // the prompt was answered, whatever form the answer took: deny and Esc write
+                // one without firing any hook. +2s keeps that same tool_use record, stamped in
+                // the prompt's own second, from ending the wait it started. Permission only:
+                // thinking/tool sessions append turn records as part of normal work (measured
+                // median gap 1.7s), so the same test there would idle a session mid-stride.
+                if s.state == "permission", let t = facts.turnTs, t > s.ts + 2 { return "idle" }
+            }
             return s.state
         }
         return s.state == "done" ? "idle" : s.state
@@ -1907,33 +1983,53 @@ final class StatusController: NSObject, NSMenuDelegate {
         return s.split(separator: "\n").last { !$0.isEmpty }.map(String.init)
     }
 
-    // Last actual turn line (a user/assistant message), ignoring the bookkeeping lines Claude Code
-    // appends after an interrupt (system/away_summary, last-prompt, ai-title, mode, permission-mode).
-    // Those would otherwise hide the "interrupted by user" marker and freeze the amber dot.
-    /// Re-read only when the transcript has actually moved. Sampling showed this — 8 KB read,
-    /// decoded and split, per active session, four times a second — among the timer's top costs,
-    /// and a file that has not changed cannot have gained an "interrupted by user" marker since
-    /// the last look. One stat() replaces the whole thing in the common case.
-    func lastTurnLine(ofFileAt path: String) -> String? {
+    // What the transcript's last turn line (a user/assistant message, ignoring the bookkeeping
+    // Claude Code appends after an interrupt) says about the session: the interrupt marker, and
+    // the record's timestamp. Both answers are computed when the file changes and cached — a
+    // sampling pass once put the raw per-tick read among the timer's top costs, and parsing the
+    // same unchanged line every tick is the same class of waste. One stat() per tick otherwise.
+    func turnFacts(ofFileAt path: String) -> (interrupted: Bool, turnTs: Double?) {
         let attrs = try? FileManager.default.attributesOfItem(atPath: path)
         let size = (attrs?[.size] as? NSNumber)?.uint64Value ?? 0
         let mtime = attrs?[.modificationDate] as? Date ?? .distantPast
-        if let hit = turnLineCache[path], hit.size == size, hit.mtime == mtime { return hit.line }
+        if let hit = turnLineCache[path], hit.size == size, hit.mtime == mtime {
+            return (hit.interrupted, hit.turnTs)
+        }
         let line = readLastTurnLine(ofFileAt: path)
-        turnLineCache[path] = (size, mtime, line)
-        return line
+        let interrupted = line.map(Transcript.wasInterrupted) ?? false
+        let turnTs = line.flatMap(Transcript.turnTimestamp)
+        // A record that parses as a turn but carries no usable timestamp is format drift — the
+        // permission net below dies silently without it. Once per file change, not per tick, so
+        // Console gets a trace instead of "sessions sometimes sit amber for the whole cap".
+        if let line, turnTs == nil, Transcript.isTurnRecord(line) {
+            NSLog("ClaudeControlBar: turn record without a parseable timestamp — transcript format drift? \(path)")
+        }
+        turnLineCache[path] = (size, mtime, interrupted, turnTs)
+        return (interrupted, turnTs)
     }
 
     private func readLastTurnLine(ofFileAt path: String) -> String? {
         guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? fh.close() }
         let size = (try? fh.seekToEnd()) ?? 0
-        let chunk: UInt64 = 8192
-        try? fh.seek(toOffset: size > chunk ? size - chunk : 0)
-        guard let data = try? fh.readToEnd(), let s = String(data: data, encoding: .utf8) else { return nil }
-        return s.split(separator: "\n").last {
-            $0.contains("\"type\":\"user\"") || $0.contains("\"type\":\"assistant\"")
-        }.map(String.init)
+        // Escalating windows, 8 KB first: a streaming transcript invalidates the cache on every
+        // append, so the hot path must stay at the old price — the last line there IS the turn
+        // record. The larger reads pay only when the tail is all bookkeeping: Claude Code appends
+        // it after an interrupt in lines measured up to 112 KB, and any fixed window is a bet
+        // against the next release's line, so the ladder ends at a hard ceiling instead.
+        for chunk: UInt64 in [8_192, 262_144, 1_048_576] {
+            try? fh.seek(toOffset: size > chunk ? size - chunk : 0)
+            guard let data = try? fh.readToEnd() else { return nil }
+            // Never the failable String(data:encoding:): a window cut mid-way through a multi-
+            // byte character made it return nil for the ENTIRE chunk, and the cache then pinned
+            // that nil for as long as the file sat still — a permission wait, by definition.
+            let s = String(decoding: data, as: UTF8.self)
+            if let line = s.split(separator: "\n").last(where: {
+                $0.contains("\"type\":\"user\"") || $0.contains("\"type\":\"assistant\"")
+            }) { return String(line) }
+            if size <= chunk { return nil }  // the whole file is read — there is nowhere left to look
+        }
+        return nil
     }
 
     // MARK: render

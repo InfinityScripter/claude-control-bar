@@ -131,6 +131,35 @@ check(!Transcript.wasInterrupted(
 check(!Transcript.wasInterrupted("not json at all, interrupted by user"),
       "a line that does not parse is not an interrupt")
 
+// The timestamp of a turn record. A permission prompt keeps the transcript silent while it
+// waits, so a user/assistant record younger than the prompt is proof the prompt is gone —
+// deny and Esc write one without firing any hook.
+check(Transcript.turnTimestamp(
+    #"{"type":"user","timestamp":"2026-01-01T00:00:00Z","message":{"content":"hi"}}"#)
+        == 1_767_225_600,
+      "a user record's timestamp parses to unix time")
+check(Transcript.turnTimestamp(
+    #"{"type":"assistant","timestamp":"2026-01-01T00:00:00.500Z","message":{"content":[]}}"#)
+        == 1_767_225_600.5,
+      "fractional seconds survive — Claude Code writes milliseconds")
+check(Transcript.turnTimestamp(
+    #"{"type":"file-history-snapshot","timestamp":"2026-01-01T00:00:00Z"}"#) == nil,
+      "a bookkeeping record is not a turn, whatever its timestamp")
+check(Transcript.turnTimestamp(#"{"type":"user","message":{"content":"hi"}}"#) == nil,
+      "a turn record without a timestamp yields nothing rather than a guess")
+check(Transcript.turnTimestamp("not json") == nil,
+      "a line that does not parse yields nothing")
+// Format drift is the net's silent killer: a numeric timestamp (or any unparseable shape) must
+// yield nil — and isTurnRecord is what lets the app log that drift instead of swallowing it,
+// while staying quiet for the half-written lines a streaming transcript ends with.
+check(Transcript.turnTimestamp(
+    #"{"type":"user","timestamp":1767225600,"message":{"content":"hi"}}"#) == nil,
+      "a timestamp of a drifted type yields nothing rather than a crash or a guess")
+check(Transcript.isTurnRecord(#"{"type":"user","timestamp":1767225600,"message":{}}"#),
+      "the drifted record still counts as a turn — that is what makes it drift worth logging")
+check(!Transcript.isTurnRecord(#"{"type":"user","timestamp":"2026-"#),
+      "a half-written streaming line is not a turn record, so it is not logged as drift")
+
 // Resolving a row's CLI session id to the id Claude for Desktop answers to. Without it every
 // desktop row merely focused the app — which is already frontmost — so all of them did the same
 // nothing and clicking a session read as broken.
