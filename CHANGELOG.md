@@ -7,6 +7,33 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.6.0] - 2026-08-07
+
+### Added
+
+- **One-click update that builds from source.** With a Swift toolchain on the machine (Xcode
+  command line tools or Xcode), the update row becomes "Update to X": one click downloads the
+  release source from GitHub, builds it in place with the same script every channel uses, swaps
+  the bundle only after the staging copy verifies, and restarts. No DMG, no Gatekeeper — the
+  quarantine that blocks downloaded apps does not apply to a binary compiled on this machine.
+  The build is bounded by a watchdog, Quit cancels it cleanly, failures land in
+  `~/.claude/control-bar/problems.log`, and the outgoing bundle survives one generation as
+  `.previous` beside the app — a compiled-but-broken build must leave something to go back to.
+  Without a toolchain the row keeps its old behaviour and opens the release page.
+- **A denied network-volume permission now names itself and offers the way back.** macOS counts
+  FUSE mounts (arc, sshfs) as network volumes; declining the one-time "access files on a network
+  volume" dialog made every MCP check fail with a bare `EPERM`, and the system never asks again.
+  The failed check now grows two rows: one opens the right Privacy pane in System Settings, the
+  other is a copyable `tccutil reset` command that makes macOS show the original dialog again on
+  the next check.
+
+### Fixed
+
+- **The `EPERM` marker survives a crowded error list.** The check error is capped at 200
+  characters for the menu; with several projects failing at once the permission error could be
+  cut off mid-list, and the new help rows would never appear. Permission errors now sort to the
+  front of the line before the cap.
+
 ## [0.5.6] - 2026-08-06
 
 ### Fixed
