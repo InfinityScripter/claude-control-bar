@@ -7,6 +7,61 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.5.4] - 2026-08-06
+
+### Fixed
+
+- **Installing the limits capture no longer silences a foreign `statusline.sh`.** The wrapper's
+  recursion guard was a substring check on the saved command's text — and `statusline.sh` is the
+  file name from the official Claude Code example, so a user's own status line under that name
+  was dropped instead of run: after install their status line simply went blank. The guard is
+  now an environment sentinel only this script sets; the saved command's text no longer matters.
+- **Uninstalling the capture cannot overwrite a status line the user changed by hand.** "Our
+  sidecar files exist" used to pass for "the current command is ours", so after a manual change
+  `statusline --uninstall` restored the command saved at install time over the user's newest
+  choice. Install now records the exact command it writes, uninstall restores only on an exact
+  match (or the wrapper's real path), and otherwise refuses out loud: "changed after install".
+  A failed settings write also rolls the sidecar files back instead of leaving a half-install
+  that reads as an installed capture.
+- **The hook installer and uninstaller no longer delete strangers that resemble them.**
+  Ownership was `command.includes("~/.claude/control-bar")` — also a prefix of a user's own
+  `control-bar-extra/custom.js`, and a substring of any hook that merely reads a file out of our
+  directory. Both kinds of stranger were silently removed on every install and uninstall, and
+  the plugin bootstrap used the same check, so one such foreign hook kept the plugin from ever
+  claiming the hooks lease. All three now match the exact scripts a hook can point at:
+  `update.js` and `lifecycle.js` inside precisely `~/.claude/control-bar/`, with a right-hand
+  token boundary on the bare spelling — `update.js` is itself a prefix of a neighbour's
+  `update.js.bak`, and "exact" has to mean exact on that side too.
+- **Backup rotation touches only its own backups.** The ten-most-recent cleanup globbed
+  `settings.json.bak-2*`, which also matches dated backups made by hand or by another tool —
+  files whose loss nothing can undo. Backups now live in their own namespace,
+  `settings.json.bak-control-bar-<date>-<microseconds>`, rotation is bounded to that exact
+  prefix, and pre-existing `.bak-*` files are never deleted. The microseconds also mean two
+  switches within one second no longer share a single snapshot — PRIVACY.md promises one per
+  switch, and now that is what happens.
+- **The MCP check takes a real inter-process lock.** `refresh.lock` was only consulted by the
+  statusLine path's spawner; the app's "Check MCP now" and `report --force` ran `refresh()`
+  straight past it, so two checks could start every configured server twice and race their
+  writes of `mcp.json`, last one winning. `refresh()` itself now takes a non-blocking `flock`
+  for the whole check — held to process exit, so a crashed holder releases it — and a
+  contending call returns the last picture instead of running a duplicate check — and when
+  there is no picture yet (first run), `report` says a check is already running instead of
+  presenting a confident "0/0 connected" that was never measured.
+- **An ordinary notification cannot park the icon on a two-hour permission alert.** The CLI
+  fallback classified notifications by substrings, and `allow` lives inside `shallow`: a
+  "Shallow clone finished" notification read as a permission prompt, whose amber state only
+  times out after two hours. `notification_type` is now trusted whenever present, and the
+  legacy text fallback matches whole words only.
+- **"Switch to Homebrew" is offered only once the cask exists.** The row was added for any
+  non-brew install as soon as GitHub reported a newer release, while the cask API still returns
+  404 — a command guaranteed to fail, handed out by the app's own menu. The row now requires a
+  successfully fetched cask version, exactly like the brew-managed upgrade row always did.
+- **The hover card shows the tool's real full name.** The identifier line printed
+  `mcp__<display name>__<tool>`, but a plugin or claude.ai connector loads its tools under its
+  toolPrefix — `plugin:claude-mem:mcp-search` lives in context as
+  `plugin_claude-mem_mcp-search`. The switch learned that distinction in 0.5.1; the card now
+  uses the same prefix instead of re-deriving a wrong one from the display name.
+
 ## [0.5.3] - 2026-08-05
 
 ### Security

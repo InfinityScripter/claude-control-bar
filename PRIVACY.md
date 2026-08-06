@@ -73,9 +73,11 @@ Everything of its own lives under `~/.claude/control-bar/`: one small JSON file 
 `state.d/`, the MCP picture in `mcp.json`, the limits in `limits.json`.
 
 The one exception is next door: every switch takes a dated backup of your settings beside the
-original, at `~/.claude/settings.json.bak-<date>`. The ten most recent are kept and older ones
-are deleted. They carry the same permissions as the file they copy, because a backup of a secret
-is still the secret.
+original, at `~/.claude/settings.json.bak-control-bar-<date>-<microseconds>`. The name carries
+the app's own prefix so the rotation has a boundary: the ten most recent of these are kept and
+older ones are deleted, while backups made by you or by any other tool are never touched. They
+carry the same permissions as the file they copy, because a backup of a secret is still the
+secret.
 
 That directory is kept readable by you alone — `0700` on the folders, `0600` on the files, checked
 and corrected on every refresh rather than only at install. A macOS home folder is readable by the

@@ -165,6 +165,59 @@ test("installs portable, quoted hook commands and replaces stale hooks", (t) => 
   );
 });
 
+test("foreign hooks that merely resemble ours survive install and uninstall", (t) => {
+  // Ownership used to be a substring check on the directory "~/.claude/control-bar" — which is
+  // also a PREFIX of a user's own "~/.claude/control-bar-extra", and a substring of any command
+  // that merely reads a file out of our directory. Both kinds of stranger were deleted.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "control-bar-foreign-hooks-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+
+  const claudeDir = path.join(home, ".claude");
+  const foreignCommands = [
+    `node ${shellQuote(path.join(claudeDir, "control-bar-extra", "custom.js"))} pre`,
+    `node ${shellQuote(path.join(claudeDir, "my-control-bar", "hook.js"))}`,
+    `cat ${shellQuote(path.join(claudeDir, "control-bar", "mcp.json"))}`,
+    // The exact-script name is itself a prefix of a neighbour's file: without the right-hand
+    // boundary this one read as ours and vanished.
+    `cat ${shellQuote(path.join(claudeDir, "control-bar", "update.js.bak"))}`,
+  ];
+  fs.mkdirSync(claudeDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(claudeDir, "settings.json"),
+    JSON.stringify(
+      {
+        hooks: {
+          Stop: [
+            {
+              hooks: foreignCommands.map((command) => ({ type: "command", command })),
+            },
+          ],
+        },
+      },
+      null,
+      2,
+    ),
+  );
+
+  runInstaller(home);
+  for (const command of foreignCommands) {
+    assert.equal(
+      hookCommands(readSettings(home)).filter((c) => c === command).length,
+      1,
+      `install removed a foreign hook: ${command}`,
+    );
+  }
+
+  runUninstaller(home);
+  for (const command of foreignCommands) {
+    assert.equal(
+      hookCommands(readSettings(home)).filter((c) => c === command).length,
+      1,
+      `uninstall removed a foreign hook: ${command}`,
+    );
+  }
+});
+
 test("reinstalling is idempotent", (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "claude status bar test-"));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));

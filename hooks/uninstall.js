@@ -6,12 +6,23 @@ const path = require("path");
 const cp = require("child_process");
 
 const home = os.homedir();
-// Match the dir, not "update.js": the narrower marker used to orphan the lifecycle hooks.
-const MARKER = path.join(home, ".claude", "control-bar");
+// The exact scripts our hook commands point at — both of them, so neither set is orphaned.
+// NOT the directory as a substring: that also matched a user's own "control-bar-extra" and any
+// command that merely reads a file out of our directory (see install.js, same contract and the
+// same anchoring: the bare spelling is bounded on the right or "update.js" swallows a
+// neighbour's "update.js.bak"; the shellQuote spelling carries homes with an apostrophe;
+// bootstrap.py mirrors all of this).
+const sbDir = path.join(home, ".claude", "control-bar");
 const shellQuote = (value) => `'${value.replace(/'/g, `'\\''`)}'`;
-const quotedMarkerPrefix = shellQuote(MARKER).slice(0, -1);
-const isOurs = (command) =>
-  command.includes(MARKER) || command.includes(quotedMarkerPrefix);
+const ownScripts = [path.join(sbDir, "update.js"), path.join(sbDir, "lifecycle.js")];
+const boundary = (ch) => ch === undefined || ch === " " || ch === "'" || ch === '"';
+const pointsAt = (command, script) => {
+  for (let at = command.indexOf(script); at !== -1; at = command.indexOf(script, at + 1)) {
+    if (boundary(command[at + script.length])) return true;
+  }
+  return command.includes(shellQuote(script));
+};
+const isOurs = (command) => ownScripts.some((script) => pointsAt(command, script));
 const settingsPath = path.join(home, ".claude", "settings.json");
 
 // --hooks-only strips the settings.json hooks and stops there. That is what the plugin channel

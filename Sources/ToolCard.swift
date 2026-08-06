@@ -28,13 +28,13 @@ final class ToolCard {
     private static let pad: CGFloat = 12
     private static let delay: TimeInterval = 0.3
 
-    func show(tool: MCPTool, server: String, near row: NSView) {
+    func show(tool: MCPTool, prefix: String, near row: NSView) {
         pending?.invalidate()
         let timer = Timer(timeInterval: ToolCard.delay, repeats: false) { [weak row] _ in
             // The menu can close while the delay ticks; a row pulled out of its menu has no
             // window, and positioning against it would put the card at the screen origin.
             guard let row, let host = row.window else { return }
-            self.place(ToolCard.body(tool: tool, server: server), row: row, host: host)
+            self.place(ToolCard.body(tool: tool, prefix: prefix), row: row, host: host)
         }
         // Menu tracking runs in NSEventTrackingRunLoopMode, and a timer scheduled the usual way
         // sits in the default mode and does not fire until the menu closes. .common covers both
@@ -108,7 +108,11 @@ final class ToolCard {
 
     /// Internal rather than private so a harness can render the card body to an image and
     /// look at it — a window that only exists during menu tracking is otherwise unreviewable.
-    static func body(tool: MCPTool, server: String) -> NSView {
+    ///
+    /// `prefix` is the server's toolPrefix, not its display name: the identifier line below the
+    /// title shows the REAL full tool name, and for a plugin or a claude.ai connector the two
+    /// differ — `plugin:claude-mem:mcp-search` loads its tools as `plugin_claude-mem_mcp-search`.
+    static func body(tool: MCPTool, prefix: String) -> NSView {
         let text = NSMutableAttributedString()
         let inner = width - pad * 2
 
@@ -116,7 +120,8 @@ final class ToolCard {
             .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold),
             .foregroundColor: NSColor.labelColor,
         ]))
-        text.append(NSAttributedString(string: "mcp__\(server)__\(tool.name)\n", attributes: [
+        text.append(NSAttributedString(
+            string: MCPServer.fullToolName(prefix: prefix, tool: tool.name) + "\n", attributes: [
             .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
             .foregroundColor: NSColor.tertiaryLabelColor,
         ]))

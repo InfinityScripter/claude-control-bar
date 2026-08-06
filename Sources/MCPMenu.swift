@@ -418,7 +418,10 @@ extension StatusController {
             mark: nil, markColor: .clear,
             title: name, trailing: "", isOn: tool.enabled,
             indent: indent, width: mcpRowWidth + 120,
-            onHover: { view in ToolCard.shared.show(tool: tool, server: serverName, near: view) }
+            // The card gets the toolPrefix, not the display name: its identifier line shows the
+            // REAL full tool name, and for a plugin or connector those differ — the same
+            // distinction the switch above already had to learn.
+            onHover: { view in ToolCard.shared.show(tool: tool, prefix: prefix, near: view) }
         ) { [weak self] on in
             guard let self else { return }
             // Local first, then the backend. Rewriting settings.json and re-deriving the picture

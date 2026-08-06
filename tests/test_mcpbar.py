@@ -9,6 +9,7 @@ import glob
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -516,6 +517,7 @@ class StatusLineObject(unittest.TestCase):
             "ROOT": os.path.join(claude, "control-bar"),
             "STATUSLINE_INNER": os.path.join(claude, "control-bar", "statusline-inner-command"),
             "STATUSLINE_SAVED": os.path.join(claude, "control-bar", "statusline-saved.json"),
+            "STATUSLINE_INSTALLED": os.path.join(claude, "control-bar", "statusline-installed.json"),
         }
         self.saved = {k: getattr(mcpbar, k) for k in self.patched}
         for k, v in self.patched.items():
@@ -584,6 +586,109 @@ class StatusLineObject(unittest.TestCase):
         mcpbar.statusline_install()
         mode = os.stat(self.patched["STATUSLINE_INNER"]).st_mode & 0o777
         self.assertEqual(mode, mcpbar.SECURE_FILE)
+
+    def test_ручная_замена_после_установки_не_считается_нашей(self):
+        """След установки (сайдкары) — не доказательство, что ТЕКУЩАЯ команда наша.
+
+        По одному факту их существования uninstall восстанавливал сохранённую при установке
+        команду поверх той, которую человек поставил руками ПОСЛЕ, — то есть затирал самую
+        свежую его настройку самой старой.
+        """
+        mcpbar.statusline_install()
+        replacement = 'bash "$HOME/bin/replacement-statusline.sh"'
+        data = self.read()
+        data["statusLine"] = {"type": "command", "command": replacement}
+        with open(self.settings, "w") as fh:
+            json.dump(data, fh)
+        self.assertFalse(mcpbar.statusline_state()[1])
+        mcpbar.statusline_uninstall()
+        self.assertEqual(self.read()["statusLine"]["command"], replacement)
+
+    def test_живой_чужой_statusline_после_нашей_установки_не_наш(self):
+        """Самый жёсткий случай: чужой файл называется ровно statusline.sh и существует."""
+        mcpbar.statusline_install()
+        foreign = os.path.join(self.home, "bin", "statusline.sh")
+        os.makedirs(os.path.dirname(foreign))
+        with open(foreign, "w") as fh:
+            fh.write("#!/bin/bash\nprintf mine\n")
+        data = self.read()
+        data["statusLine"] = {"type": "command", "command": f'bash "{foreign}"'}
+        with open(self.settings, "w") as fh:
+            json.dump(data, fh)
+        self.assertFalse(mcpbar.statusline_state()[1])
+        mcpbar.statusline_uninstall()
+        self.assertEqual(self.read()["statusLine"]["command"], f'bash "{foreign}"')
+
+    def test_нераскрытая_переменная_в_чужой_команде_не_наша(self):
+        """shlex не раскрывает ни ~, ни $HOME — os.path.exists на таком слове всегда False,
+        и чужая ЖИВАЯ команда читалась как мёртвая обёртка прошлой версии. Пока установка
+        вела запись, «не существует на диске» — не аргумент."""
+        mcpbar.statusline_install()
+        for foreign in ('bash ~/.claude/statusline.sh', 'bash "$HOME/bin/statusline.sh"'):
+            data = self.read()
+            data["statusLine"] = {"type": "command", "command": foreign}
+            with open(self.settings, "w") as fh:
+                json.dump(data, fh)
+            self.assertFalse(mcpbar.statusline_state()[1], foreign)
+
+    def test_обёртка_прошлой_версии_с_мёртвым_путём_остаётся_нашей(self):
+        """Путь плагина несёт версию и переезжает при обновлении: файла обёртки уже нет,
+        но команда в настройках — та самая, что писала установка. Такую uninstall обязан
+        уметь откатить, иначе после обновления плагина перехват не снять."""
+        dead = os.path.join(self.home, "plugin-old", "hooks", "statusline.sh")
+        with open(self.settings, "w") as fh:
+            json.dump({"statusLine": {"type": "command", "command": f'bash "{dead}"'}}, fh)
+        mcpbar.write_json(self.patched["STATUSLINE_SAVED"], dict(self.ORIGINAL))
+        with open(self.patched["STATUSLINE_INNER"], "w") as fh:
+            fh.write(self.ORIGINAL["command"] + "\n")
+        self.assertTrue(mcpbar.statusline_state()[1])
+        mcpbar.statusline_uninstall()
+        self.assertEqual(self.read()["statusLine"], self.ORIGINAL)
+
+    def test_интеграция_чужой_statusline_установка_исполнение_замена_откат(self):
+        """Вся цепочка целиком: чужая строка состояния с именем из документации → установка
+        перехвата → обёртка РЕАЛЬНО исполняет чужую команду → ручная замена → откат её не
+        затирает. Каждый шаг здесь ломался по-своему: обёртка глушила чужой statusline.sh по
+        имени, а uninstall восстанавливал сохранённое поверх ручной замены."""
+        foreign = os.path.join(self.home, "bin", "statusline.sh")
+        os.makedirs(os.path.dirname(foreign))
+        with open(foreign, "w") as fh:
+            fh.write("#!/bin/bash\nprintf 'FOREIGN OK'\n")
+        os.chmod(foreign, 0o755)
+        with open(self.settings, "w") as fh:
+            json.dump({"statusLine": {"type": "command", "command": f'bash "{foreign}"'}}, fh)
+
+        mcpbar.statusline_install()
+        wrapped = self.read()["statusLine"]["command"]
+        self.assertIn("statusline.sh", wrapped)
+        result = subprocess.run(
+            ["bash", "-c", wrapped], input="{}", capture_output=True, text=True,
+            env={**os.environ, "CONTROL_BAR_ROOT": self.patched["ROOT"]}, timeout=30,
+        )
+        self.assertEqual(result.stdout, "FOREIGN OK")
+
+        replacement = 'printf mine'
+        data = self.read()
+        data["statusLine"] = {"type": "command", "command": replacement}
+        with open(self.settings, "w") as fh:
+            json.dump(data, fh)
+        mcpbar.statusline_uninstall()
+        self.assertEqual(self.read()["statusLine"]["command"], replacement)
+
+    def test_неудачная_запись_настроек_не_оставляет_сайдкаров(self):
+        """Сайдкары пишутся до settings.json. Если сама запись сорвалась (файл правит кто-то
+        ещё), недоделанная установка не имеет права оставлять след: по нему следующая проверка
+        решила бы, что перехват стоит."""
+        original = mcpbar.write_settings
+        mcpbar.write_settings = lambda *a, **k: False
+        try:
+            mcpbar.statusline_install()
+        finally:
+            mcpbar.write_settings = original
+        self.assertFalse(os.path.exists(self.patched["STATUSLINE_INNER"]))
+        self.assertFalse(os.path.exists(self.patched["STATUSLINE_SAVED"]))
+        self.assertFalse(os.path.exists(self.patched["STATUSLINE_INSTALLED"]))
+        self.assertEqual(self.read()["statusLine"], self.ORIGINAL)
 
 
 class ProjectServers(unittest.TestCase):
@@ -673,6 +778,7 @@ class RefreshProjects(unittest.TestCase):
             "CONFIG": os.path.join(tmp, "claude.json"),
             "SETTINGS": os.path.join(tmp, "settings.json"),
             "NEEDS_AUTH": os.path.join(tmp, "needs-auth.json"),
+            "LOCK": os.path.join(tmp, "refresh.lock"),
             # Сеть и Claude Code из проверки убраны целиком: здесь проверяется сборка карты.
             "run_health_check": lambda cwd="/": self.answers.get(cwd, ([], "нет ответа")),
             "session_cwds": lambda: list(self.projects),
@@ -742,6 +848,85 @@ class RefreshProjects(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["state"], mcpbar.FAILED)
         self.assertEqual(rows[0]["project"], "beta")
+
+
+class RefreshLock(unittest.TestCase):
+    """Проверка приходит с нескольких сторон разом: statusLine спаунит фоновый refresh,
+    приложение зовёт `mcpbar.py refresh` напрямую, есть ещё `report --force`.
+
+    Замок в spawn_refresh() прикрывал только первый путь. Две одновременные проверки — это
+    дважды поднятые пользовательские серверы и две записи mcp.json наперегонки: побеждала
+    последняя, не обязательно самая свежая. Замок обязан жить в самом refresh().
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        tmp = self._dir.name
+        self.checks = []
+
+        def fake_check(cwd="/"):
+            self.checks.append(cwd)
+            return [], None
+
+        patched = {
+            "ROOT": tmp,
+            "STATE": os.path.join(tmp, "mcp.json"),
+            "LIMITS": os.path.join(tmp, "limits.json"),
+            "SESSIONS": os.path.join(tmp, "state.d"),
+            "CONFIG": os.path.join(tmp, "claude.json"),
+            "SETTINGS": os.path.join(tmp, "settings.json"),
+            "NEEDS_AUTH": os.path.join(tmp, "needs-auth.json"),
+            "LOCK": os.path.join(tmp, "refresh.lock"),
+            "run_health_check": fake_check,
+            "session_cwds": lambda: [],
+            "project_cwds": lambda cwds, config: [],
+            "attach_tools": lambda servers: None,
+            "model_windows": lambda: {},
+        }
+        self.saved = {k: getattr(mcpbar, k) for k in patched}
+        for k, v in patched.items():
+            setattr(mcpbar, k, v)
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(mcpbar, k, v)
+        self._dir.cleanup()
+
+    def test_второй_refresh_при_занятом_локе_не_гоняет_проверку(self):
+        """flock держит другой «процесс» (другой дескриптор — семантика та же): refresh
+        обязан не запускать health-check и вернуть последнюю картину как есть."""
+        import fcntl
+
+        mcpbar.write_json(mcpbar.STATE, {"checked_at": 42, "servers": []})
+        holder = open(mcpbar.LOCK, "w")
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        try:
+            data = mcpbar.refresh()
+        finally:
+            holder.close()
+        self.assertEqual(self.checks, [])
+        self.assertEqual(data.get("checked_at"), 42)
+        self.assertEqual(mcpbar.load_state().get("checked_at"), 42)
+
+    def test_свободный_лок_отпускается_после_проверки(self):
+        mcpbar.refresh()
+        self.assertTrue(self.checks)
+        self.checks.clear()
+        mcpbar.refresh()
+        self.assertTrue(self.checks, "лок не отпущен — вторая проверка не прошла")
+
+    def test_отчёт_при_занятом_локе_без_карты_говорит_что_проверка_идёт(self):
+        """Первый запуск + параллельная проверка: карты ещё нет, замок занят. Отчёт
+        «Итого: 0/0, проверено эпоху назад» звучал бы уверенно и врал бы."""
+        import fcntl
+
+        holder = open(mcpbar.LOCK, "w")
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        try:
+            out = mcpbar.report(force=True)
+        finally:
+            holder.close()
+        self.assertEqual(out, mcpbar.t("check.running"))
 
 
 class StatePermissions(unittest.TestCase):
@@ -828,6 +1013,40 @@ class SettingsSafety(unittest.TestCase):
         self.write(json.dumps({"env": {"TOKEN": "s3cr3t"}}), mode=0o600)
         path = mcpbar.backup_settings()
         self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+
+    def test_чужие_бэкапы_не_ротируются(self):
+        """Маска `.bak-2*` совпадает с ЛЮБЫМ датированным бэкапом рядом с настройками — в том
+        числе сделанным руками или другим инструментом. Ротация «наших десяти» молча удаляла
+        чужие файлы, принадлежность которых приложению ничем не доказана."""
+        self.write(json.dumps({"mine": 1}))
+        foreign = [f"{self.settings}.bak-20000101-manual-{i:02d}" for i in range(12)]
+        for path in foreign:
+            with open(path, "w") as fh:
+                fh.write("{}")
+        mcpbar.backup_settings()
+        survivors = [p for p in foreign if os.path.exists(p)]
+        self.assertEqual(survivors, foreign)
+
+    def test_два_бэкапа_в_одну_секунду_не_делят_один_снимок(self):
+        """Секундного разрешения в имени мало: два быстрых переключения попадали в один файл,
+        и второй снимок молча не делался — хотя PRIVACY.md обещает снимок перед КАЖДЫМ."""
+        self.write(json.dumps({"version": 1}))
+        first = mcpbar.backup_settings()
+        self.write(json.dumps({"version": 2}))
+        second = mcpbar.backup_settings()
+        self.assertNotEqual(first, second)
+        self.assertEqual(mcpbar.read_json(first), {"version": 1})
+        self.assertEqual(mcpbar.read_json(second), {"version": 2})
+
+    def test_ротация_держит_десять_последних_своих(self):
+        self.write(json.dumps({"n": 0}))
+        made = []
+        for n in range(12):
+            self.write(json.dumps({"n": n}))
+            made.append(mcpbar.backup_settings())
+        alive = [p for p in made if os.path.exists(p)]
+        self.assertEqual(len(alive), 10)
+        self.assertEqual(alive, made[2:])
 
     def test_битый_json_не_затирается_переключателем(self):
         """Человек редактирует файл руками; между двумя нажатиями он бывает невалиден.

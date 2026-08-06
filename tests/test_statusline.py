@@ -115,6 +115,14 @@ class Capture(unittest.TestCase):
 class Wrapper(unittest.TestCase):
     """Обёртка обязана отдать вложенной команде ровно те байты, что пришли ей."""
 
+    @staticmethod
+    def run_wrapper(root, payload="{}"):
+        return subprocess.run(
+            ["bash", os.path.join(HOOKS, "statusline.sh")],
+            input=payload, capture_output=True, text=True,
+            env={**os.environ, "CONTROL_BAR_ROOT": root}, timeout=30,
+        )
+
     def test_вложенная_команда_получает_тот_же_payload(self):
         tmp = tempfile.mkdtemp()
         inner = os.path.join(tmp, "inner.sh")
@@ -125,11 +133,7 @@ class Wrapper(unittest.TestCase):
             fh.write(f'bash "{inner}"\n')
 
         payload = json.dumps({"model": {"id": "claude-opus-5"}, "hint": "хвост\n"})
-        result = subprocess.run(
-            ["bash", os.path.join(HOOKS, "statusline.sh")],
-            input=payload, capture_output=True, text=True,
-            env={**os.environ, "CONTROL_BAR_ROOT": tmp}, timeout=30,
-        )
+        result = self.run_wrapper(tmp, payload)
         # $(cat) срезал бы хвостовой перевод строки, и вложенный скрипт получил бы не тот вход.
         self.assertEqual(result.stdout.strip(), str(len(payload.encode())))
 
@@ -141,13 +145,28 @@ class Wrapper(unittest.TestCase):
         tmp = tempfile.mkdtemp()
         with open(os.path.join(tmp, "statusline-inner-command"), "w") as fh:
             fh.write(f'bash "{os.path.join(HOOKS, "statusline.sh")}"\n')
-        result = subprocess.run(
-            ["bash", os.path.join(HOOKS, "statusline.sh")],
-            input="{}", capture_output=True, text=True,
-            env={**os.environ, "CONTROL_BAR_ROOT": tmp}, timeout=30,
-        )
+        result = self.run_wrapper(tmp)
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
+
+    def test_чужой_statusline_sh_исполняется_как_вложенная_команда(self):
+        """statusline.sh — имя из официального примера в документации Claude Code.
+
+        Защита от рекурсии по подстроке имени глушила ЛЮБУЮ команду с этим именем: чужая
+        строка состояния пользователя после установки перехвата просто переставала выводить
+        что-либо. Своя ли команда — решает сентинел окружения, а не имя файла.
+        """
+        tmp = tempfile.mkdtemp()
+        foreign_dir = os.path.join(tmp, "foreign")
+        os.makedirs(foreign_dir)
+        foreign = os.path.join(foreign_dir, "statusline.sh")
+        with open(foreign, "w") as fh:
+            fh.write("#!/bin/bash\nprintf 'FOREIGN OK'\n")
+        os.chmod(foreign, 0o755)
+        with open(os.path.join(tmp, "statusline-inner-command"), "w") as fh:
+            fh.write(f'bash "{foreign}"\n')
+        result = self.run_wrapper(tmp)
+        self.assertEqual(result.stdout, "FOREIGN OK")
 
 
 if __name__ == "__main__":

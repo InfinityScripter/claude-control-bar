@@ -168,6 +168,43 @@ test("an unreadable transcript keeps the last known context instead of blanking 
   assert.equal(state.tokens, 84000);
 });
 
+test("a notification is a permission prompt by its type, not by substrings of its text", () => {
+  const home = sandbox();
+  // "Shallow" contains "allow"; with the substring check this ordinary notification parked
+  // the icon on "Awaiting permission" — a state with a two-hour timeout.
+  run(updatePath, home, ["notify"], JSON.stringify({
+    session_id: "typed-shallow", notification_type: "idle_prompt", message: "Shallow clone finished",
+  }));
+  assert.equal(fs.existsSync(path.join(stateDir(home), "typed-shallow.json")), false);
+
+  run(updatePath, home, ["notify"], JSON.stringify({
+    session_id: "typed-perm", notification_type: "permission_prompt", message: "whatever the text says",
+  }));
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "typed-perm.json"), "utf8"));
+  assert.equal(state.state, "permission");
+});
+
+test("the legacy notification-text fallback matches whole words only", () => {
+  const home = sandbox();
+  // Payloads old enough to lack notification_type still classify by text — on word
+  // boundaries: shallow/fallow/permissionless must not read as permission prompts.
+  for (const [sid, message] of [
+    ["legacy-shallow", "Shallow clone finished"],
+    ["legacy-fallow", "Field left fallow"],
+    ["legacy-permless", "Running in permissionless mode"],
+  ]) {
+    run(updatePath, home, ["notify"], JSON.stringify({ session_id: sid, message }));
+    assert.equal(fs.existsSync(path.join(stateDir(home), `${sid}.json`)), false,
+      `${sid} misread as a permission prompt`);
+  }
+
+  run(updatePath, home, ["notify"], JSON.stringify({
+    session_id: "legacy-perm", message: "Claude needs your permission to use Bash",
+  }));
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "legacy-perm.json"), "utf8"));
+  assert.equal(state.state, "permission");
+});
+
 // settings.json is shared with Claude Code and edited by hand. Both cases below are about not
 // destroying someone else's work in it.
 

@@ -110,6 +110,8 @@ STRINGS = {
     "limits.age": ("data {n} min old, source: {src}", "данным {n} мин, источник: {src}"),
     "limits.none": ("not measured yet", "ещё не измерены"),
     "error.check": ("Check failed: {e}", "Ошибка проверки: {e}"),
+    "check.running": ("a check is already running — try again in a few seconds",
+                      "проверка уже идёт — повтори через несколько секунд"),
     "summary": ("Total: {live}/{total} connected, {tools} {word}",
                 "Итого: {live}/{total} на связи, {tools} {word}"),
     "summary.off": (", {n} disabled", ", {n} выключено"),
@@ -139,6 +141,8 @@ STRINGS = {
     "sl.nocommand": ("(there was none)", "(её не было)"),
     "sl.notours": ("not installed — the statusLine is not ours, leaving it alone",
                    "не установлен — statusLine не наш, ничего не трогаю"),
+    "sl.changed": ("not removed — the statusLine was changed after install, leaving it alone",
+                   "не снят — statusLine изменён после установки, ничего не трогаю"),
     "sl.restored": ("restored: {cmd}", "возвращено: {cmd}"),
     "sl.removed": ("(statusLine removed)", "(statusLine удалён)"),
     "sl.on": ("capture on", "перехват включён"),
@@ -800,8 +804,15 @@ def backup_settings():
     settings = read_json(SETTINGS)
     if settings is None:
         return None
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    path = f"{SETTINGS}.bak-{stamp}"
+    # Имя несёт имя приложения и микросекунды. Приставка — граница ротации: голая маска
+    # `.bak-2*` совпадала с любым датированным бэкапом рядом с настройками, в том числе
+    # сделанным руками или другим инструментом, и чистка «наших десяти» удаляла чужое.
+    # Микросекунды — потому что секундного разрешения мало: два быстрых переключения
+    # попадали в один файл, и второй снимок молча не делался.
+    from datetime import datetime
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    path = f"{SETTINGS}.bak-control-bar-{stamp}"
     # Копии ещё нет, наследовать режим неоткуда — и при обычном umask 022 она рождалась 0644,
     # хотя сам settings.json стоит 0600 и хранит env MCP-серверов с токенами. Берём режим
     # исходника и в любом случае не шире владельца: резервная копия секрета — тот же секрет.
@@ -809,10 +820,12 @@ def backup_settings():
         mode = (os.stat(os.path.realpath(SETTINGS)).st_mode & 0o777) & 0o700
     except OSError:
         mode = 0o600
-    if not os.path.exists(path):
-        write_json(path, settings, mode=mode)
-    # Переключатель дёргают часто — храним десяток последних снимков, остальное чистим.
-    ours = sorted(glob.glob(f"{SETTINGS}.bak-2*"), reverse=True)
+    write_json(path, settings, mode=mode)
+    # Переключатель дёргают часто — храним десяток последних СВОИХ снимков, остальное чистим.
+    # Ротация ходит строго по своей приставке: старые `.bak-<дата>` без неё, разовый
+    # `.bak-control-bar` установщика хуков и любые чужие файлы не трогаются — доказать их
+    # принадлежность приложению уже нельзя.
+    ours = sorted(glob.glob(f"{SETTINGS}.bak-control-bar-2*"), reverse=True)
     for stale in ours[10:]:
         try:
             os.remove(stale)
@@ -963,6 +976,26 @@ STATUSLINE_INNER = os.path.join(ROOT, "statusline-inner-command")
 # (padding, refreshInterval, hideVimModeIndicator), и «сохранить только команду» значило
 # молча снести их при установке и не вернуть при откате.
 STATUSLINE_SAVED = os.path.join(ROOT, "statusline-saved.json")
+# Точная команда, которую записала установка. Единственный надёжный ответ на вопрос «наш ли
+# текущий statusLine»: сам факт существования сайдкаров таким ответом не является — они
+# говорят лишь, что установка КОГДА-ТО была, а команду человек мог с тех пор сменить руками.
+STATUSLINE_INSTALLED = os.path.join(ROOT, "statusline-installed.json")
+
+
+def statusline_sidecars():
+    """Один список на все операции: «след установки» обязан значить одно и то же в проверке,
+    откате неудачной установки и чистке после отката — разные списки в этих местах уже успели
+    разойтись на одну правку. Функция, а не кортеж-константа: тесты подменяют пути поимённо,
+    и снимок, сделанный на импорте, смотрел бы мимо подмены — в настоящий домашний каталог."""
+    return (STATUSLINE_SAVED, STATUSLINE_INNER, STATUSLINE_INSTALLED)
+
+
+def drop_statusline_sidecars():
+    for leftover in statusline_sidecars():
+        try:
+            os.remove(leftover)
+        except OSError:
+            pass
 
 
 def find_statusline_wrapper():
@@ -988,26 +1021,44 @@ def statusline_ours(command):
     Не по подстроке «statusline.sh»: это имя из официального примера в документации Claude
     Code, так что своя строка состояния пользователя опознавалась как наша — install молча
     отвечал «уже установлен» и не делал ничего, а uninstall удалял чужую команду, которую
-    никогда не сохранял. Признак теперь конкретный: команда указывает на файл, который лежит
-    рядом с ЭТИМ скриптом (или на файл нашей же прошлой версии — путь плагина несёт в себе
-    номер версии и переезжает при каждом обновлении, поэтому опорой служит сохранённая при
-    установке запись).
+    никогда не сохранял. Признаки конкретные, по убыванию силы: команда буква в букву та,
+    что записала установка; команда указывает на файл, лежащий рядом с ЭТИМ скриптом.
+
+    След установки (сайдкары) сам по себе ответом НЕ является: человек мог сменить команду
+    руками уже после установки, и «сайдкары есть, значит наша» затирало при откате его самую
+    свежую настройку самой старой. Сайдкары участвуют только в узком унаследованном случае —
+    запись установки ещё не велась, а команда указывает на statusline.sh, которого больше нет
+    на диске: путь плагина несёт в себе номер версии и переезжает при каждом обновлении.
+    Живая чужая строка состояния так выглядеть не может — её файл существует.
     """
-    if "statusline.sh" not in command:
+    command = (command or "").strip()
+    if not command:
         return False
+    installed = (read_json(STATUSLINE_INSTALLED) or {}).get("command") or ""
+    if command == installed.strip():
+        return True
     import shlex
 
     try:
         words = shlex.split(command)
     except ValueError:
         words = command.split()
+    named = [w for w in words if os.path.basename(w) == "statusline.sh"]
     wrapper = find_statusline_wrapper()
     if wrapper:
         mine = os.path.realpath(wrapper)
-        if any(os.path.realpath(w) == mine for w in words if w.endswith("statusline.sh")):
+        if any(os.path.realpath(w) == mine for w in named):
             return True
-    # Обёртка от прошлой версии: её файла на месте уже нет, но след установки остался.
-    return os.path.exists(STATUSLINE_SAVED) or os.path.exists(STATUSLINE_INNER)
+    # Ниже — миграционный шим для установок, сделанных ДО появления файла-записи, и только
+    # для них: запись есть и не совпала — команда чужая, «похоже на нашу» больше не аргумент.
+    # Без этого гейта чужая ЖИВАЯ команда вида `bash ~/.claude/statusline.sh` читалась как
+    # мёртвая обёртка прошлой версии: shlex не раскрывает ни ~, ни $HOME, и os.path.exists
+    # на таком слове всегда False. Шим самозакрывается первой же установкой этой версии.
+    if installed:
+        return False
+    if any(map(os.path.exists, statusline_sidecars())):
+        return any(not os.path.exists(w) for w in named)
+    return False
 
 
 def statusline_state():
@@ -1059,8 +1110,12 @@ def statusline_install():
         # там ещё настроено — остаются и продолжают действовать с обёрткой.
         installed = dict(original) if isinstance(original, dict) else {}
         installed.update({"type": "command", "command": f'bash "{wrapper}"'})
+        write_json(STATUSLINE_INSTALLED, {"command": installed["command"]})
         settings["statusLine"] = installed
         if not write_settings(settings, expect=seen):
+            # Сайдкары написаны до настроек, и раз настройки не изменились — следа установки
+            # быть не должно: по нему следующая проверка отвечала бы «перехват стоит».
+            drop_statusline_sidecars()
             return t("sl.busy")
         return t("sl.installed", cmd=current or t("sl.nocommand"))
 
@@ -1072,7 +1127,11 @@ def statusline_uninstall():
             return t("sl.busy")
         current = ((settings.get("statusLine") or {}).get("command") or "").strip()
         if not statusline_ours(current):
-            return t("sl.notours")
+            # След установки есть, а команда уже другая: человек сменил statusLine руками
+            # ПОСЛЕ установки. Восстановить «как было» = затереть его самую свежую настройку
+            # самой старой, поэтому здесь остановка, а не откат.
+            trace = any(map(os.path.exists, statusline_sidecars()))
+            return t("sl.changed") if trace else t("sl.notours")
         saved = ""
         try:
             with open(STATUSLINE_INNER) as fh:
@@ -1094,11 +1153,7 @@ def statusline_uninstall():
             settings.pop("statusLine", None)
         if not write_settings(settings, expect=seen):
             return t("sl.busy")
-        for leftover in (STATUSLINE_SAVED, STATUSLINE_INNER):
-            try:
-                os.remove(leftover)
-            except OSError:
-                pass
+        drop_statusline_sidecars()
         return t("sl.restored", cmd=saved or t("sl.removed"))
 
 
@@ -1409,7 +1464,33 @@ def live_sessions():
 # ──────────────────────────────────────────────────────────── сборка состояния
 
 def refresh():
+    """Полная проверка — под межпроцессным замком, потому что путей к ней несколько.
+
+    spawn_refresh() прикрывает только statusLine-путь, и его mtime-эвристика — фильтр, а не
+    гарантия: приложение зовёт `mcpbar.py refresh` напрямую, есть `report --force` и
+    `toggle --refresh`. Две проверки разом — это дважды поднятые пользовательские серверы и
+    две записи mcp.json наперегонки, где побеждает последняя, а не самая свежая.
+
+    Замок неблокирующий: раз проверка уже идёт, вторая ничего не добавит — честнее сразу
+    вернуть последнюю картину, идущая проверка перепишет её через считанные секунды.
+    flock отпускается закрытием дескриптора, то есть и при аварийном выходе процесса —
+    протухший замок невозможен.
+    """
+    import fcntl
+
     secure_root()
+    # Дескриптор нужен только под flock, содержимое файла не пишется вовсе: mtime — язык
+    # дебаунса spawn_refresh(), и штампует его только он. Взаимное исключение — flock,
+    # не байты; выход из with отпускает замок в любом исходе.
+    with os.fdopen(os.open(LOCK, os.O_WRONLY | os.O_CREAT, SECURE_FILE), "w") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return load_state() or {}
+        return _refresh_locked()
+
+
+def _refresh_locked():
     servers, error = run_health_check()
     previous = load_state() or {}
 
@@ -1534,8 +1615,11 @@ def spawn_refresh():
         if os.path.exists(LOCK) and time.time() - os.path.getmtime(LOCK) < LOCK_TTL:
             return
         os.makedirs(ROOT, mode=SECURE_DIR, exist_ok=True)
-        with open(LOCK, "w") as fh:
-            fh.write(str(os.getpid()))
+        # Пустой touch: файл — маркер времени последнего спауна, читается только getmtime'ом
+        # выше. Кто прямо сейчас ДЕРЖИТ проверку, знает flock внутри refresh(); pid сюда не
+        # пишется, чтобы файл не притворялся pid-локом, которым не является.
+        with open(LOCK, "w"):
+            pass
         subprocess.Popen(
             [sys.executable, os.path.abspath(__file__), "refresh"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
@@ -1581,6 +1665,11 @@ def report(force=False):
     data = load_state()
     if force or not data or time.time() - data.get("checked_at", 0) > TTL:
         data = refresh()
+        # Пустой ответ — это «замок занят, а карты ещё не было»: первый запуск плюс идущая
+        # параллельно проверка. Отчёт «0/0 серверов, проверено эпоху назад» звучал бы уверенно
+        # и врал бы; честный ответ здесь один — проверка уже идёт.
+        if not data:
+            return t("check.running")
 
     tty = sys.stdout.isatty()
     paint = (lambda text, code: f"\x1b[{code}m{text}\x1b[0m") if tty else (lambda text, _: text)

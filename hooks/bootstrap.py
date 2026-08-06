@@ -121,12 +121,47 @@ def find_node():
     return next((p for p in candidates if os.access(p, os.X_OK)), None)
 
 
+def shell_quoted(value):
+    """The exact spelling shellQuote() in install.js produces — NOT shlex.quote, which spells
+    an apostrophe differently and leaves a plain path unquoted. The contract is set by the JS
+    scripts that wrote the command; this predicate must recognise their bytes."""
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def command_points_at(command, script):
+    """Mirror of pointsAt() in install.js/uninstall.js — keep the three copies in step.
+
+    The bare spelling is anchored on the right: without the boundary "update.js" is a prefix
+    of a neighbour's "update.js.bak". The quoted spelling carries homes with an apostrophe,
+    where the bare path never appears in the command at all.
+    """
+    at = command.find(script)
+    while at != -1:
+        if command[at + len(script):at + len(script) + 1] in ("", " ", "'", '"'):
+            return True
+        at = command.find(script, at + 1)
+    return shell_quoted(script) in command
+
+
 def app_hooks_present():
-    """Whether settings.json still holds hooks pointing into our directory."""
+    """Whether settings.json still holds hooks pointing at our scripts.
+
+    The exact scripts, not `ROOT in command`: the directory is also a prefix of a user's own
+    "control-bar-extra", and a substring of any command that merely reads a file from our
+    directory. A false positive here is not cosmetic — while one such "our" hook survives,
+    clear_app_channel_hooks() keeps failing and the plugin never claims the lease.
+
+    Both spellings, same as isOurs in install.js/uninstall.js (keep the three in step): with
+    an apostrophe in the home path the bare path never appears in the command — the quoted
+    spelling is the only one there is, and missing it flips the failure the other way, a lease
+    claimed while the duplicate hooks are still installed.
+    """
+    scripts = (os.path.join(ROOT, "update.js"), os.path.join(ROOT, "lifecycle.js"))
     for entries in ((read_json(SETTINGS) or {}).get("hooks") or {}).values():
         for entry in entries or []:
             for hook in (entry or {}).get("hooks") or []:
-                if ROOT in (hook.get("command") or ""):
+                command = hook.get("command") or ""
+                if any(command_points_at(command, s) for s in scripts):
                     return True
     return False
 

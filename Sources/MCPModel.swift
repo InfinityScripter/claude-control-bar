@@ -55,6 +55,11 @@ struct MCPServer {
     /// Tools actually reaching Claude. Falls back to the reported count when names are unknown,
     /// because "12" beats "—" for a server that plainly has tools.
     var liveTools: Int { tools.isEmpty ? (reportedTools ?? 0) : enabledTools }
+
+    /// The one spelling of a full tool name. Every consumer — the deny rule, the hover card —
+    /// goes through here: hand-assembling `mcp__…__…` at a call site is how a display name
+    /// ends up where a toolPrefix belongs, twice now (the deny rule in 0.5.0, the card in 0.5.3).
+    static func fullToolName(prefix: String, tool: String) -> String { "mcp__\(prefix)__\(tool)" }
 }
 
 /// What moved between two reads. Drives both the notification and the "it changed" marker in the

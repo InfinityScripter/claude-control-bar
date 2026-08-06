@@ -178,9 +178,14 @@ process.stdin.on("end", () => {
       // Only a permission prompt drives the icon here (CLI path; desktop uses permreq). Ignore
       // every other Notification (esp. the idle_prompt "Claude is waiting for your input") so the
       // icon rests instead of parking on a confusing "Waiting for you".
-      const m = (p.message || "").toLowerCase();
-      const isPerm = p.notification_type === "permission_prompt" ||
-        m.includes("permission") || m.includes("approve") || m.includes("allow");
+      //
+      // notification_type is the answer whenever it is present; the message text is a fallback
+      // for payloads old enough to lack the field, and it matches whole words only — "allow" as
+      // a SUBSTRING also lives inside "shallow", and one such notification parked the icon on
+      // "Awaiting permission", a state with a two-hour timeout.
+      const isPerm = p.notification_type
+        ? p.notification_type === "permission_prompt"
+        : /\b(permission|approve|allow)\b/i.test(p.message || "");
       if (!isPerm) return;
       state = "permission"; label = "Awaiting permission"; startedAt = 0;
       break;

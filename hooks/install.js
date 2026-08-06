@@ -10,7 +10,6 @@ const cp = require("child_process");
 
 const home = os.homedir();
 const sbDir = path.join(home, ".claude", "control-bar");
-const MARKER = sbDir; // every hook command we add points inside this dir
 const updateDest = path.join(sbDir, "update.js");
 const lifecycleDest = path.join(sbDir, "lifecycle.js");
 const settingsPath = path.join(home, ".claude", "settings.json");
@@ -51,9 +50,25 @@ fs.copyFileSync(path.join(__dirname, "lifecycle.js"), lifecycleDest);
 for (const script of [updateDest, lifecycleDest]) { try { fs.chmodSync(script, 0o600); } catch {} }
 
 const shellQuote = (value) => `'${value.replace(/'/g, `'\\''`)}'`;
-const quotedMarkerPrefix = shellQuote(MARKER).slice(0, -1);
-const isOurs = (command) =>
-  command.includes(MARKER) || command.includes(quotedMarkerPrefix);
+// Ownership is the exact scripts a hook command points at — the only two this installer has
+// ever written — not the directory as a substring. "~/.claude/control-bar" is also a PREFIX of
+// a user's own "~/.claude/control-bar-extra/custom.js", and a substring of any command that
+// merely reads a file out of our directory; the substring check deleted both kinds of stranger.
+// The bare spelling is anchored on the right for the same reason — without the boundary,
+// "update.js" is a prefix of a neighbour's "update.js.bak". It cannot be dropped either: 0.0.1
+// wrote its commands unquoted, and upgrades still have to recognise them. The shellQuote
+// spelling is NOT redundant: with an apostrophe in the home path the escaped form is the only
+// one the command contains — drop that branch and such a home never gets its hooks cleaned.
+// (uninstall.js and bootstrap.py mirror this predicate; keep the three copies in step.)
+const ownScripts = [updateDest, lifecycleDest];
+const boundary = (ch) => ch === undefined || ch === " " || ch === "'" || ch === '"';
+const pointsAt = (command, script) => {
+  for (let at = command.indexOf(script); at !== -1; at = command.indexOf(script, at + 1)) {
+    if (boundary(command[at + script.length])) return true;
+  }
+  return command.includes(shellQuote(script));
+};
+const isOurs = (command) => ownScripts.some((script) => pointsAt(command, script));
 const cmd = (evt) =>
   `PATH="/opt/homebrew/bin:/usr/local/bin\${PATH:+:$PATH}" node ${shellQuote(updateDest)} ${evt}`;
 const life = (evt) =>

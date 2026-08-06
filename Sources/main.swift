@@ -1020,7 +1020,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     /// the bug: for a plugin or a claude.ai connector it produced `mcp__claude.ai Figma__…`,
     /// which matches no tool at all — the switch went off and the tool kept loading.
     func setMCPTool(server: String, tool: String, prefix: String, enabled: Bool) {
-        runBackend(["toggle-tool", "mcp__\(prefix)__\(tool)",
+        runBackend(["toggle-tool", MCPServer.fullToolName(prefix: prefix, tool: tool),
                     "--server", server, "--tool", tool, enabled ? "--on" : "--off"])
     }
 
@@ -1292,9 +1292,15 @@ final class StatusController: NSObject, NSMenuDelegate {
                 let up = NSMenuItem(title: "Update to \(latest)", action: #selector(openLatestRelease), keyEquivalent: "")
                 up.target = self
                 menu.addItem(up)
-                let sw = NSMenuItem(title: "Switch to Homebrew", action: nil, keyEquivalent: "")
-                sw.view = CopyRowView(title: "Switch to Homebrew", command: brewInstallCommand, width: width)
-                menu.addItem(sw)
+                // Only once the cask actually exists. brewCaskVersion is written solely by a
+                // successful cask-API response, so while the cask is unpublished the key is
+                // absent — and the row would be handing out a command that is guaranteed to
+                // fail with "cask not found".
+                if brewVer != nil {
+                    let sw = NSMenuItem(title: "Switch to Homebrew", action: nil, keyEquivalent: "")
+                    sw.view = CopyRowView(title: "Switch to Homebrew", command: brewInstallCommand, width: width)
+                    menu.addItem(sw)
+                }
             }
         }
         let q = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")

@@ -11,6 +11,15 @@ set -u
 
 ROOT="${CONTROL_BAR_ROOT:-$HOME/.claude/control-bar}"
 
+# Self-wrapping guard. The installer refuses to wrap itself, but the sidecar file is plain text
+# a human can edit — and a wrapper calling itself forks until the machine gives up. The guard is
+# an environment sentinel, not a check on the saved command's text: statusline.sh is the file
+# name from the official Claude Code example, so matching on the name silenced any FOREIGN
+# status line that happened to be called that. Only this script sets the variable, so seeing it
+# means the caller IS this script — whatever the command around it looks like.
+if [ -n "${CONTROL_BAR_STATUSLINE_ACTIVE:-}" ]; then exit 0; fi
+export CONTROL_BAR_STATUSLINE_ACTIVE=1
+
 # Script directory without a subshell: $(cd … && pwd) is another fork on every single redraw,
 # and the status line redraws constantly.
 SELF_DIR="${BASH_SOURCE[0]%/*}"
@@ -34,9 +43,6 @@ fi
 inner=""
 [ -f "$ROOT/statusline-inner-command" ] && IFS= read -r -d '' inner < "$ROOT/statusline-inner-command"
 inner="${inner%$'\n'}"   # the installer's own trailing newline is not part of the command
-# Self-wrapping guard. The installer refuses to wrap itself, but the sidecar file is plain text
-# a human can edit — and a wrapper calling itself forks until the machine gives up.
-case "$inner" in *statusline.sh*) inner="" ;; esac
 [ -n "$inner" ] || exit 0
 
 # printf, not a here-string: <<< appends a newline and breaks the byte equality promised above.
