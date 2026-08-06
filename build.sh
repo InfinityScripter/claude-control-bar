@@ -66,9 +66,11 @@ cp assets/completion.mp3 "$STAGE_APP/Contents/Resources/completion.mp3"
 # --- Signing / notarization ---
 # For a clean (no Gatekeeper warning) release you need, set up once on this Mac:
 #   1. A "Developer ID Application" certificate in your keychain (Xcode > Settings > Accounts).
-#   2. A notarytool credential profile:
-#        xcrun notarytool store-credentials "claude-statusbar" \
-#          --apple-id you@example.com --team-id W9JZ4932LA --password <app-specific-password>
+#   2. A notarytool credential profile named the same as NOTARY_PROFILE below — the name in
+#      this line used to be upstream's, so anyone following it stored a profile this script
+#      then failed to find, and the build fell through to an unnotarized DMG:
+#        xcrun notarytool store-credentials "claude-control-bar" \
+#          --apple-id you@example.com --team-id <YOUR TEAM ID> --password <app-specific-password>
 # Then `./build.sh --dmg` auto-signs + notarizes. Without a cert it falls back to an
 # ad-hoc dev build (runnable locally; users would need right-click > Open once).
 # Was hardcoded to upstream's Apple Team ID, which is nobody's cert here: the grep never
