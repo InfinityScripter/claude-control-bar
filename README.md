@@ -28,9 +28,9 @@ with its own name and bundle id, and it does not touch an installation of either
 /plugin marketplace add InfinityScripter/claude-control-bar
 ```
 
-Then `/plugin install claude-control-bar`. The app is compiled on your own Mac at the next
-session start, which means Gatekeeper is never involved — nothing was downloaded. Updates arrive
-with the plugin.
+Then `/plugin install claude-control-bar`. The app is compiled from source on your own Mac at the
+next session start, so it needs the Xcode command line tools (`xcode-select --install`). Updates
+arrive with the plugin.
 
 ### Homebrew
 
@@ -51,9 +51,7 @@ The app checks GitHub once a day and offers the newer version in its own menu wh
 > **The DMG is not notarized.** This fork has no Apple Developer ID, so the app is ad-hoc signed
 > and macOS will block the first launch. On macOS 15 and later the old Control-click → Open
 > trick no longer works: open **System Settings → Privacy & Security** and press **Open Anyway**,
-> or run `xattr -dr com.apple.quarantine "/Applications/Claude Control Bar.app"`. If that is not
-> acceptable, use the plugin channel — it builds from source on your machine and never meets
-> Gatekeeper at all.
+> or run `xattr -dr com.apple.quarantine "/Applications/Claude Control Bar.app"`.
 
 ### Both channels at once
 

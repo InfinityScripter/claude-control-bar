@@ -7,6 +7,46 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.5.5] - 2026-08-06
+
+### Fixed
+
+- **The app no longer closes itself ten seconds after launch while Claude Code is running.**
+  Whether it was still needed was decided by counting the session files the hooks leave in
+  `state.d/` — and a session whose hooks never fired writes none (no `node` on the PATH, hooks
+  switched off, setting sources that skip the user's file). It never happened next to the
+  desktop app, which is a GUI application and is detected a second way, which is exactly why
+  this read as "the plugin only works on the desktop". The process table now gets the last
+  word: with any `claude` process alive the app stays. Asked through libproc rather than by
+  spawning `pgrep`, and only once every cheaper check has already said "not needed".
+- **Clicking a session row switches to that session.** For a desktop conversation the click
+  merely focused the Claude app — which is normally frontmost already, so every row did nothing
+  visible and all of them did the same nothing. The app does file each conversation, at
+  `claude-code-sessions/<account>/<workspace>/local_<uuid>.json`, with the CLI session id
+  inside — the very id the rows are keyed by. The row resolves it and opens
+  `claude://claude.ai/epitaxy/<sessionId>`. Not `claude://code/<id>`: that route wants a bridge
+  session id, which a local conversation does not have — 0 of 441 session files on a real
+  install carry one. Focusing the app remains the fallback for a conversation with no record on
+  disk; a terminal session still brings its terminal to the front.
+- **The context percentage in a terminal session is Claude Code's own figure, not a guess.** It
+  was recomputed from the transcript against an assumed window size — and the window belongs to
+  the session, not to the model: the same `claude-opus-5` answers with 200k in one place and 1M
+  in another. Assuming the narrow one turned 30% into 90%. Claude Code states both the size and
+  the finished percentage in the statusLine payload, so that is kept per session in
+  `context.d/` and preferred to the arithmetic. The recomputation stays for the desktop app and
+  the editor extensions, which run no status line at all; a reading older than fifteen minutes
+  counts as absent, so a session that moved to the desktop cannot freeze on what the terminal
+  last saw. The record is deleted with its session.
+
+### Changed
+
+- **The update row says "Update available".** The version moved into its tooltip, where it is
+  not a second number sitting beside the one the line above already gives. "Restart to finish
+  updating" lost its version for the same reason.
+- **The README no longer claims the plugin channel never meets Gatekeeper.** It says what is
+  actually true: the app is compiled from source on your Mac, which needs the Xcode command
+  line tools.
+
 ## [0.5.4] - 2026-08-06
 
 ### Fixed
