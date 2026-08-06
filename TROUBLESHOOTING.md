@@ -37,6 +37,18 @@ a clock or a percentage) is usually enough. Cmd-drag rearranges menu bar items.
 
 **Seeing 2 icons?** The desktop app shows its own menu bar icon (the quick-screenshot one). To avoid two icons sitting side by side, open Claude's **Settings → General** and turn that built-in menu bar item off.
 
+**MCP checks fail with `EPERM`, or you declined "access files on a network volume"?** Both are
+the same story. macOS counts FUSE mounts (arc, sshfs, some Docker setups) as network volumes, so
+when a Claude Code session lives on one, the health check needs the "files on a network volume"
+permission to look at that project's servers. The system asks exactly once — decline it and every
+later check fails with `EPERM`, and macOS never asks again on its own. The menu now says this
+under the failed check and offers both ways out:
+
+- **Grant access to network volumes…** opens System Settings → Privacy & Security → Files &
+  Folders — enable Claude Control Bar there; or
+- copy the **Ask again** command (`tccutil reset SystemPolicyNetworkVolumes <bundle id>`), run it
+  in a terminal, and the original permission dialog returns on the next check.
+
 ---
 
 ## Known issues

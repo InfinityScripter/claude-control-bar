@@ -460,6 +460,31 @@ final class StatusController: NSObject, NSMenuDelegate {
     var renderedTitle: String? // what the status item is actually showing, to skip identical redraws
     var lastLifecycleCheck: Double = 0  // the quit decision is sampled far slower than the UI
     var notificationsDenied = false     // the one macOS permission this app has; see notify()
+    var selfUpdating = false            // one build-from-source update at a time; also the menu text
+    var updateBuild: Process?           // the in-flight update's build; Quit terminates it (see quit())
+    // Never `xcrun --find`: querying xcrun with no developer tools installed pops the system's
+    // "install the command line developer tools?" dialog — from a menu bar app, out of nowhere.
+    // A missing toolchain must read as "not available", never as a prompt. The fixed paths cover
+    // the stock installs; `xcode-select -p` (prompt-free) covers one moved with --switch.
+    lazy var canBuildFromSource: Bool = {
+        let stock = ["/Library/Developer/CommandLineTools/usr/bin/swiftc",
+                     "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"]
+        if stock.contains(where: { FileManager.default.isExecutableFile(atPath: $0) }) { return true }
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+        probe.arguments = ["-p"]
+        let out = Pipe()
+        probe.standardOutput = out
+        probe.standardError = FileHandle.nullDevice
+        guard (try? probe.run()) != nil else { return false }
+        probe.waitUntilExit()
+        guard probe.terminationStatus == 0,
+              let root = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !root.isEmpty else { return false }
+        return [root + "/usr/bin/swiftc",
+                root + "/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"]
+            .contains { FileManager.default.isExecutableFile(atPath: $0) }
+    }()
     var turnLineCache: [String: (size: UInt64, mtime: Date, interrupted: Bool, turnTs: Double?)] = [:]
     var iconCache: [Int: NSImage] = [:]  // composed menu bar frames, rebuilt only when the look changes
     var iconCacheKey = ""
@@ -873,8 +898,117 @@ final class StatusController: NSObject, NSMenuDelegate {
         task.executableURL = URL(fileURLWithPath: "/bin/sh")
         task.arguments = ["-c", "while kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null;"
                           + " do sleep 0.2; done; exec /usr/bin/open \(quoted)"]
-        try? task.run()
+        do { try task.run() } catch {
+            // Quitting with no relauncher running would just make the app vanish. Staying alive
+            // is strictly better: the copy on disk is already the new one, so the menu's
+            // "Restart to finish updating" row appears on the next open and offers this again.
+            logProblem("relaunch spawn failed: \(error)")
+            selfUpdating = false
+            return
+        }
         NSApp.terminate(nil)
+    }
+
+    // MARK: self-update (build from source)
+
+    /// Best-effort breadcrumb for the failures a menu bar app has nowhere to show live.
+    func logProblem(_ text: String) {
+        NSLog("ClaudeControlBar: %@", text)
+        let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar")
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let log = dir + "/problems.log"
+        let prev = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
+        try? (prev + text + "\n").write(toFile: log, atomically: true, encoding: .utf8)
+    }
+
+    /// The DMG channel's automatic update: download the release source, build it with the same
+    /// script every channel uses, let its staging swap replace this bundle, restart into it.
+    ///
+    /// No signature is involved anywhere — the binary is compiled on this machine, and
+    /// Gatekeeper's quarantine applies to downloaded executables, not locally built ones. This is
+    /// the plugin channel's own mechanism offered to the bundle install; the alternative —
+    /// shipping a prebuilt update and stripping its quarantine — works exactly until it doesn't,
+    /// and each ad-hoc re-sign would read to macOS as a different app, dropping notification
+    /// permission along the way.
+    @objc func selfUpdate() {
+        guard !selfUpdating, let latest = UserDefaults.standard.string(forKey: "latestVersion"),
+              let url = URL(string:
+                "https://github.com/InfinityScripter/claude-control-bar/archive/refs/tags/v\(latest).tar.gz")
+        else { return }
+        selfUpdating = true
+        let target = Bundle.main.bundlePath
+        let fail: (String) -> Void = { [weak self] reason in
+            self?.logProblem("self-update to \(latest) failed: \(reason)")
+            DispatchQueue.main.async { self?.selfUpdating = false }
+        }
+        URLSession.shared.downloadTask(with: url) { [weak self] file, _, error in
+            // The download lands in URLSession's temporary file, which dies with this callback —
+            // move it out synchronously, then leave the session's queue before the slow part:
+            // a build takes a minute, and this queue also serves the daily update check.
+            let tar = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("ccb-update-\(latest).tar.gz")
+            guard let file else { return fail(error.map(String.init(describing:)) ?? "empty download") }
+            try? FileManager.default.removeItem(at: tar)
+            do { try FileManager.default.moveItem(at: file, to: tar) } catch { return fail("move: \(error)") }
+            DispatchQueue.global(qos: .utility).async {
+                self?.buildAndSwap(tar: tar, target: target, latest: latest, fail: fail)
+            }
+        }.resume()
+    }
+
+    private func buildAndSwap(tar: URL, target: String, latest: String, fail: (String) -> Void) {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ccb-update-\(ProcessInfo.processInfo.processIdentifier)")
+        defer { try? FileManager.default.removeItem(at: tmp); try? FileManager.default.removeItem(at: tar) }
+        do { try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true) }
+        catch { return fail("mkdir: \(error)") }
+
+        let untar = Process()
+        untar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        untar.arguments = ["-xzf", tar.path, "-C", tmp.path]
+        do { try untar.run() } catch { return fail("tar: \(error)") }
+        untar.waitUntilExit()
+        guard untar.terminationStatus == 0 else { return fail("tar exited \(untar.terminationStatus)") }
+
+        // GitHub archives unpack into <repo>-<version>/ — located by its build.sh, not by name,
+        // so a fork or a renamed tag cannot break the path.
+        guard let src = (try? FileManager.default.contentsOfDirectory(atPath: tmp.path))?
+                .map({ tmp.appendingPathComponent($0) })
+                .first(where: { FileManager.default.isReadableFile(atPath: $0.appendingPathComponent("build.sh").path) })
+        else { return fail("no build.sh in the archive") }
+
+        let build = Process()
+        build.executableURL = URL(fileURLWithPath: "/bin/bash")
+        build.arguments = [src.appendingPathComponent("build.sh").path]
+        build.currentDirectoryURL = src
+        var env = ProcessInfo.processInfo.environment
+        env["CONTROL_BAR_APP"] = target
+        build.environment = env
+        // stdout to the bit bucket; stderr drained by a handler, not a blocking
+        // readDataToEndOfFile — that read returns only when every holder of the write end closes
+        // it, so a compiler child outliving bash would pin this thread forever. The watchdog
+        // bounds the build for the same reason: a hang here would otherwise leave
+        // selfUpdating=true (a greyed menu row, no retry) for the process's whole lifetime.
+        build.standardOutput = FileHandle.nullDevice
+        let errPipe = Pipe()
+        build.standardError = errPipe
+        var stderrData = Data()
+        errPipe.fileHandleForReading.readabilityHandler = { stderrData.append($0.availableData) }
+        do { try build.run() } catch { return fail("build launch: \(error)") }
+        DispatchQueue.main.async { [weak self] in self?.updateBuild = build }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 900) { [weak build] in
+            if let build, build.isRunning { build.terminate() }
+        }
+        build.waitUntilExit()
+        errPipe.fileHandleForReading.readabilityHandler = nil
+        DispatchQueue.main.async { [weak self] in self?.updateBuild = nil }
+        guard build.terminationStatus == 0 else {
+            let tail = String(decoding: stderrData.suffix(2000), as: UTF8.self)
+            return fail("build exited \(build.terminationStatus):\n\(tail)")
+        }
+        // The bundle at `target` is already the new version (build.sh swaps only a verified
+        // staging copy). restartIntoInstalledCopy quits us and opens whatever is on disk.
+        DispatchQueue.main.async { [weak self] in self?.restartIntoInstalledCopy() }
     }
 
     // MARK: MCP backend
@@ -1329,6 +1463,20 @@ final class StatusController: NSObject, NSMenuDelegate {
                     it.view = CopyRowView(title: title, command: brewUpgradeCommand, width: width)
                     menu.addItem(it)
                 }
+            } else if canBuildFromSource {
+                // With a Swift toolchain on the machine the update is one click: the release
+                // source is downloaded and built in place — no DMG, no Gatekeeper (the binary is
+                // compiled locally, quarantine never applies). A nil action while the build runs
+                // is what greys the row out under autoenablesItems.
+                let up = NSMenuItem(title: selfUpdating ? "Updating to \(latest)…" : "Update to \(latest)",
+                                    action: selfUpdating ? nil : #selector(selfUpdate), keyEquivalent: "")
+                up.target = self
+                up.toolTip = selfUpdating
+                    ? "Downloading and rebuilding in place — the app restarts itself when done."
+                    : "\(latest) is out — this copy is \(currentVersion). One click downloads the"
+                        + " release source, rebuilds this app in place (about a minute) and"
+                        + " restarts it. Errors land in ~/.claude/control-bar/problems.log."
+                menu.addItem(up)
             } else {
                 // The version number lives in the tooltip, not the title: the line above already
                 // says which version is running, and a second number beside it reads as a riddle.
@@ -1358,6 +1506,16 @@ final class StatusController: NSObject, NSMenuDelegate {
         let q = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         q.target = self
         menu.addItem(q)
+    }
+
+    // Files & Folders — the pane holding the per-app network-volumes switch. Same undocumented
+    // scheme as the notifications pane below; the bare Privacy pane is the fallback.
+    @objc func openFilesPrivacySettings() {
+        for link in ["x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders",
+                     "x-apple.systempreferences:com.apple.preference.security"] {
+            if let url = URL(string: link), NSWorkspace.shared.open(url) { return }
+        }
+        NSLog("ClaudeControlBar: privacy settings pane did not open")
     }
 
     // Deep link into this app's own Notifications pane. URL(string:) only checks syntax; whether
@@ -1624,6 +1782,10 @@ final class StatusController: NSObject, NSMenuDelegate {
     // The marker keeps update.js's self-relaunch from undoing an explicit Quit; cleared on the
     // next SessionStart (lifecycle.js) or the next manual launch (below), whichever comes first.
     @objc func quit() {
+        // NSApp.terminate tears down our threads but NOT the spawned build — bash and its
+        // compilers would be orphaned, finish minutes later and swap the bundle with nobody
+        // left to restart into it. Ending the child turns that into an ordinary failed build.
+        updateBuild?.terminate()
         let marker = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/quit-intent")
         FileManager.default.createFile(atPath: marker, contents: nil)
         NSApp.terminate(nil)

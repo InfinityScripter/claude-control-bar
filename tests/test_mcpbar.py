@@ -822,6 +822,23 @@ class RefreshProjects(unittest.TestCase):
         self.assertIn("broken", data.get("error") or "")
         self.assertIn("не ответил", data.get("error") or "")
 
+    def test_eperm_переживает_обрезку_длинного_списка_ошибок(self):
+        """Swift-меню узнаёт отказ в правах на сетевые тома по подстроке EPERM и вешает под
+        ошибкой строки «как починить». При нескольких упавших проектах 200-символьный срез
+        отрезал именно её — EPERM-ошибка шла в конце списка и до меню не доезжала."""
+        self.answers = {"/": ([self.server("wiki", mcpbar.OK)], None)}
+        long = "claude mcp list не ответил вовремя, подробности длинные и занимают место"
+        for i in range(4):
+            path = f"/work/noisy-{i}"
+            self.answers[path] = ([], long)
+            self.projects.append(path)
+        self.answers["/work/fuse"] = ([], "error: An internal error occurred (EPERM)")
+        self.projects.append("/work/fuse")
+        data = mcpbar.refresh()
+        error = data.get("error") or ""
+        self.assertIn("EPERM", error)
+        self.assertLessEqual(len(error), 200)
+
     def test_упавший_сервер_не_прячется_за_одноимённым_зелёным(self):
         self.answers = {
             "/": ([self.server("wiki", mcpbar.OK)], None),

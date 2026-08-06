@@ -284,7 +284,30 @@ extension StatusController {
             }
         }
 
-        if let error = mcp.error { menu.addItem(header("Check failed: " + error)) }
+        if let error = mcp.error {
+            menu.addItem(header("Check failed: " + error))
+            // EPERM against a session's folder is macOS's network-volume permission in practice:
+            // FUSE mounts (arc, sshfs) count as network volumes, the "access files on a network
+            // volume" dialog is shown once, and a declined one is never asked again by the
+            // system — the checks then fail forever with nothing saying why or what to do.
+            if error.contains("EPERM") || error.localizedCaseInsensitiveContains("operation not permitted") {
+                let grant = NSMenuItem(title: "Grant access to network volumes…",
+                                       action: #selector(openFilesPrivacySettings), keyEquivalent: "")
+                grant.target = self
+                grant.toolTip = "A session lives on a volume this app was denied access to."
+                    + " Enable Claude Control Bar under Files & Folders in System Settings —"
+                    + " network/FUSE mounts sit under Network Volumes, external drives under"
+                    + " Removable Volumes, both in that pane. Or copy the command below and"
+                    + " macOS will show the network-volume dialog again on the next check."
+                menu.addItem(grant)
+                let reset = "tccutil reset SystemPolicyNetworkVolumes "
+                    + (Bundle.main.bundleIdentifier ?? "io.github.infinityscripter.claude-control-bar")
+                let row = NSMenuItem(title: "Ask again", action: nil, keyEquivalent: "")
+                row.view = CopyRowView(title: "Ask again", command: reset,
+                                       width: CGFloat(uiConfig()["boxWidth"] ?? 300))
+                menu.addItem(row)
+            }
+        }
     }
 
     private func changeRow(_ change: MCPChange) -> NSMenuItem {

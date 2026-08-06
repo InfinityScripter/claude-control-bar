@@ -105,7 +105,11 @@ fi
 # The swap happens only past this line: binary present and executable, plist well-formed.
 test -x "$BIN"
 /usr/bin/plutil -lint "$STAGE_APP/Contents/Info.plist" >/dev/null
-rm -rf "$APP"
+# The outgoing bundle survives one generation as .previous: these checks prove the new build
+# exists, not that it runs, and the self-update swaps unattended — a compiled-but-broken app
+# must leave the user something to go back to. Costs one bundle of disk until the next build.
+rm -rf "$APP.previous"
+if [ -d "$APP" ]; then mv "$APP" "$APP.previous"; fi
 mv "$STAGE_APP" "$APP"
 trap - EXIT
 echo "Built $APP"
