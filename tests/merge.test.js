@@ -152,6 +152,73 @@ test("a model absent from the registry borrows its family's widest window", () =
   assert.equal(state.assumed, true, "an inferred window is marked, not passed off as measured");
 });
 
+// The window a session runs in is a property of the SESSION, not of the model: the same
+// claude-opus-5 answers with 200k in one place and 1M in another. Recomputing from the
+// transcript has to guess which, and a wrong guess moves the percentage by a factor of five.
+// Claude Code states both the size and the finished percentage in the statusLine payload.
+const writeContextSidecar = (home, sid, record) => {
+  const dir = path.join(home, ".claude", "control-bar", "context.d");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, sid + ".json"), JSON.stringify(record));
+};
+
+test("Claude Code's own context figure beats the transcript recomputation", () => {
+  const home = sandbox();
+  const transcript = path.join(home, "t.jsonl");
+  fs.writeFileSync(transcript, JSON.stringify({ type: "assistant", message: {
+    model: "claude-opus-5", content: [{ text: "hi" }],
+    usage: { input_tokens: 192782 } } }));
+  // The scraped table is behind and says 200k — recomputing here yields 96%.
+  fs.writeFileSync(path.join(home, ".claude", "control-bar", "model-windows.json"),
+    JSON.stringify({ models: { "claude-opus-5": 200000 } }));
+  writeContextSidecar(home, "s4", {
+    pct: 19, tokens: 192782, window: 1000000, model: "claude-opus-5",
+    ts: Math.floor(Date.now() / 1000),
+  });
+
+  run(updatePath, home, ["prompt"],
+      JSON.stringify({ session_id: "s4", cwd: home, transcript_path: transcript }));
+
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "s4.json"), "utf8"));
+  assert.equal(state.pct, 19);
+  assert.equal(state.window, 1000000);
+  assert.equal(state.assumed, false, "a figure Claude Code stated is measured, not inferred");
+});
+
+test("a statusLine reading old enough to be stale loses to the transcript", () => {
+  const home = sandbox();
+  const transcript = path.join(home, "t.jsonl");
+  fs.writeFileSync(transcript, JSON.stringify({ type: "assistant", message: {
+    model: "claude-opus-4-8", content: [{ text: "hi" }],
+    usage: { input_tokens: 100000 } } }));
+  fs.writeFileSync(path.join(home, ".claude", "control-bar", "model-windows.json"),
+    JSON.stringify({ models: { "claude-opus-4-8": 1000000 } }));
+  // The desktop app never runs a status line, so a session that moved from the terminal to the
+  // app would otherwise keep showing whatever the terminal last saw, forever.
+  writeContextSidecar(home, "s5", {
+    pct: 3, tokens: 6000, window: 200000, model: "claude-opus-4-8",
+    ts: Math.floor(Date.now() / 1000) - 3600,
+  });
+
+  run(updatePath, home, ["prompt"],
+      JSON.stringify({ session_id: "s5", cwd: home, transcript_path: transcript }));
+
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "s5.json"), "utf8"));
+  assert.equal(state.pct, 10);
+  assert.equal(state.tokens, 100000);
+});
+
+test("ending a session takes its context record with it", () => {
+  const home = sandbox();
+  fs.writeFileSync(path.join(stateDir(home), "s6.json"), JSON.stringify({ sessionId: "s6" }));
+  writeContextSidecar(home, "s6", { pct: 1, tokens: 1, window: 200000, model: "m", ts: 1 });
+
+  run(lifecyclePath, home, ["end"], JSON.stringify({ session_id: "s6" }));
+
+  const sidecar = path.join(home, ".claude", "control-bar", "context.d", "s6.json");
+  assert.equal(fs.existsSync(sidecar), false, "otherwise context.d grows for the life of the install");
+});
+
 test("an unreadable transcript keeps the last known context instead of blanking it", () => {
   const home = sandbox();
   fs.writeFileSync(path.join(stateDir(home), "s3.json"), JSON.stringify({

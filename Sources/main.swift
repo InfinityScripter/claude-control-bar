@@ -1270,7 +1270,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         // disk there is nothing left to fetch, and offering "Update to 0.5.1" next to a 0.5.1
         // bundle sends the user to download what they installed an hour ago.
         if let onDisk = installedVersion, Self.versionIsNewer(onDisk, than: currentVersion) {
-            let it = NSMenuItem(title: "Restart to finish updating to \(onDisk)",
+            let it = NSMenuItem(title: "Restart to finish updating",
                                 action: #selector(restartIntoInstalledCopy), keyEquivalent: "")
             it.target = self
             it.toolTip = "\(onDisk) is already installed. macOS keeps the copy that was running"
@@ -1283,14 +1283,17 @@ final class StatusController: NSObject, NSMenuDelegate {
                 // Silent until the cask catches up (autobump lag): never offer a command that
                 // would report "already up to date".
                 if let bv = brewVer, Self.versionIsNewer(bv, than: currentVersion) {
-                    let title = "Update to \(bv) via brew"
+                    let title = "Update available"
                     let it = NSMenuItem(title: title, action: nil, keyEquivalent: "")
                     it.view = CopyRowView(title: title, command: brewUpgradeCommand, width: width)
                     menu.addItem(it)
                 }
             } else {
-                let up = NSMenuItem(title: "Update to \(latest)", action: #selector(openLatestRelease), keyEquivalent: "")
+                // The version number lives in the tooltip, not the title: the line above already
+                // says which version is running, and a second number beside it reads as a riddle.
+                let up = NSMenuItem(title: "Update available", action: #selector(openLatestRelease), keyEquivalent: "")
                 up.target = self
+                up.toolTip = "\(latest) is out — this copy is \(currentVersion)"
                 menu.addItem(up)
                 // Only once the cask actually exists. brewCaskVersion is written solely by a
                 // successful cask-API response, so while the cask is unpublished the key is
@@ -1570,15 +1573,20 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
     }
 
-    // Row click. Desktop session: focus the Claude app. Do NOT use claude://resume?session=<id>,
-    // that calls importCliSession() and spawns a duplicate "ungrouped" session record
-    // (local_<random>.json with cliSessionId=<id>) every click, it's an import verb, not focus.
-    // The clean focus path (claude://code/<bridgeSessionId>) needs an opaque session_/cse_ bridge
-    // id the app never exposes to us (not in env, not derivable from the UUID, undefined on disk).
+    // Row click. Desktop session: switch the app to THAT conversation (see DesktopSessions).
+    // Merely focusing the app was the bug — it is normally frontmost already, so every row did
+    // nothing visible and all of them did the same nothing. Focusing the app is still the
+    // fallback for a conversation this machine has no record of.
     // CLI session: bring its terminal APP to the front (zero permission). Targeting the exact
     // window/tab needs a one-time Automation grant, deferred to the opt-in build (issue #19).
     func openSession(_ id: String, entrypoint: String, termProgram: String) {
-        if entrypoint == "claude-desktop" { openClaude(); return }
+        if entrypoint == "claude-desktop" {
+            guard let local = DesktopSessions.sessionID(forCLI: id),
+                  let url = DesktopSessions.focusURL(sessionID: local)
+            else { openClaude(); return }
+            NSWorkspace.shared.open(url)
+            return
+        }
         // Map TERM_PROGRAM to a name `open -a` understands; most terminals match verbatim.
         let app: String
         switch termProgram {
@@ -1840,6 +1848,22 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func sessionCount() -> Int { stateFileNames().count }
 
+    var claudeProbedAt: Double = 0
+    var claudeWasRunning = false
+
+    /// Is Claude Code itself running, whatever it has or has not written to disk?
+    ///
+    /// Only consulted when everything else says the app is not needed, and the answer is held for
+    /// ten seconds — otherwise a session that writes no state file would have this walking the
+    /// process table on every tick, forever.
+    func claudeCodeRunning() -> Bool {
+        let now = Date().timeIntervalSince1970
+        if now - claudeProbedAt < 10 { return claudeWasRunning }
+        claudeProbedAt = now
+        claudeWasRunning = RunningProcesses.exists(named: "claude")
+        return claudeWasRunning
+    }
+
     // Liveness probe: is this session's `claude` process still alive? kill(pid,0) returns 0 if the
     // process exists; EPERM = exists but not ours (won't happen, same user); ESRCH = gone.
     func pidAlive(_ pid: Int32) -> Bool {
@@ -1861,7 +1885,12 @@ final class StatusController: NSObject, NSMenuDelegate {
             return
         }
         if let since = notNeededSince {
-            if now.timeIntervalSince(since) >= idleQuitDelay { NSApp.terminate(nil) }
+            // The process table gets the last word. A session whose hooks never fired — no node
+            // on the PATH, hooks switched off, settings sources that skip the user's file —
+            // leaves no state file, and quitting on that evidence killed the app ten seconds
+            // after launch with Claude Code running in a terminal the whole time.
+            guard now.timeIntervalSince(since) >= idleQuitDelay, !claudeCodeRunning() else { return }
+            NSApp.terminate(nil)
         } else {
             notNeededSince = now
         }

@@ -30,7 +30,13 @@ const safeId = (s) => String(s || "").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 6
 // same formula the CLI uses, and rides along in the session file the app already reads.
 
 const windowCache = path.join(dir, "model-windows.json");
+const contextDir = path.join(dir, "context.d");
 const DEFAULT_WINDOW = 200000;
+// How long a statusLine reading stays worth trusting. The status line redraws on every
+// assistant message, so inside a live terminal session the record is never older than a turn;
+// past this the session has almost certainly moved to the desktop app, which runs no status
+// line at all — and a frozen figure from an hour ago is worse than a recomputed one.
+const STATUSLINE_MAX_AGE = 900;
 // Records that must not be measured: interrupted turns and Claude Code's own synthetic replies.
 const SKIP_TEXTS = new Set([
   "[Request interrupted by user]",
@@ -61,6 +67,20 @@ function windowFor(model, models) {
   const family = familyOf(base);
   const kin = Object.keys(models).filter((k) => familyOf(k) === family).map((k) => models[k]);
   return family && kin.length ? [Math.max(...kin), false] : [DEFAULT_WINDOW, false];
+}
+
+// What Claude Code itself reported for this session, captured by hooks/statusline.py.
+// Preferred over the recomputation below, because the recomputation has to GUESS the window
+// size: it belongs to the session, not to the model, and the same claude-opus-5 answers with
+// 200k in one place and 1M in another. Guessing wrong moves the percentage by a factor of five.
+function contextFromStatusLine(sessionId, now) {
+  const record = readJSON(path.join(contextDir, sessionId + ".json"));
+  if (!record || typeof record.pct !== "number" || !(record.window > 0)) return null;
+  if (!(now - (record.ts || 0) <= STATUSLINE_MAX_AGE)) return null;
+  return {
+    pct: record.pct, tokens: record.tokens, window: record.window,
+    model: record.model || "", assumed: false,
+  };
 }
 
 // used% = clamp(round((input + cache_creation + cache_read) / window * 100), 0, 100).
@@ -213,9 +233,11 @@ process.stdin.on("end", () => {
   // Carried over from prev when this event's transcript is unreadable (a compaction rewrites the
   // file, and a read landing mid-rewrite finds no usage record) — a momentarily missing number
   // would otherwise blank the context bar and read as "context freed".
-  const ctx = (transcript && contextOf(transcript)) || {
-    pct: prev.pct, tokens: prev.tokens, window: prev.window, model: prev.model, assumed: prev.assumed,
-  };
+  const ctx = contextFromStatusLine(sid, ts)
+    || (transcript && contextOf(transcript))
+    || {
+      pct: prev.pct, tokens: prev.tokens, window: prev.window, model: prev.model, assumed: prev.assumed,
+    };
   const out = { state, label, tool: p.tool_name || "", project, cwd, sessionId: p.session_id || "", transcript, entrypoint, term_program: termProgram, pid: process.ppid, started: true, startedAt, ts, ...ctx };
   try {
     fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });

@@ -10,6 +10,9 @@ const BUNDLE_ID = "io.github.infinityscripter.claude-control-bar";
 const EXEC = "ClaudeControlBar";
 const dir = path.join(os.homedir(), ".claude", "control-bar");
 const stateDir = path.join(dir, "state.d");
+// One file per session, written by hooks/statusline.py: the context percentage Claude Code
+// itself reported. It lives and dies with the session file, or context.d grows without bound.
+const contextDir = path.join(dir, "context.d");
 const event = process.argv[2];
 
 // 0700/0600 everywhere below, not the umask default. A session file carries the working
@@ -28,6 +31,12 @@ const alive = (pid) => {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
 };
 
+const forget = (id) => {
+  for (const d of [stateDir, contextDir]) {
+    try { fs.rmSync(path.join(d, id + ".json"), { force: true }); } catch {}
+  }
+};
+
 const reapDeadSessions = () => {
   let files = [];
   try { files = fs.readdirSync(stateDir); } catch { return; }
@@ -35,7 +44,7 @@ const reapDeadSessions = () => {
     const full = path.join(stateDir, f);
     let pid = 0;
     try { pid = JSON.parse(fs.readFileSync(full, "utf8")).pid || 0; } catch {}
-    if (!alive(pid)) { try { fs.rmSync(full, { force: true }); } catch {} }
+    if (!alive(pid)) forget(f.slice(0, -5));
   }
 };
 
@@ -81,7 +90,7 @@ function run() {
   } else if (event === "end") {
     // Removing the file drops this session from the aggregate — this is also what recovers a
     // frozen animation on force-quit (SessionEnd fires, but no Stop). No state rewrite needed.
-    try { fs.rmSync(statePath, { force: true }); } catch {}
+    forget(id);
   }
   process.exit(0);
 }

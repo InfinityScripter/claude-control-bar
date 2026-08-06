@@ -1,8 +1,8 @@
 import Cocoa
 
-// Checks on the MCP model and the transcript reader:
-//   swiftc -O Sources/MCPModel.swift Sources/Transcript.swift tests/model/main.swift \
-//     -o /tmp/t -framework Cocoa && /tmp/t
+// Checks on the MCP model, the transcript reader and the desktop-session lookup:
+//   swiftc -O Sources/MCPModel.swift Sources/Transcript.swift Sources/DesktopSessions.swift \
+//     Sources/RunningProcesses.swift tests/model/main.swift -o /tmp/t -framework Cocoa && /tmp/t
 // There is no test target in this project (it builds with a bare swiftc, no Xcode project), so
 // this is a plain executable that exits non-zero on the first failure.
 
@@ -131,6 +131,50 @@ check(!Transcript.wasInterrupted(
 check(!Transcript.wasInterrupted("not json at all, interrupted by user"),
       "a line that does not parse is not an interrupt")
 
+// Resolving a row's CLI session id to the id Claude for Desktop answers to. Without it every
+// desktop row merely focused the app — which is already frontmost — so all of them did the same
+// nothing and clicking a session read as broken.
+let sessionsRoot = NSTemporaryDirectory() + "ccb-desktop-sessions/"
+let workspace = sessionsRoot + "account/workspace/"
+try? FileManager.default.createDirectory(atPath: workspace, withIntermediateDirectories: true)
+func writeSession(_ name: String, cli: String, modified: Date) {
+    let path = workspace + name + ".json"
+    // Exactly how the desktop app writes it: JSON.stringify, no spaces.
+    try? #"{"sessionId":"\#(name)","cliSessionId":"\#(cli)","cwd":"/tmp"}"#
+        .write(toFile: path, atomically: true, encoding: .utf8)
+    try? FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: path)
+}
+writeSession("local_older", cli: "cli-1", modified: Date(timeIntervalSince1970: 1_000))
+writeSession("local_newer", cli: "cli-1", modified: Date(timeIntervalSince1970: 2_000))
+writeSession("local_other", cli: "cli-2", modified: Date(timeIntervalSince1970: 3_000))
+
+check(DesktopSessions.sessionID(forCLI: "cli-2", root: sessionsRoot) == "local_other",
+      "a session id resolves through two directory levels")
+// Importing a CLI session leaves a second record pointing at the same conversation; the one the
+// app is actually showing is the most recent.
+check(DesktopSessions.sessionID(forCLI: "cli-1", root: sessionsRoot) == "local_newer",
+      "when two records claim one conversation, the newest wins")
+check(DesktopSessions.sessionID(forCLI: "cli-3", root: sessionsRoot) == nil,
+      "a conversation this machine never opened resolves to nothing")
+check(DesktopSessions.sessionID(forCLI: "", root: sessionsRoot) == nil,
+      "an empty id matches nothing rather than the first file on disk")
+check(DesktopSessions.sessionID(forCLI: "cli-1", root: sessionsRoot + "missing/") == nil,
+      "a missing sessions folder is answered, not crashed on")
+// /code/ wants a bridge id a local conversation does not have; /resume is an import verb that
+// spawns a duplicate record on every click. This route is the only one that focuses.
+check(DesktopSessions.focusURL(sessionID: "local_x")?.absoluteString
+        == "claude://claude.ai/epitaxy/local_x",
+      "the focus link is the epitaxy route")
+
+// The last word on whether the app is still needed. Counting hook-written session files answers
+// that only when the hooks fired at all; on the evidence of an empty state.d the app quit about
+// ten seconds after launch with Claude Code running in a terminal the whole time.
+check(RunningProcesses.exists(named: ProcessInfo.processInfo.processName),
+      "a process that is plainly running is found")
+check(!RunningProcesses.exists(named: "ccb-no-such-process"),
+      "and one that is not, is not")
+
 try? FileManager.default.removeItem(atPath: dir)
+try? FileManager.default.removeItem(atPath: sessionsRoot)
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 exit(failures == 0 ? 0 : 1)

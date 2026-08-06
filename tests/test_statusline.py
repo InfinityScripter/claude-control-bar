@@ -112,6 +112,72 @@ class Capture(unittest.TestCase):
         self.assertEqual(self.limits()["five_hour"]["used_percentage"], 13)
 
 
+class Context(unittest.TestCase):
+    """Процент занятого контекста, снятый с самого Claude Code.
+
+    Пересчёт по транскрипту — догадка про размер окна: он задаётся сессией, а не моделью,
+    и одна и та же модель в CLI и в приложении может идти с разным окном. В payload'е
+    statusLine Claude Code называет и размер, и уже посчитанный процент — их и берём.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        os.environ["CONTROL_BAR_ROOT"] = self.tmp
+        import statusline
+
+        self.statusline = importlib.reload(statusline)
+
+    def record(self, sid):
+        with open(os.path.join(self.tmp, "context.d", sid + ".json")) as fh:
+            return json.load(fh)
+
+    def test_процент_берётся_из_payload(self):
+        self.statusline.capture_context({
+            "session_id": "abc",
+            "model": {"id": "claude-opus-5"},
+            "context_window": {"used_percentage": 19.4, "total_input_tokens": 192782,
+                               "context_window_size": 1000000},
+        })
+        got = self.record("abc")
+        self.assertEqual(got["pct"], 19)
+        self.assertEqual(got["tokens"], 192782)
+        self.assertEqual(got["window"], 1000000)
+        self.assertEqual(got["model"], "claude-opus-5")
+
+    def test_без_процента_запись_не_появляется(self):
+        """used_percentage бывает null до первого ответа API и сразу после /compact."""
+        self.statusline.capture_context({"session_id": "abc", "context_window": {}})
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "context.d", "abc.json")))
+
+    def test_без_session_id_ничего_не_пишется(self):
+        self.statusline.capture_context({"context_window": {"used_percentage": 5}})
+        self.assertFalse(os.path.isdir(os.path.join(self.tmp, "context.d")))
+
+    def test_идентификатор_сессии_не_вырывается_из_каталога(self):
+        """session_id приходит извне и становится именем файла."""
+        self.statusline.capture_context({
+            "session_id": "../../escaped",
+            "context_window": {"used_percentage": 5, "total_input_tokens": 1,
+                               "context_window_size": 200000},
+        })
+        self.assertFalse(os.path.exists(os.path.join(os.path.dirname(self.tmp), "escaped.json")))
+
+    def test_та_же_картина_не_переписывает_файл(self):
+        """Строка состояния перерисовывается постоянно; цифра между перерисовками та же."""
+        payload = {"session_id": "abc", "model": {"id": "claude-opus-5"},
+                   "context_window": {"used_percentage": 19, "total_input_tokens": 192782,
+                                      "context_window_size": 1000000}}
+        self.statusline.capture_context(payload)
+        path = os.path.join(self.tmp, "context.d", "abc.json")
+        first = os.stat(path).st_mtime_ns
+        self.statusline.capture_context(payload)
+        self.assertEqual(os.stat(path).st_mtime_ns, first)
+
+    def test_мусорный_payload_не_роняет(self):
+        for junk in ({}, {"session_id": 5}, {"context_window": []}, {"context_window": None}):
+            self.statusline.capture_context(junk)
+
+
 class Wrapper(unittest.TestCase):
     """Обёртка обязана отдать вложенной команде ровно те байты, что пришли ей."""
 

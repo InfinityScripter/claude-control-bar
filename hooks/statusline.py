@@ -13,6 +13,12 @@ been drawn by then.
    incomplete by nature (a transcript records the served model name, which may not exist in
    the local registry at all — claude-opus-5 does not), and this payload states the size
    outright. An observed size beats a scraped one and beats a guess, so it is remembered.
+
+3. This session's context percentage, as Claude Code itself computes it. The size of the
+   window belongs to the SESSION, not to the model — the same claude-opus-5 answers with a
+   200k window in one place and a 1M one in another — so recomputing from the transcript has
+   to guess which, and a wrong guess moves the figure by a factor of five. Here the number is
+   simply read. Per session, because that is the scope it is true for.
 """
 
 import json
@@ -23,6 +29,7 @@ import time
 ROOT = os.environ.get("CONTROL_BAR_ROOT") or os.path.expanduser("~/.claude/control-bar")
 LIMITS = os.path.join(ROOT, "limits.json")
 WINDOWS = os.path.join(ROOT, "model-windows.json")
+CONTEXT_DIR = os.path.join(ROOT, "context.d")
 
 
 def read_json(path, default=None):
@@ -101,6 +108,52 @@ def learn_window(payload):
     atomic_write(WINDOWS, cache)
 
 
+def capture_context(payload):
+    """This session's context usage, straight from Claude Code, into context.d/<session>.json.
+
+    used_percentage is the figure the CLI shows; it counts input + cache creation + cache read
+    against the window and leaves output tokens out. It is null before the first API response
+    and again right after /compact — in both cases the last good record is left alone rather
+    than replaced with a blank, which would read as "context freed".
+    """
+    session = payload.get("session_id")
+    window = payload.get("context_window")
+    if not isinstance(session, str) or not session or not isinstance(window, dict):
+        return
+    percent = window.get("used_percentage")
+    tokens = window.get("total_input_tokens")
+    size = window.get("context_window_size")
+    # All three or none. A record carrying a percentage but no token count would render in the
+    # row's tooltip as "19% — 0 of 1 000 000 tokens"; falling back to the recomputation is the
+    # honest answer while the payload is still filling in.
+    if not all(isinstance(v, (int, float)) for v in (percent, tokens, size)) or not size > 0:
+        return
+    # session_id arrives from outside and becomes a file name: anything that is not a plain
+    # identifier character goes, or "../../x" writes wherever it likes. Spelled the same way as
+    # safeId() in update.js — ASCII only — because that is the reader looking these files up.
+    safe = "".join(c for c in session if (c.isascii() and c.isalnum()) or c in "_.-")[:64]
+    if not safe.strip("."):
+        return
+    record = {
+        # Rounded here for the same reason the limits are: the app reads these with `as? Int`,
+        # which returns nil for 19.4 — the number would vanish from a file that looks healthy.
+        "pct": max(0, min(100, int(round(float(percent))))),
+        "tokens": int(tokens),
+        "window": int(size),
+        "model": ((payload.get("model") or {}).get("id") or ""),
+        "ts": int(time.time()),
+    }
+    path = os.path.join(CONTEXT_DIR, safe + ".json")
+    previous = read_json(path) or {}
+    # Same rule as the limits: an identical record is not rewritten on every redraw, but the
+    # timestamp is allowed to age only a minute — the reader treats a stale record as no
+    # record, and a session sitting at one percentage would otherwise expire while still true.
+    same = all(previous.get(k) == v for k, v in record.items() if k != "ts")
+    if same and record["ts"] - (previous.get("ts") or 0) < 60:
+        return
+    atomic_write(path, record)
+
+
 def main():
     try:
         payload = json.loads(sys.stdin.read() or "{}")
@@ -108,7 +161,7 @@ def main():
         return 0
     if not isinstance(payload, dict):
         return 0
-    for step in (capture_limits, learn_window):
+    for step in (capture_limits, learn_window, capture_context):
         try:
             step(payload)
         except Exception:

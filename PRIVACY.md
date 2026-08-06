@@ -70,7 +70,8 @@ Mac, and all of it is listed here rather than left to be discovered.
 ## Where it writes
 
 Everything of its own lives under `~/.claude/control-bar/`: one small JSON file per session in
-`state.d/`, the MCP picture in `mcp.json`, the limits in `limits.json`.
+`state.d/`, the context percentage each session's status line reported in `context.d/` (deleted
+with the session), the MCP picture in `mcp.json`, the limits in `limits.json`.
 
 The one exception is next door: every switch takes a dated backup of your settings beside the
 original, at `~/.claude/settings.json.bak-control-bar-<date>-<microseconds>`. The name carries
