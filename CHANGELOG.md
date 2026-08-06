@@ -7,6 +7,35 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.5.6] - 2026-08-06
+
+### Fixed
+
+- **"Awaiting permission" no longer outlives the prompt it announces.** Denying a permission
+  prompt — or dismissing it with Esc — fires no hook at all in Claude Code, so the session's
+  state file froze mid-wait and the amber dot sat in the menu bar for up to two hours,
+  outranking every live session. The transcript is the one witness that does record the answer:
+  while a prompt waits the file is silent, so a user/assistant record younger than the prompt is
+  proof it was answered, whatever form the answer took — and the app now reads exactly that.
+  Three smaller things kept the old freeze alive and are fixed with it: the tail read stopped at
+  8 KB while the bookkeeping Claude Code appends after an interrupt runs to 112 KB in a single
+  line (the window now escalates to 1 MB, and only when the cheap read finds nothing, so a
+  streaming session pays the old price); a window that happened to cut a multi-byte character —
+  an emoji, a dash — made the decoder reject the entire chunk and silently disabled both
+  recovery nets for as long as the file sat still; and the last-resort age cap is 30 minutes
+  now, not two hours. If Claude Code ever changes the transcript's timestamp format, the app
+  logs the drift to Console once per file change instead of degrading in silence.
+- **A declined notification permission is now said out loud.** macOS shows the permission dialog
+  once per app, ever — no later version, reinstall or second request brings it back, only the
+  user in System Settings. The app used to swallow that refusal whole: someone who declined a
+  year ago could never learn why "MCP server went down" banners stopped. A menu row now appears
+  when notifications are off and opens the app's own pane in System Settings (falling back to
+  Settings' root, with a Console trace, on the macOS releases where the undocumented pane link
+  stops resolving). The status is re-read at launch, on every menu open and on every delivery
+  attempt, so flipping the switch back on clears the row without a restart. The check also no
+  longer crashes the bare-binary diagnostic modes (`CONTROL_BAR_DUMP_MENU`,
+  `CONTROL_BAR_DIAGNOSE`), where asking the notification center for anything is a trap.
+
 ## [0.5.5] - 2026-08-06
 
 ### Fixed
