@@ -235,11 +235,21 @@ def secure_root(path=None):
 
 
 def read_json(path, default=None):
+    """Чтение с проверкой формы: распарсенное не того типа, что default, — это default.
+
+    Половину этих файлов пишут чужие программы, половину может править человек: массив
+    наверху там, где ждали словарь, ронял AttributeError'ом весь refresh (кеш десктопа и
+    ответ лимитов — дважды чинившийся точечно один и тот же класс). default=None оставляет
+    разбор как есть — три вызова осознанно различают «файла нет» и «форма не та».
+    """
     try:
         with open(path) as fh:
-            return json.load(fh)
+            parsed = json.load(fh)
     except Exception:
         return default
+    if default is not None and not isinstance(parsed, type(default)):
+        return default
+    return parsed
 
 
 def mtime(path):
@@ -574,7 +584,7 @@ def refresh_descriptions(force=False):
     """Описания меняются редко, а опрос поднимает все серверы — держим сутки в кеше."""
     import threading
 
-    cached = read_json(DESCRIPTIONS) or {}
+    cached = read_json(DESCRIPTIONS, {})
     # Выключенный сервер не запускаем. Опрос — это Popen его собственной команды, то есть панель
     # своими руками поднимала процесс, который пользователь её же тумблером погасил (проверено:
     # выключенный сервер с командой `touch marker` этот marker создавал). Ответ при этом даже не
@@ -582,7 +592,7 @@ def refresh_descriptions(force=False):
     off = set(denied_servers())
     servers = {
         name: config
-        for name, config in ((read_json(CONFIG) or {}).get("mcpServers") or {}).items()
+        for name, config in (read_json(CONFIG, {}).get("mcpServers") or {}).items()
         if name not in off
     }
     fresh_until = time.time() - DESCRIPTIONS_TTL
@@ -633,11 +643,10 @@ def connectors_from_desktop():
         reverse=True,
     )
     for path in files[:200]:
-        # Кеш пишет чужое приложение: словарь наверху и словари в списке — не гарантия,
-        # а сегодняшняя случайность. Неожиданная форма — «коннекторов нет», не AttributeError
-        # на весь refresh.
-        parsed = read_json(path)
-        remote = parsed.get("remoteMcpServersConfig") if isinstance(parsed, dict) else None
+        # Кеш пишет чужое приложение: словари в списке — не гарантия, а сегодняшняя
+        # случайность. Неожиданная форма — «коннекторов нет», не AttributeError на весь
+        # refresh; верхний уровень сверяет сама read_json.
+        remote = read_json(path, {}).get("remoteMcpServersConfig")
         if remote and isinstance(remote, list):
             return {
                 s["name"]: {
@@ -739,7 +748,7 @@ def session_cwds():
     """Каталоги проектов живых сессий, по state.d (живость — pid, как и везде)."""
     cwds = []
     for path in glob.glob(os.path.join(SESSIONS, "*.json")):
-        info = read_json(path) or {}
+        info = read_json(path, {})
         try:
             os.kill(int(info.get("pid")), 0)
         except (OSError, ValueError, TypeError):
@@ -820,7 +829,7 @@ def denied_servers():
 
     Проверено запуском: запись объектная, плоскую строку Claude Code молча игнорирует.
     """
-    raw = (read_json(SETTINGS) or {}).get("deniedMcpServers") or []
+    raw = read_json(SETTINGS, {}).get("deniedMcpServers") or []
     return [d["serverName"] for d in raw if isinstance(d, dict) and "serverName" in d]
 
 
@@ -829,7 +838,7 @@ def denied_tools():
 
     Проверено: одно правило mcp__docs__read_page уменьшило список с 26 инструментов до 25.
     """
-    perms = (read_json(SETTINGS) or {}).get("permissions") or {}
+    perms = read_json(SETTINGS, {}).get("permissions") or {}
     return [rule for rule in (perms.get("deny") or []) if rule.startswith("mcp__")]
 
 
@@ -895,7 +904,7 @@ def patch_state_after_toggle():
     off = set(denied_servers())
     rules = denied_tools()
     known = {s["name"] for s in data.get("servers", [])}
-    local = set((read_json(CONFIG) or {}).get("mcpServers") or {})
+    local = set(read_json(CONFIG, {}).get("mcpServers") or {})
 
     for name in off - known:
         data.setdefault("servers", []).append({
@@ -981,7 +990,7 @@ def rule_for_tool(server, tool):
     десктопа. Ошибочные написания уходят вместе с рабочим правилом, иначе строка, которая
     ничего не запрещает, осталась бы в настройках пользователя навсегда.
     """
-    known = {s["name"]: s.get("toolPrefix") for s in (load_state() or {}).get("servers", [])}
+    known = {s["name"]: s.get("toolPrefix") for s in load_state().get("servers", [])}
     prefix = known.get(server) or tool_prefix(server)
     rule = f"mcp__{prefix}__{tool}"
     wrong = {f"mcp__{p}__{tool}" for p in (server, short_name(server), sanitized_prefix(server))}
@@ -1082,7 +1091,7 @@ def statusline_ours(command):
     command = (command or "").strip()
     if not command:
         return False
-    installed = (read_json(STATUSLINE_INSTALLED) or {}).get("command") or ""
+    installed = read_json(STATUSLINE_INSTALLED, {}).get("command") or ""
     if command == installed.strip():
         return True
     import shlex
@@ -1110,7 +1119,7 @@ def statusline_ours(command):
 
 
 def statusline_state():
-    current = ((read_json(SETTINGS) or {}).get("statusLine") or {}).get("command") or ""
+    current = (read_json(SETTINGS, {}).get("statusLine") or {}).get("command") or ""
     return current.strip(), statusline_ours(current)
 
 
@@ -1371,7 +1380,7 @@ def scrape_model_windows():
 
 
 def model_windows():
-    cached = read_json(WINDOW_CACHE) or {}
+    cached = read_json(WINDOW_CACHE, {})
     # Наблюдения из statusLine (hooks/statusline.py) переживают пересборку таблицы: они точнее
     # выскребленного, потому что их назвала сама модель, которая только что ответила, и
     # добываются они дорого — только когда пользователь реально запустил эту модель в терминале.
@@ -1496,7 +1505,7 @@ def live_sessions():
     windows = None
     out = []
     for path in glob.glob(os.path.join(SESSIONS, "*.json")):
-        info = read_json(path)
+        info = read_json(path, {})
         if not info:
             continue
         pid = info.get("pid")
@@ -1547,13 +1556,13 @@ def refresh():
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            return load_state() or {}
+            return load_state()
         return _refresh_locked()
 
 
 def _refresh_locked():
     servers, error = run_health_check()
-    previous = load_state() or {}
+    previous = load_state()
 
     # Проверка сорвалась (сеть, гонка двух запусков, занятый бинарь) — НЕ затирать
     # последнюю удачную картину пустотой: индикатор обнулялся бы на ровном месте.
@@ -1565,7 +1574,7 @@ def _refresh_locked():
         write_json(STATE, stale)
         return stale
 
-    config = read_json(CONFIG) or {}
+    config = read_json(CONFIG, {})
     local = set(config.get("mcpServers") or {})
     for entry in servers:
         entry["source"] = classify(entry["name"], local)
@@ -1644,14 +1653,14 @@ def _refresh_locked():
     # Кеш «нужна авторизация» не чистится сам: сервер мог с тех пор подняться,
     # и тогда он попадал в список дважды — и подключённым, и ждущим.
     listed = {s["name"] for s in servers}
-    waiting = sorted(n for n in (read_json(NEEDS_AUTH) or {}) if n not in listed)
+    waiting = sorted(n for n in (read_json(NEEDS_AUTH, {})) if n not in listed)
 
     data = {
         "checked_at": time.time(),
         "servers": servers,
         "auth": waiting,
         "sessions": live_sessions(),
-        "limits": read_json(LIMITS) or {},
+        "limits": read_json(LIMITS, {}),
         "denyRules": rules,
     }
     # Ошибки проектов идут рядом с общей, а не вместо неё: общая значит «карты нет вообще»,
@@ -1670,7 +1679,7 @@ def _refresh_locked():
 
 
 def load_state():
-    return read_json(STATE)
+    return read_json(STATE, {})
 
 
 def spawn_refresh():

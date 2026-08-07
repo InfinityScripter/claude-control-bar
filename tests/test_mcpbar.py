@@ -1247,6 +1247,44 @@ class UsageToken(unittest.TestCase):
         self.assertFalse(os.path.exists(mcpbar.LIMITS))
 
 
+class ReadJsonShape(unittest.TestCase):
+    """read_json сверяет форму с default: чужой файл с массивом наверху там, где ждали
+    словарь, — это «данных нет», а не AttributeError на весь refresh.
+
+    Класс бага чинился дважды точечно (кеш десктопа, ответ лимитов), а точек чтения чужих
+    или руками правимых JSON — около пятнадцати; сверка типа в самой read_json закрывает
+    их разом. default=None оставляет разбор как есть — три вызова осознанно различают
+    «файла нет» и «форма не та» (project .mcp.json, backup_settings, statusline-restore).
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    def put(self, content):
+        path = os.path.join(self._dir.name, "f.json")
+        with open(path, "w") as fh:
+            fh.write(content)
+        return path
+
+    def test_массив_при_ожидании_словаря_это_default(self):
+        self.assertEqual(mcpbar.read_json(self.put("[1, 2, 3]"), {}), {})
+
+    def test_строка_при_ожидании_списка_это_default(self):
+        self.assertEqual(mcpbar.read_json(self.put('"строка"'), []), [])
+
+    def test_совпавшая_форма_проходит_как_есть(self):
+        self.assertEqual(mcpbar.read_json(self.put('{"a": 1}'), {}), {"a": 1})
+
+    def test_отсутствующий_файл_это_default(self):
+        self.assertEqual(mcpbar.read_json(os.path.join(self._dir.name, "нет"), {}), {})
+
+    def test_default_none_не_проверяет_форму(self):
+        self.assertEqual(mcpbar.read_json(self.put("[1]")), [1])
+
+
 class BackupPermissions(unittest.TestCase):
     """Бэкап секрета — тоже секрет, включая самый первый.
 
