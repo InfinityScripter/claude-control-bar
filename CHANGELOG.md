@@ -7,6 +7,20 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.7.1] - 2026-08-07
+
+### Added
+
+- **A click on an extension-panel session opens that very conversation.** The Claude Code
+  extension registers a URI handler: `<scheme>://anthropic.claude-code/open?session=<id>`
+  resumes exactly that session in the editor's Claude panel. The scheme is read from the
+  editor's own Info.plist (Cursor says `cursor`, VS Code `vscode`), so every fork works with
+  no catalog to maintain, and `open -b` pins the receiving app in case two forks claim one
+  scheme. An editor whose extension lacks the handler still comes to the front as before.
+  A session running in an integrated *terminal* keeps app-level focus on purpose:
+  deep-linking one of those would open a second copy of a conversation that already lives
+  in the terminal.
+
 ## [0.7.0] - 2026-08-07
 
 ### Fixed
