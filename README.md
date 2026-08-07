@@ -113,8 +113,15 @@ observed from a real `statusLine` payload replaces the guess permanently.
 
 ## What the menu shows
 
-- **Sessions** — project · branch, a live timer while working, context %, and a CLI/APP badge.
-  Click a row to bring that session's terminal to the front.
+- **Sessions** — project · branch, a live timer while working, context %, and a badge naming
+  the surface: **CLI** for a standalone terminal, **IDE** for a session living inside an editor
+  (the Claude Code extension panel, or the built-in terminal of Cursor / VS Code / Windsurf),
+  **APP** for the desktop app. Click a row to bring the app hosting that session to the front —
+  the hooks record which bundle launched it, so the click lands on *that* editor, not on
+  whatever `TERM_PROGRAM` claims (every VS Code fork says `vscode`).
+  **Local sessions only:** everything here is written by hooks firing on this machine. A session
+  running anywhere else — over ssh, in a cloud worktree, on claude.ai in the browser — leaves no
+  state here, so it is not listed and cannot be focused from here.
 - **Limits** — 5h and 7d usage with reset countdowns and the age of the reading.
 - **MCP** — servers grouped by where they are configured (local config, claude.ai connectors,
   plugins, project `.mcp.json`), each on one row with `enabled/total` tools, a switch, and its
