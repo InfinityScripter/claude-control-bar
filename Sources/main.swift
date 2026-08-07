@@ -408,50 +408,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     // No UI writes it: it is a `defaults write` knob for someone who wants a different number.
     var stalePruneAge: TimeInterval { UserDefaults.standard.object(forKey: "hideIdleAfter") as? Double ?? 900 }
 
-    struct Session {
-        var id: String, state: String, label: String, project: String, transcript: String
-        var cwd: String         // session working directory; "" on pre-upgrade files
-        var entrypoint: String  // CLAUDE_CODE_ENTRYPOINT: "cli", "claude-desktop", …
-        var termProgram: String // TERM_PROGRAM for CLI sessions: "Apple_Terminal", "iTerm.app", …
-        var termBundle: String  // __CFBundleIdentifier of the hosting app; "" over ssh / pre-upgrade files
-        var pid: Int32          // the session's `claude` process; kill(pid,0) drives liveness. 0 = pre-upgrade file.
-        var started: Bool       // true once the session had real activity (a prompt/tool); a merely-opened
-                                // conversation seeds started=false and stays out of the dropdown.
-        var startedAt: Double, ts: Double
-        // How full this session's context window is, measured by hooks/update.js from the
-        // transcript on every event. Claude Code hands this number to statusLine and to nothing
-        // else, and the desktop app never runs statusLine — so it is recomputed rather than read.
-        var pct: Int?
-        var tokens: Int?
-        var window: Int?
-        var model: String = ""
-        var assumed = false    // the window size is a family guess, not a known figure
-
-        var eff: String = ""   // effective state, recomputed once per tick in evaluate()
-        var branch: String = ""      // git branch (or short SHA when detached); "" outside a repo
-        var displayName: String = "" // project, parent-qualified when two live sessions share a name
-
-        init(json o: [String: Any], id: String) {
-            self.id = id
-            self.state = o["state"] as? String ?? "idle"
-            self.label = o["label"] as? String ?? ""
-            self.project = o["project"] as? String ?? ""
-            self.transcript = o["transcript"] as? String ?? ""
-            self.cwd = o["cwd"] as? String ?? ""
-            self.entrypoint = o["entrypoint"] as? String ?? ""
-            self.termProgram = o["term_program"] as? String ?? ""
-            self.termBundle = o["term_bundle"] as? String ?? ""
-            self.pid = Int32(truncatingIfNeeded: (o["pid"] as? NSNumber)?.intValue ?? 0)
-            self.started = o["started"] as? Bool ?? false
-            self.startedAt = (o["startedAt"] as? NSNumber)?.doubleValue ?? 0
-            self.ts = (o["ts"] as? NSNumber)?.doubleValue ?? 0
-            self.pct = (o["pct"] as? NSNumber)?.intValue
-            self.tokens = (o["tokens"] as? NSNumber)?.intValue
-            self.window = (o["window"] as? NSNumber)?.intValue
-            self.model = o["model"] as? String ?? ""
-            self.assumed = o["assumed"] as? Bool ?? false
-        }
-    }
+    let engine = SessionEngine()  // the state machine lives in Sessions.swift, testable
     var sessions: [String: Session] = [:]  // id -> latest parsed per-session state
     var fileMTimes: [String: Date] = [:]   // "<id>.json" -> last-parsed mtime (re-parse only on change)
     var gitHeadCache: [String: String] = [:]  // cwd -> resolved HEAD path ("" = confirmed non-git)
@@ -487,7 +444,6 @@ final class StatusController: NSObject, NSMenuDelegate {
                 root + "/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"]
             .contains { FileManager.default.isExecutableFile(atPath: $0) }
     }()
-    var turnLineCache: [String: (size: UInt64, mtime: Date, interrupted: Bool, turnTs: Double?)] = [:]
     var iconCache: [Int: NSImage] = [:]  // composed menu bar frames, rebuilt only when the look changes
     var iconCacheKey = ""
     var startedAt: Double = 0  // unix seconds the current turn began (0 = no clock)
@@ -1292,7 +1248,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         let now = Date().timeIntervalSince1970
         for (item, id) in sessionMenuItems {
             guard let s = sessions[id], let v = item.view as? SessionRowView else { continue }
-            let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff
+            let eff = s.eff.isEmpty ? engine.effectiveState(s, now: now) : s.eff
             configureSessionRow(v, s, eff: eff)
         }
     }
@@ -1329,7 +1285,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         // pre-upgrade files with no flag).
         let allOrdered = sessions.values.sorted { $0.ts > $1.ts }   // most-recent first
         let ordered = allOrdered.filter { s in
-                let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff
+                let eff = s.eff.isEmpty ? engine.effectiveState(s, now: now) : s.eff
                 let resting = !(eff == "permission" || eff == "thinking" || eff == "tool")
                 let gated = s.entrypoint == "claude-desktop"   // only the desktop app is gated
                 return !gated || s.started || !resting
@@ -1338,7 +1294,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         // one) so the dropdown never goes empty while a session is alive. Hiding is render-only; the file
         // (and thus liveness) is untouched — see stalePruneAge and the pid-driven reap in evaluate().
         var visible = ordered.filter { s in
-            let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff
+            let eff = s.eff.isEmpty ? engine.effectiveState(s, now: now) : s.eff
             let resting = !(eff == "permission" || eff == "thinking" || eff == "tool")
             return !(stalePruneAge > 0 && resting && now - s.ts > stalePruneAge)
         }
@@ -1347,7 +1303,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         if !visible.isEmpty {
             menu.addItem(header("Sessions"))
             for s in visible {
-                let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff
+                let eff = s.eff.isEmpty ? engine.effectiveState(s, now: now) : s.eff
                 let view = SessionRowView(id: s.id, width: CGFloat(uiConfig()["boxWidth"] ?? 300))
                 let sid = s.id, ep = s.entrypoint, tp = s.termProgram, tb = s.termBundle
                 view.onClick = { [weak self] in menu.cancelTracking(); self?.openSession(sid, entrypoint: ep, termProgram: tp, termBundle: tb) }
@@ -1584,7 +1540,7 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func sessionMenuLine(_ s: Session) -> String {
         let now = Date().timeIntervalSince1970
-        let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff  // cached by evaluate() each tick
+        let eff = s.eff.isEmpty ? engine.effectiveState(s, now: now) : s.eff  // cached by evaluate() each tick
         // The icon carries the state (spinner / amber dot / caret); the row text is just the project,
         // plus a live timer while working since the spinner can't convey elapsed.
         var line = truncated(sessionName(s))
@@ -2028,7 +1984,7 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         for id in Array(sessions.keys) {
             guard var s = sessions[id] else { continue }
-            s.eff = effectiveState(s, now: now)   // compute once per tick; the menu + tooltip reuse it
+            s.eff = engine.effectiveState(s, now: now)   // compute once per tick; the menu + tooltip reuse it
             // Reap on PROCESS death, not idle time: a session leaves only when its `claude` process is
             // gone (closed/crashed terminal, quit app), so an idle-but-open session stays and the icon
             // holds. Pre-upgrade files have no pid (0) — fall back to the old idle+age prune so they
@@ -2038,7 +1994,7 @@ final class StatusController: NSObject, NSMenuDelegate {
             if dead {
                 try? FileManager.default.removeItem(atPath: (stateDir as NSString).appendingPathComponent(id + ".json"))
                 sessions[id] = nil; fileMTimes[id + ".json"] = nil; prevState[id] = nil; sessionWord[id] = nil; turnStart[id] = nil
-                if !s.transcript.isEmpty { turnLineCache[s.transcript] = nil }  // keyed by path, not id
+                if !s.transcript.isEmpty { engine.dropCache(forTranscript: s.transcript) }
                 continue
             }
             sessions[id] = s
@@ -2089,31 +2045,6 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func renderResting() { render(label: "", color: iconColor, animate: false, startedAt: 0) }
 
-    // Per-session effective state with two recovery nets: an absolute age cap, plus the transcript
-    // "interrupted by user" marker (Esc / denied permission fire no hook, freezing the file). "done"
-    // collapses to rest.
-    func effectiveState(_ s: Session, now: Double) -> String {
-        if s.state == "thinking" || s.state == "tool" || s.state == "permission" {
-            // 30 minutes for permission, not the 2 hours it once was: with the transcript nets
-            // below this is a last resort, and a frozen amber dot outranks every live session.
-            let cap: Double = s.state == "permission" ? 1800 : 900
-            if now - s.ts > cap { return "idle" }
-            if !s.transcript.isEmpty {
-                let facts = turnFacts(ofFileAt: s.transcript)
-                if facts.interrupted { return "idle" }
-                // While a permission prompt waits, the transcript is silent — the tool_use that
-                // opened it is already on disk. So a turn record younger than the prompt means
-                // the prompt was answered, whatever form the answer took: deny and Esc write
-                // one without firing any hook. +2s keeps that same tool_use record, stamped in
-                // the prompt's own second, from ending the wait it started. Permission only:
-                // thinking/tool sessions append turn records as part of normal work (measured
-                // median gap 1.7s), so the same test there would idle a session mid-stride.
-                if s.state == "permission", let t = facts.turnTs, t > s.ts + 2 { return "idle" }
-            }
-            return s.state
-        }
-        return s.state == "done" ? "idle" : s.state
-    }
 
 
     // MARK: self-quit lifecycle
@@ -2172,54 +2103,6 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
     }
 
-    // What the transcript's last turn line (a user/assistant message, ignoring the bookkeeping
-    // Claude Code appends after an interrupt) says about the session: the interrupt marker, and
-    // the record's timestamp. Both answers are computed when the file changes and cached — a
-    // sampling pass once put the raw per-tick read among the timer's top costs, and parsing the
-    // same unchanged line every tick is the same class of waste. One stat() per tick otherwise.
-    func turnFacts(ofFileAt path: String) -> (interrupted: Bool, turnTs: Double?) {
-        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
-        let size = (attrs?[.size] as? NSNumber)?.uint64Value ?? 0
-        let mtime = attrs?[.modificationDate] as? Date ?? .distantPast
-        if let hit = turnLineCache[path], hit.size == size, hit.mtime == mtime {
-            return (hit.interrupted, hit.turnTs)
-        }
-        let line = readLastTurnLine(ofFileAt: path)
-        let interrupted = line.map(Transcript.wasInterrupted) ?? false
-        let turnTs = line.flatMap(Transcript.turnTimestamp)
-        // A record that parses as a turn but carries no usable timestamp is format drift — the
-        // permission net below dies silently without it. Once per file change, not per tick, so
-        // Console gets a trace instead of "sessions sometimes sit amber for the whole cap".
-        if let line, turnTs == nil, Transcript.isTurnRecord(line) {
-            NSLog("ClaudeControlBar: turn record without a parseable timestamp — transcript format drift? \(path)")
-        }
-        turnLineCache[path] = (size, mtime, interrupted, turnTs)
-        return (interrupted, turnTs)
-    }
-
-    private func readLastTurnLine(ofFileAt path: String) -> String? {
-        guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
-        defer { try? fh.close() }
-        let size = (try? fh.seekToEnd()) ?? 0
-        // Escalating windows, 8 KB first: a streaming transcript invalidates the cache on every
-        // append, so the hot path must stay at the old price — the last line there IS the turn
-        // record. The larger reads pay only when the tail is all bookkeeping: Claude Code appends
-        // it after an interrupt in lines measured up to 112 KB, and any fixed window is a bet
-        // against the next release's line, so the ladder ends at a hard ceiling instead.
-        for chunk: UInt64 in [8_192, 262_144, 1_048_576] {
-            try? fh.seek(toOffset: size > chunk ? size - chunk : 0)
-            guard let data = try? fh.readToEnd() else { return nil }
-            // Never the failable String(data:encoding:): a window cut mid-way through a multi-
-            // byte character made it return nil for the ENTIRE chunk, and the cache then pinned
-            // that nil for as long as the file sat still — a permission wait, by definition.
-            let s = String(decoding: data, as: UTF8.self)
-            if let line = s.split(separator: "\n").last(where: {
-                $0.contains("\"type\":\"user\"") || $0.contains("\"type\":\"assistant\"")
-            }) { return String(line) }
-            if size <= chunk { return nil }  // the whole file is read — there is nowhere left to look
-        }
-        return nil
-    }
 
     // MARK: render
 

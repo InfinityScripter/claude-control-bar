@@ -459,6 +459,13 @@ test("the state file a hook event writes carries exactly the keys the swift read
   assert.equal(typeof state.ts, "number");
   assert.equal(typeof state.started, "boolean");
   assert.equal(typeof state.pct, "number");
+
+  // The reader's half of this seam: the swift model checks parse THIS file with the real
+  // Session initializer. Written by the real update.js — not a hand fixture — so a key
+  // rename on either side now fails a suite. Run the node suite before the swift one.
+  const seamDir = path.resolve(__dirname, "..", "build", "seam");
+  fs.mkdirSync(seamDir, { recursive: true });
+  fs.copyFileSync(path.join(stateDir(home), "pin1.json"), path.join(seamDir, "session.json"));
 });
 
 test("the seeded session file carries exactly the keys the swift reader parses", () => {

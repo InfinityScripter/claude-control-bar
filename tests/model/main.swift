@@ -215,6 +215,78 @@ check((-Double.infinity).clampedInt == Int.min, "negative infinity clamps to the
 check((42.9).clampedInt == 42, "a normal value truncates exactly like Int() always did")
 check((-7.9).clampedInt == -7, "truncation toward zero holds for negatives too")
 
+// The session state machine — the logic behind every serious bug of the 0.7.x review, and
+// untestable until it moved out of main.swift into SessionEngine.
+let engine = SessionEngine()
+let sessionsDir = NSTemporaryDirectory() + "ccb-sessions-test/"
+try? FileManager.default.createDirectory(atPath: sessionsDir, withIntermediateDirectories: true)
+
+func makeSession(state: String, ts: Double, transcript: String = "") -> Session {
+    Session(json: ["state": state, "ts": ts, "transcript": transcript,
+                   "sessionId": "s", "pid": 1], id: "s")
+}
+func writeTranscript(_ name: String, lines: [String], mtime: Date? = nil) -> String {
+    let path = sessionsDir + name
+    try! lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+    if let mtime { try? FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: path) }
+    return path
+}
+
+let nowTs = Date().timeIntervalSince1970
+check(engine.effectiveState(makeSession(state: "thinking", ts: nowTs - 10), now: nowTs) == "thinking",
+      "fresh thinking stays thinking")
+check(engine.effectiveState(makeSession(state: "tool", ts: nowTs - 10), now: nowTs) == "tool",
+      "fresh tool stays tool")
+check(engine.effectiveState(makeSession(state: "done", ts: nowTs), now: nowTs) == "idle",
+      "done collapses to rest")
+check(engine.effectiveState(makeSession(state: "permission", ts: nowTs - 1900), now: nowTs) == "idle",
+      "a permission wait past its 30-minute cap idles out")
+check(engine.effectiveState(makeSession(state: "permission", ts: nowTs - 1700), now: nowTs) == "permission",
+      "and inside the cap it holds")
+
+// The interrupt net: Esc / deny write a marker record but fire no hook.
+let interrupted = writeTranscript("interrupted.jsonl", lines: [
+    #"{"type":"user","message":{"content":"[Request interrupted by user]"}}"#,
+])
+check(engine.effectiveState(makeSession(state: "thinking", ts: nowTs - 10, transcript: interrupted),
+                            now: nowTs) == "idle",
+      "an interrupt marker idles a thinking session at once")
+
+// The permission-answered net: a turn record younger than the prompt means the prompt is gone.
+let promptTs = nowTs - 60
+let answered = writeTranscript("answered.jsonl", lines: [
+    "{\"type\":\"user\",\"timestamp\":\"\(ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: promptTs + 30)))\",\"message\":{\"content\":\"denied\"}}",
+])
+check(engine.effectiveState(makeSession(state: "permission", ts: promptTs, transcript: answered),
+                            now: nowTs) == "idle",
+      "a turn record younger than the prompt ends the permission wait")
+let stale = writeTranscript("stale.jsonl", lines: [
+    "{\"type\":\"user\",\"timestamp\":\"\(ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: promptTs - 30)))\",\"message\":{\"content\":\"before\"}}",
+])
+check(engine.effectiveState(makeSession(state: "permission", ts: promptTs, transcript: stale),
+                            now: nowTs) == "permission",
+      "a turn record older than the prompt does not end the wait")
+
+// The js→swift seam, reader half: parse the state file the real update.js wrote during the
+// node suite. Run the node suite first — CI does.
+let sessionSeamPath = FileManager.default.currentDirectoryPath + "/build/seam/session.json"
+if !FileManager.default.fileExists(atPath: sessionSeamPath) {
+    check(false, "session seam fixture missing at \(sessionSeamPath) — run the node suite first "
+        + "(node --test tests/*.test.js), it writes build/seam/session.json")
+} else if let data = FileManager.default.contents(atPath: sessionSeamPath),
+          let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+    let parsed = Session(json: raw, id: raw["sessionId"] as? String ?? "?")
+    check(parsed.state == "tool", "the state the hook wrote survives the js→swift trip")
+    check(parsed.pid > 0, "the pid crosses over as a number")
+    check(parsed.started, "real activity crosses over as started")
+    check(parsed.pct != nil, "the measured context percentage crosses over")
+    check(!parsed.transcript.isEmpty, "the transcript path crosses over")
+} else {
+    check(false, "session seam fixture unreadable")
+}
+
+try? FileManager.default.removeItem(atPath: sessionsDir)
+
 // The python→swift seam. Everything above parses a fixture written BY HAND — the same schema
 // pinned twice independently, so a coordinated key rename passed both suites while the menu
 // silently emptied. This file is written by the real refresh() during the python suite
