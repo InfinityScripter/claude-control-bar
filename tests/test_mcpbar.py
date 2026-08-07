@@ -1247,6 +1247,58 @@ class UsageToken(unittest.TestCase):
         self.assertFalse(os.path.exists(mcpbar.LIMITS))
 
 
+class BackupPermissions(unittest.TestCase):
+    """Бэкап секрета — тоже секрет, включая самый первый.
+
+    Первый бэкап install.js рождался copyFileSync'ом и наследовал права оригинала того дня —
+    на живой машине лежал 0644 с полным снимком settings.json, читаемый группой staff, то
+    есть любым локальным пользователем. Ротация «чужое не трогает» — верно, но файл с нашим
+    именным префиксом bak-control-bar наш: свип на каждом refresh обязан накрывать и его.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        tmp = self._dir.name
+        self.saved = {k: getattr(mcpbar, k) for k in ("ROOT", "SETTINGS")}
+        mcpbar.ROOT = os.path.join(tmp, "control-bar")
+        mcpbar.SETTINGS = os.path.join(tmp, "settings.json")
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(mcpbar, k, v)
+        self._dir.cleanup()
+
+    def put(self, path, mode):
+        with open(path, "w") as fh:
+            fh.write("{}")
+        os.chmod(path, mode)
+
+    def test_свип_забирает_у_группы_оба_вида_наших_бэкапов(self):
+        self.put(mcpbar.SETTINGS, 0o600)
+        ours_first = mcpbar.SETTINGS + ".bak-control-bar"
+        ours_dated = mcpbar.SETTINGS + ".bak-control-bar-20260804-131800-000001"
+        foreign = mcpbar.SETTINGS + ".bak-mine"
+        for path in (ours_first, ours_dated, foreign):
+            self.put(path, 0o644)
+
+        mcpbar.secure_root()
+
+        self.assertEqual(os.stat(ours_first).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(ours_dated).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(foreign).st_mode & 0o777, 0o644,
+                         "чужой бэкап трогать нельзя")
+
+    def test_симлинк_на_месте_бэкапа_не_чинит_права_по_ссылке(self):
+        victim = os.path.join(self._dir.name, "victim.json")
+        self.put(victim, 0o644)
+        os.symlink(victim, mcpbar.SETTINGS + ".bak-control-bar")
+
+        mcpbar.secure_root()
+
+        self.assertEqual(os.stat(victim).st_mode & 0o777, 0o644,
+                         "chmod ушёл по симлинку в чужой файл")
+
+
 class ServerChildReaping(unittest.TestCase):
     """Опрошенный сервер не имеет права пережить опрос.
 

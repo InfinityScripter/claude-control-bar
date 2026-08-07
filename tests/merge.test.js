@@ -275,6 +275,16 @@ test("the legacy notification-text fallback matches whole words only", () => {
 // settings.json is shared with Claude Code and edited by hand. Both cases below are about not
 // destroying someone else's work in it.
 
+test("the first-run backup carries owner-only bits, whatever the original had", () => {
+  const home = sandbox();
+  fs.writeFileSync(settingsPath(home), JSON.stringify({ hooks: {} }, null, 2) + "\n");
+  // The umask default. A backup born with it held the full settings.json snapshot readable
+  // by group staff — every local account — and nothing ever revisited it.
+  fs.chmodSync(settingsPath(home), 0o644);
+  run(installerPath, home);
+  assert.equal(fs.statSync(settingsPath(home) + ".bak-control-bar").mode & 0o777, 0o600);
+});
+
 test("a settings write leaves no temp file and keeps the file's mode", () => {
   const home = sandbox();
   fs.writeFileSync(settingsPath(home), JSON.stringify({ hooks: {} }, null, 2) + "\n");

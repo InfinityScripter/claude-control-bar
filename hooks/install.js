@@ -132,7 +132,13 @@ if (fs.existsSync(settingsPath)) {
     process.exit(1);
   }
   const bak = settingsPath + ".bak-control-bar";
-  if (!fs.existsSync(bak)) fs.copyFileSync(settingsPath, bak);
+  if (!fs.existsSync(bak)) {
+    fs.copyFileSync(settingsPath, bak);
+    // A backup of a secret is still the secret: owner bits only, whatever the original
+    // carries. Born with the copy's inherited mode, the very first backup sat group-readable
+    // (staff = every local account) for the life of the install — nothing ever revisited it.
+    fs.chmodSync(bak, fs.statSync(settingsPath).mode & 0o700);
+  }
 }
 // Compared against the re-serialised parse, not the raw file: the user's own formatting would
 // otherwise read as a difference on every single launch.

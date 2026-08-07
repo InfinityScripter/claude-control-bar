@@ -201,6 +201,18 @@ def secure_root(path=None):
                 # параллельно, и исчезнувший временный файл оставлял бы весь каталог
                 # незакрытым до следующего прохода.
                 continue
+    # Бэкапы settings.json живут не под ROOT, а рядом с оригиналом — и первый из них,
+    # рождённый install.js до фикса прав, лежал 0644 с полным снимком настроек навсегда:
+    # ротация честно «чужого не трогает», а перечитать права было некому. Файл с нашим
+    # именным префиксом — наш; владельческие биты оставляем как есть, группу и остальных
+    # снимаем. Симлинк пропускаем по той же причине, что и выше.
+    for backup in glob.glob(SETTINGS + ".bak-control-bar*"):
+        if os.path.islink(backup):
+            continue
+        try:
+            os.chmod(backup, os.stat(backup).st_mode & 0o700)
+        except OSError:
+            continue
 
 
 def read_json(path, default=None):
