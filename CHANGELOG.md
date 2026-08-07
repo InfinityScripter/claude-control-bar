@@ -7,6 +7,48 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.7.2] - 2026-08-07
+
+### Fixed
+
+- **An explicit Quit survives a session resume.** SessionStart fires not only for new sessions
+  but on `--resume`/`--continue`, wake after sleep and compaction — and every one of them
+  voided the quit marker and brought the app back. Both launch paths (lifecycle.js and the
+  plugin bootstrap) now read the hook's `source`: startup and `/clear` are fresh consent,
+  resume-shaped events honor the Quit. An old Claude Code that sends no `source` keeps the
+  previous behavior.
+- **A long tool call's session cannot crash the poll behind it.** The Anthropic usage endpoint
+  is undocumented; an answer of an unexpected shape (an array, a string, `Infinity` in one
+  window) crashed the whole poll script — invisibly, since the app discards its output, so the
+  limits just silently froze. Unexpected shapes now read as a failed poll, one malformed window
+  is skipped without dropping the rest, and the same hardening covers the desktop-app session
+  cache that feeds connector tools.
+- **A probed MCP server cannot outlive its probe.** The tools/list round trip ended with a bare
+  `terminate()`: a server that ignores SIGTERM survived it, and since an unanswering server is
+  re-probed on every refresh, one more orphan process joined it roughly every ten minutes. The
+  teardown now closes stdin, waits, and falls back to SIGKILL — with a test that proves a
+  deliberately stubborn child is dead by the time the probe returns.
+- **A corrupted number in a state file degrades to a wrong figure, not a crash loop.** Swift's
+  `Int(Double)` is a trapping conversion, and eight call sites fed it numbers straight from
+  JSON files on disk — `limits.json`, session state, and `uiconfig.json`, a file that is
+  hand-edited by design. An absurd value crashed the app on every menu open, and the
+  self-relaunch walked straight back into it. All sites now clamp instead of trapping.
+- **Every backup of settings.json is owner-readable only — including the first one ever
+  taken.** The install-time backup inherited whatever mode the original had that day and was
+  never revisited: on a real machine that meant a full settings snapshot readable by group
+  `staff` (every local account) indefinitely. The backup is now born with owner bits at
+  creation, and the per-refresh permission sweep also covers existing `.bak-control-bar*`
+  files — quietly when there is nothing to fix, with a `problems.log` line when it cannot.
+
+### Added
+
+- **The cross-language seams are pinned by tests.** The state files (written by the JS hooks,
+  parsed by Swift) and `mcp.json` (written by the Python backend, parsed by Swift) each had
+  their schema asserted twice, independently, on hand-written fixtures — a coordinated key
+  rename passed every suite while the menu silently emptied. The Python suite now feeds a
+  file written by the real backend to the Swift model checks, and the JS suite pins the state
+  file's exact key inventory.
+
 ## [0.7.1] - 2026-08-07
 
 ### Added
