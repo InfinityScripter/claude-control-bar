@@ -1324,14 +1324,13 @@ class ServerChildReaping(unittest.TestCase):
             self.assertIsNone(result)
             with open(pidfile) as fh:
                 pid = int(fh.read())
+            # kill(pid, 9) — сам и проба, и добивающий: успех значит «пережил» (и уже прибит,
+            # сирота после провала не остаётся), ProcessLookupError — мёртв, как и должно.
             try:
-                os.kill(pid, 0)
-                alive = True
+                os.kill(pid, 9)
+                self.fail("ребёнок пережил ask_server_for_tools")
             except ProcessLookupError:
-                alive = False
-            if alive:
-                os.kill(pid, 9)  # не оставлять сироту после провала теста
-            self.assertFalse(alive, "ребёнок пережил ask_server_for_tools")
+                pass
         finally:
             tmp.cleanup()
 
@@ -1353,32 +1352,22 @@ class UsagePayloadDrift(unittest.TestCase):
     def test_нечисловой_процент_пропускает_окно_не_роняя_остальные(self):
         record = mcpbar.usage_record({
             "five_hour": {"utilization": "N/A"},
+            # json.loads пропускает голый Infinity-токен, а round(inf) кидает OverflowError —
+            # не ValueError: одно такое окно роняло весь разбор вместо пропуска окна.
+            "inf_window": {"utilization": float("inf")},
             "seven_day": {"utilization": 50},
         })
         self.assertIsNotNone(record)
         self.assertNotIn("five_hour", record)
+        self.assertNotIn("inf_window", record)
         self.assertEqual(record["seven_day"]["used_percentage"], 50)
 
     def test_fetch_limits_переживает_массив_от_эндпоинта(self):
-        import http.server
-        import threading
-
-        class Drifted(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                body = b"[1, 2, 3]"
-                self.send_response(200)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def log_message(self, *args):
-                pass
-
-        server = http.server.HTTPServer(("127.0.0.1", 0), Drifted)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        # data:-URL вместо третьего локального HTTP-сервера в файле: build_opener открывает
+        # их штатно, тем же путём с NoRedirect — проверено живым запуском.
         tmp = tempfile.TemporaryDirectory()
         saved = {k: getattr(mcpbar, k) for k in ("USAGE_URL", "LIMITS", "oauth_token")}
-        mcpbar.USAGE_URL = "http://127.0.0.1:%d/" % server.server_address[1]
+        mcpbar.USAGE_URL = "data:application/json,[1,2,3]"
         mcpbar.LIMITS = os.path.join(tmp.name, "limits.json")
         mcpbar.oauth_token = lambda: "SECRET"
         try:
@@ -1388,35 +1377,26 @@ class UsagePayloadDrift(unittest.TestCase):
         finally:
             for k, v in saved.items():
                 setattr(mcpbar, k, v)
-            server.shutdown()
-            server.server_close()
             tmp.cleanup()
 
-    def test_кеш_десктопа_с_массивом_наверху_не_роняет_refresh(self):
+    def test_кеш_десктопа_с_неожиданными_формами_не_роняет_и_не_подбирает_мусор(self):
+        """Дрейфнутый файл (массив наверху) пропускается переходом к следующему; внутри
+        валидного не-словарные и безымянные элементы списка отбрасываются поштучно."""
         tmp = tempfile.TemporaryDirectory()
         saved = mcpbar.DESKTOP_SESSIONS
         mcpbar.DESKTOP_SESSIONS = tmp.name
         try:
-            with open(os.path.join(tmp.name, "drifted.json"), "w") as fh:
-                json.dump([{"это": "массив"}], fh)
-            self.assertEqual(mcpbar.connectors_from_desktop(), {})
-        finally:
-            mcpbar.DESKTOP_SESSIONS = saved
-            tmp.cleanup()
-
-    def test_коннектор_без_имени_пропускается_а_не_роняет(self):
-        tmp = tempfile.TemporaryDirectory()
-        saved = mcpbar.DESKTOP_SESSIONS
-        mcpbar.DESKTOP_SESSIONS = tmp.name
-        try:
-            with open(os.path.join(tmp.name, "s.json"), "w") as fh:
+            valid = os.path.join(tmp.name, "older-valid.json")
+            with open(valid, "w") as fh:
                 json.dump({"remoteMcpServersConfig": [
                     "не словарь",
                     {"uuid": "без-имени"},
                     {"name": "Figma", "uuid": "u1", "tools": []},
                 ]}, fh)
-            connectors = mcpbar.connectors_from_desktop()
-            self.assertEqual(list(connectors), ["Figma"])
+            with open(os.path.join(tmp.name, "drifted.json"), "w") as fh:
+                json.dump([{"это": "массив"}], fh)
+            os.utime(valid, (1, 1))  # дрейфнутый свежее — его смотрят первым
+            self.assertEqual(list(mcpbar.connectors_from_desktop()), ["Figma"])
         finally:
             mcpbar.DESKTOP_SESSIONS = saved
             tmp.cleanup()
@@ -1468,7 +1448,7 @@ class SeamContract(unittest.TestCase):
         for k, v in patched.items():
             setattr(mcpbar, k, v)
 
-        write = lambda path, data: mcpbar.write_json(path, data)
+        write = mcpbar.write_json
         write(mcpbar.CONFIG, {"mcpServers": {"wiki": {"command": "true"}}})
         write(mcpbar.SETTINGS, {
             "permissions": {"deny": ["mcp__wiki__Delete", "mcp__b6d68fb1__get_screenshot"]},

@@ -15,7 +15,7 @@ struct Gauge {
     /// Everything that changes what the bars look like, in one string — the part of the cache key
     /// for a composed menu bar icon that this type owns.
     var signature: String {
-        rows.map { "\($0.0)\(Int(($0.1 * 100).rounded()))" }.joined(separator: ",")
+        rows.map { "\($0.0)\(($0.1 * 100).rounded().clampedInt)" }.joined(separator: ",")
     }
 
     var rows: [(String, Double)] {
@@ -114,7 +114,7 @@ struct Gauge {
         // Drawn bars carry no text the system can read, so without this the item is silent to
         // VoiceOver — a regression against the plain label it replaces.
         image.accessibilityDescription = shown
-            .map { "\($0.0 == "5h" ? "5 hour" : "7 day") limit \(Int(($0.1 * 100).rounded()))%" }
+            .map { "\($0.0 == "5h" ? "5 hour" : "7 day") limit \(($0.1 * 100).rounded().clampedInt)%" }
             .joined(separator: ", ")
         return image
     }

@@ -38,6 +38,10 @@ LOCK = os.path.join(ROOT, "refresh.lock")
 
 CONFIG = os.path.join(HOME, ".claude.json")
 SETTINGS = os.path.join(CLAUDE, "settings.json")
+# Приставка наших бэкапов settings.json — всегда SETTINGS + ".bak-control-bar", и всегда
+# собирается НА МЕСТЕ вызова, не константой: тесты подменяют SETTINGS на лету, а константа,
+# вычисленная при импорте, один раз уже увела ротацию и свип в настоящий ~/.claude — с
+# удалением настоящих бэкапов. Тем же литералом (другой язык) пользуется install.js.
 NEEDS_AUTH = os.path.join(CLAUDE, "mcp-needs-auth-cache.json")
 MCP_LOGS = os.path.join(HOME, "Library", "Caches", "claude-cli-nodejs", "*", "mcp-logs-*")
 DESKTOP_SESSIONS = os.path.join(
@@ -205,14 +209,29 @@ def secure_root(path=None):
     # рождённый install.js до фикса прав, лежал 0644 с полным снимком настроек навсегда:
     # ротация честно «чужого не трогает», а перечитать права было некому. Файл с нашим
     # именным префиксом — наш; владельческие биты оставляем как есть, группу и остальных
-    # снимаем. Симлинк пропускаем по той же причине, что и выше.
+    # снимаем. Симлинк пропускаем по той же причине, что и выше. chmod — только когда
+    # есть что снимать: безусловный дёргал ctime каждых десяти минут на давно чистых
+    # файлах. Провал chmod на снимке с секретами — не гонка ротации, а событие: одна
+    # строка в problems.log, не молчание.
     for backup in glob.glob(SETTINGS + ".bak-control-bar*"):
         if os.path.islink(backup):
             continue
         try:
-            os.chmod(backup, os.stat(backup).st_mode & 0o700)
+            mode = os.stat(backup).st_mode
         except OSError:
             continue
+        if not mode & 0o077:
+            continue
+        try:
+            os.chmod(backup, mode & 0o700)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            try:
+                with open(os.path.join(ROOT, "problems.log"), "a") as fh:
+                    fh.write(f"could not restrict permissions on {backup}: {exc}\n")
+            except OSError:
+                pass
 
 
 def read_json(path, default=None):
@@ -1258,7 +1277,7 @@ def usage_record(payload, now=None):
     if not isinstance(payload, dict):
         return None
     record = {"ts": int(now or time.time()), "source": "oauth"}
-    for name, block in (payload or {}).items():
+    for name, block in payload.items():
         if not isinstance(block, dict):
             continue
         used = block.get("utilization", block.get("used_percentage"))
@@ -1266,7 +1285,9 @@ def usage_record(payload, now=None):
             continue
         try:
             pct = int(round(float(used)))
-        except (TypeError, ValueError):
+        # OverflowError — это Infinity: json.loads пропускает голый Infinity/NaN-токен,
+        # а round(inf) кидает именно его, и одно такое окно роняло бы весь разбор.
+        except (TypeError, ValueError, OverflowError):
             continue
         record[name] = {
             "used_percentage": pct,

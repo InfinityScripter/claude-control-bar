@@ -1609,7 +1609,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         let now = Date().timeIntervalSince1970
         // Generous cap: the row's pixel truncation does the real limiting now that the name field
         // sizes to the free space; this only guards against pathological strings.
-        let nameMax = Int(cfg["nameMax"] ?? 30)
+        let nameMax = (cfg["nameMax"] ?? 30).clampedInt
         let working = (eff == "thinking" || eff == "tool") && s.startedAt > 0
         let resting = !(eff == "permission" || eff == "thinking" || eff == "tool")  // the dim caret
         let tag = surfaceTag(s)

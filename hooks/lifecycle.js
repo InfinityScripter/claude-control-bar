@@ -77,6 +77,7 @@ function run() {
     // update.js's self-relaunch suppress) — a resume honors it, or the app "comes back on its
     // own" the moment a laptop lid opens. No source at all is an old Claude Code: it keeps the
     // pre-source behavior, else one Quit would leave the app permanently down there.
+    // bootstrap.py's may_launch() applies this same list in parallel — keep the two in step.
     const resumed = ["resume", "compact", "fork"].includes(source);
     if (!resumed) {
       try { fs.rmSync(path.join(dir, "quit-intent"), { force: true }); } catch {}

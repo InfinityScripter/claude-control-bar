@@ -133,11 +133,17 @@ if (fs.existsSync(settingsPath)) {
   }
   const bak = settingsPath + ".bak-control-bar";
   if (!fs.existsSync(bak)) {
-    fs.copyFileSync(settingsPath, bak);
-    // A backup of a secret is still the secret: owner bits only, whatever the original
-    // carries. Born with the copy's inherited mode, the very first backup sat group-readable
-    // (staff = every local account) for the life of the install — nothing ever revisited it.
-    fs.chmodSync(bak, fs.statSync(settingsPath).mode & 0o700);
+    // A backup of a secret is still the secret: owner bits only, and set AT creation —
+    // copyFileSync inherits the source's mode, and a chmod after it leaves the file group-
+    // readable (staff = every local account) for the window in between. Loud but non-fatal:
+    // a machine that rejects the write must still get its hooks installed, and mcpbar.py's
+    // per-refresh sweep in secure_root() revisits every .bak-control-bar* file after us.
+    try {
+      fs.writeFileSync(bak, fs.readFileSync(settingsPath),
+        { mode: fs.statSync(settingsPath).mode & 0o700 });
+    } catch (err) {
+      console.error("could not write settings backup " + bak + ":", err.message);
+    }
   }
 }
 // Compared against the re-serialised parse, not the raw file: the user's own formatting would

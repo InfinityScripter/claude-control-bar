@@ -25,7 +25,6 @@ SETTINGS = os.path.join(HOME, ".claude", "settings.json")
 # this hook runs IN PARALLEL with lifecycle.js on the same SessionStart, so it applies the
 # same source rule itself instead of relying on that deletion having happened yet.
 QUIT_MARKER = os.path.join(ROOT, "quit-intent")
-RESUMED_SOURCES = ("resume", "compact", "fork")
 
 
 def may_launch(payload):
@@ -36,10 +35,12 @@ def may_launch(payload):
     Quit; a resume honors the marker — or the app "comes back on its own" the moment a
     laptop lid opens. No source at all is an old Claude Code: it keeps the pre-source
     behavior, else one Quit would leave the app permanently down there.
+
+    The resumed-source list mirrors lifecycle.js — keep the two in step.
     """
     if not isinstance(payload, dict):
         return True
-    if payload.get("source") in RESUMED_SOURCES:
+    if payload.get("source") in ("resume", "compact", "fork"):
         return not os.path.exists(QUIT_MARKER)
     return True
 
@@ -249,14 +250,9 @@ def build(target):
 
 def main():
     # The hook gets its event on stdin; `source` decides whether a launch is allowed below.
-    # The pipe has to be drained either way.
-    raw = ""
+    # The pipe has to be drained either way; unreadable or unparseable both mean "no source".
     try:
-        raw = sys.stdin.read()
-    except Exception:
-        pass
-    try:
-        payload = json.loads(raw or "{}")
+        payload = json.loads(sys.stdin.read())
     except Exception:
         payload = {}
 

@@ -136,7 +136,6 @@ class QuitIntent(unittest.TestCase):
         saved = {
             "bundle_version": bootstrap.bundle_version,
             "running": bootstrap.running,
-            "plugin_version": bootstrap.plugin_version,
         }
         saved_popen, saved_stdin = bootstrap.subprocess.Popen, sys.stdin
         bootstrap.bundle_version = (

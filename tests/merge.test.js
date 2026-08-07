@@ -21,23 +21,30 @@ const sandbox = () => {
 // child_process is stubbed out: the real scripts pgrep and spawn `open`, and a test must not
 // launch a menu bar app or kill the one the developer is using. execSync THROWS, because the
 // only thing these scripts run through it is `pgrep -x`, and that is how pgrep reports "no such
-// process" — the branch under test.
+// process" — the branch under test. spawn records every call into spawnLog(home) instead of
+// merely silencing it, so a test can also assert the app was NOT launched.
 const run = (scriptPath, home, argv = [], stdin = "{}") =>
   execFileSync(
     process.execPath,
     ["-e", [
       `require("node:child_process").execSync = () => { throw new Error("pgrep: no match"); };`,
-      `require("node:child_process").spawn = () => ({ unref() {} });`,
+      `require("node:child_process").spawn = (cmd, args) => {`,
+      `  require("node:fs").appendFileSync(process.env.SPAWN_LOG, cmd + " " + args.join(" ") + "\\n");`,
+      `  return { unref() {} };`,
+      `};`,
       `require(process.env.SCRIPT_PATH);`,
       // The scripts read their event from process.argv[2]. Under `node -e` the script path is
       // not in argv, so it is put back here — otherwise the event lands in argv[1] and every
       // hook silently takes its "unknown event" branch and writes nothing.
     ].join("\n"), scriptPath, ...argv],
-    { env: { ...process.env, HOME: home, SCRIPT_PATH: scriptPath }, input: stdin, stdio: "pipe" }
+    { env: { ...process.env, HOME: home, SCRIPT_PATH: scriptPath,
+             SPAWN_LOG: path.join(home, "spawn-calls.txt") },
+      input: stdin, stdio: "pipe" }
   ).toString();
 
 const settingsPath = (home) => path.join(home, ".claude", "settings.json");
 const stateDir = (home) => path.join(home, ".claude", "control-bar", "state.d");
+const spawnLog = (home) => path.join(home, "spawn-calls.txt");
 
 test("the app channel stands down while the plugin owns the hooks", () => {
   const home = sandbox();
@@ -307,10 +314,16 @@ test("a settings file changed underneath us is left alone rather than clobbered"
     ["-e", [
       `require("node:child_process").execSync = () => { throw new Error("pgrep: no match"); };`,
       `require("node:child_process").spawn = () => ({ unref() {} });`,
-      // Sneak a write in between the installer's read and its rename.
+      // Sneak a write in between the installer's read and its rename. The first-run backup
+      // write is the hook: it happens after the parse and before the fingerprint re-check.
       `const fs = require("node:fs");`,
-      `const real = fs.copyFileSync;`,
-      `fs.copyFileSync = (...a) => { real(...a); fs.writeFileSync(process.env.SETTINGS, JSON.stringify({ theirs: true }, null, 2) + "\\n"); };`,
+      `const real = fs.writeFileSync;`,
+      `fs.writeFileSync = (p, ...rest) => {`,
+      `  real(p, ...rest);`,
+      `  if (String(p).endsWith(".bak-control-bar")) {`,
+      `    real(process.env.SETTINGS, JSON.stringify({ theirs: true }, null, 2) + "\\n");`,
+      `  }`,
+      `};`,
       `require(process.env.SCRIPT_PATH);`,
     ].join("\n"), installerPath],
     { env: { ...process.env, HOME: home, SCRIPT_PATH: installerPath, SETTINGS: settingsPath(home) },
@@ -370,65 +383,50 @@ test("an event arriving without the env var keeps the bundle id already on file"
 // and both lifecycle.js and bootstrap.py launch the app from it. Only a genuinely new session
 // is fresh consent: voiding the Quit because a laptop lid opened is exactly the reported
 // "I quit it and it came back on its own".
-//
-// Same harness as run(), plus a spy: spawn appends to a file, so a test can assert the app
-// was NOT launched — the stock stub only silences it.
-const runWithSpawnSpy = (scriptPath, home, argv = [], stdin = "{}") => {
-  const spy = path.join(home, "spawn-calls.txt");
-  execFileSync(
-    process.execPath,
-    ["-e", [
-      `require("node:child_process").execSync = () => { throw new Error("pgrep: no match"); };`,
-      `require("node:child_process").spawn = (cmd, args) => {`,
-      `  require("node:fs").appendFileSync(process.env.SPY, cmd + " " + args.join(" ") + "\\n");`,
-      `  return { unref() {} };`,
-      `};`,
-      `require(process.env.SCRIPT_PATH);`,
-    ].join("\n"), scriptPath, ...argv],
-    { env: { ...process.env, HOME: home, SCRIPT_PATH: scriptPath, SPY: spy }, input: stdin, stdio: "pipe" }
-  );
-  return spy;
-};
 
 const quitMarker = (home) => path.join(home, ".claude", "control-bar", "quit-intent");
 
 test("an explicit Quit survives a session resume", () => {
-  const home = sandbox();
-  fs.writeFileSync(quitMarker(home), "");
-  const spy = runWithSpawnSpy(lifecyclePath, home, ["start"],
-    JSON.stringify({ session_id: "r1", cwd: home, source: "resume" }));
-  assert.ok(fs.existsSync(quitMarker(home)), "the marker must outlive a resume");
-  assert.ok(!fs.existsSync(spy), "a resume must not bring a quit app back");
-  // The seed still lands: it is what clears a state frozen mid-turn, resume included.
-  const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "r1.json"), "utf8"));
-  assert.equal(state.state, "idle");
+  // All three resume-shaped sources: the list must stay in step with bootstrap.py's, and a
+  // value dropped from lifecycle.js alone would otherwise stay green here.
+  for (const source of ["resume", "compact", "fork"]) {
+    const home = sandbox();
+    fs.writeFileSync(quitMarker(home), "");
+    run(lifecyclePath, home, ["start"],
+      JSON.stringify({ session_id: "r1", cwd: home, source }));
+    assert.ok(fs.existsSync(quitMarker(home)), `the marker must outlive a ${source}`);
+    assert.ok(!fs.existsSync(spawnLog(home)), `a ${source} must not bring a quit app back`);
+    // The seed still lands: it is what clears a state frozen mid-turn, resume included.
+    const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "r1.json"), "utf8"));
+    assert.equal(state.state, "idle");
+  }
 });
 
 test("a genuinely new session voids the Quit and brings the app back", () => {
   const home = sandbox();
   fs.writeFileSync(quitMarker(home), "");
-  const spy = runWithSpawnSpy(lifecyclePath, home, ["start"],
+  run(lifecyclePath, home, ["start"],
     JSON.stringify({ session_id: "n2", cwd: home, source: "startup" }));
   assert.ok(!fs.existsSync(quitMarker(home)), "a new session is fresh consent");
-  assert.ok(fs.existsSync(spy), "and the app comes up for it");
+  assert.ok(fs.existsSync(spawnLog(home)), "and the app comes up for it");
 });
 
 test("a resume with no Quit on file still self-heals the app", () => {
   const home = sandbox();
-  const spy = runWithSpawnSpy(lifecyclePath, home, ["start"],
+  run(lifecyclePath, home, ["start"],
     JSON.stringify({ session_id: "r3", cwd: home, source: "resume" }));
-  assert.ok(fs.existsSync(spy), "no marker means nothing to honor — a crashed app relaunches");
+  assert.ok(fs.existsSync(spawnLog(home)),
+    "no marker means nothing to honor — a crashed app relaunches");
 });
 
 test("a payload without source keeps the pre-source behavior", () => {
   const home = sandbox();
   fs.writeFileSync(quitMarker(home), "");
-  const spy = runWithSpawnSpy(lifecyclePath, home, ["start"],
-    JSON.stringify({ session_id: "n4", cwd: home }));
+  run(lifecyclePath, home, ["start"], JSON.stringify({ session_id: "n4", cwd: home }));
   // An old Claude Code sends no source; treating that as a resume would leave the app
   // permanently down after one Quit.
   assert.ok(!fs.existsSync(quitMarker(home)));
-  assert.ok(fs.existsSync(spy));
+  assert.ok(fs.existsSync(spawnLog(home)));
 });
 
 // The js→swift seam. These files are parsed by Session.init in Sources/main.swift — a second,
