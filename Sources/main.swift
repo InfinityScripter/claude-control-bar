@@ -1590,7 +1590,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         var line = truncated(sessionName(s))
         if !s.branch.isEmpty { line += " · " + truncated(s.branch, max: 22, keep: 20) }
         if eff == "thinking" || eff == "tool", s.startedAt > 0 {
-            line += "  " + elapsed(max(0, Int(now - s.startedAt)))
+            line += "  " + elapsed(max(0, (now - s.startedAt).clampedInt))
         }
         return line
     }
@@ -1618,7 +1618,7 @@ final class StatusController: NSObject, NSMenuDelegate {
                     spinning: (eff == "thinking" || eff == "tool"),
                     name: truncated(sessionName(s), max: nameMax, keep: nameMax),
                     branch: truncated(s.branch, max: 22, keep: 20),
-                    timer: working ? elapsed(max(0, Int(now - s.startedAt))) : nil,
+                    timer: working ? elapsed(max(0, (now - s.startedAt).clampedInt)) : nil,
                     context: s.pct, contextAssumed: s.assumed,
                     pillNormal: tag.isEmpty ? nil : pillImage(tag),
                     pillSelected: tag.isEmpty ? nil : pillImage(tag, selected: true),
@@ -2290,7 +2290,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         var parts: [String] = []
         if !activeBase.isEmpty { parts.append(activeBase) }
         if showTimer, startedAt > 0 {
-            parts.append(elapsed(max(0, Int(Date().timeIntervalSince1970 - startedAt))))
+            parts.append(elapsed(max(0, (Date().timeIntervalSince1970 - startedAt).clampedInt)))
         }
         let text = parts.joined(separator: "  ")
         // Assigning a title re-lays-out and redraws the whole status item. This is called on

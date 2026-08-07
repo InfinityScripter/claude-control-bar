@@ -236,12 +236,12 @@ extension StatusController {
             item.isEnabled = false
             menu.addItem(item)
         }
-        let age = Int(Date().timeIntervalSince1970 - limits.ts) / 60
+        let age = (Date().timeIntervalSince1970 - limits.ts).clampedInt / 60
         menu.addItem(header(age < 1 ? "  just measured" : "  measured \(age) min ago"))
     }
 
     private static func until(_ stamp: Double) -> String {
-        let left = Int(stamp - Date().timeIntervalSince1970)
+        let left = (stamp - Date().timeIntervalSince1970).clampedInt
         let hours = left / 3600, minutes = (left % 3600) / 60
         return hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
     }

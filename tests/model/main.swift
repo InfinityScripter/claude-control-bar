@@ -203,6 +203,18 @@ check(RunningProcesses.exists(named: ProcessInfo.processInfo.processName),
 check(!RunningProcesses.exists(named: "ccb-no-such-process"),
       "and one that is not, is not")
 
+// Int(Double) is a TRAPPING conversion — NaN or an out-of-range value crashes the process.
+// The doubles fed to it come from JSON files on disk (limits.json, state.d/*.json): written
+// sane by our own code, but a corrupted or hand-edited file must degrade to a wrong number,
+// not a crash loop that the self-relaunch walks straight back into on every menu open.
+check((9.9e30).clampedInt == Int.max, "an absurd timestamp clamps instead of trapping")
+check((-9.9e30).clampedInt == Int.min, "and so does an absurdly negative one")
+check(Double.nan.clampedInt == 0, "NaN reads as zero, not a crash")
+check(Double.infinity.clampedInt == Int.max, "infinity clamps to the edge")
+check((-Double.infinity).clampedInt == Int.min, "negative infinity clamps to the other edge")
+check((42.9).clampedInt == 42, "a normal value truncates exactly like Int() always did")
+check((-7.9).clampedInt == -7, "truncation toward zero holds for negatives too")
+
 // The python→swift seam. Everything above parses a fixture written BY HAND — the same schema
 // pinned twice independently, so a coordinated key rename passed both suites while the menu
 // silently emptied. This file is written by the real refresh() during the python suite
