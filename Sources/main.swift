@@ -2172,17 +2172,6 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
     }
 
-    // Read the last non-empty line of a (possibly large) file by tailing ~8KB.
-    func lastLine(ofFileAt path: String) -> String? {
-        guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
-        defer { try? fh.close() }
-        let size = (try? fh.seekToEnd()) ?? 0
-        let chunk: UInt64 = 8192
-        try? fh.seek(toOffset: size > chunk ? size - chunk : 0)
-        guard let data = try? fh.readToEnd(), let s = String(data: data, encoding: .utf8) else { return nil }
-        return s.split(separator: "\n").last { !$0.isEmpty }.map(String.init)
-    }
-
     // What the transcript's last turn line (a user/assistant message, ignoring the bookkeeping
     // Claude Code appends after an interrupt) says about the session: the interrupt marker, and
     // the record's timestamp. Both answers are computed when the file changes and cached — a
