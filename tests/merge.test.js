@@ -354,3 +354,48 @@ test("an event arriving without the env var keeps the bundle id already on file"
   const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "s7.json"), "utf8"));
   assert.equal(state.term_bundle, "com.todesktop.230313mzl4w4u92");
 });
+
+// The js→swift seam. These files are parsed by Session.init in Sources/main.swift — a second,
+// independent implementation of the same schema. Nothing else ties the two together: rename a
+// key on either side and every suite stays green while sessions vanish from the menu or
+// liveness breaks. This pin makes the writer's half of that contract explicit; the reader's
+// half joins it when the session model moves out of main.swift into a test-linkable file.
+
+test("the state file a hook event writes carries exactly the keys the swift reader parses", () => {
+  const home = sandbox();
+  const transcript = path.join(home, "t.jsonl");
+  // With a measurable transcript the context block is present too — the fullest shape.
+  fs.writeFileSync(transcript, JSON.stringify({ type: "assistant", message: {
+    model: "claude-opus-4-8", content: [{ text: "hi" }], usage: { input_tokens: 1000 } } }));
+  fs.writeFileSync(path.join(home, ".claude", "control-bar", "model-windows.json"),
+    JSON.stringify({ models: { "claude-opus-4-8": 200000 } }));
+
+  run(updatePath, home, ["pre"], JSON.stringify({
+    session_id: "pin1", cwd: home, transcript_path: transcript, tool_name: "Bash",
+  }));
+
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "pin1.json"), "utf8"));
+  assert.deepEqual(Object.keys(state).sort(), [
+    "assumed", "cwd", "entrypoint", "label", "model", "pct", "pid", "project", "sessionId",
+    "started", "startedAt", "state", "term_bundle", "term_program", "tokens", "tool",
+    "transcript", "ts", "window",
+  ]);
+  assert.equal(typeof state.state, "string");
+  assert.equal(typeof state.pid, "number");
+  assert.equal(typeof state.ts, "number");
+  assert.equal(typeof state.started, "boolean");
+  assert.equal(typeof state.pct, "number");
+});
+
+test("the seeded session file carries exactly the keys the swift reader parses", () => {
+  const home = sandbox();
+  run(lifecyclePath, home, ["start"], JSON.stringify({ session_id: "pin2", cwd: home }));
+
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "pin2.json"), "utf8"));
+  assert.deepEqual(Object.keys(state).sort(), [
+    "cwd", "entrypoint", "label", "pid", "project", "sessionId", "started", "startedAt",
+    "state", "term_bundle", "term_program", "tool", "transcript", "ts",
+  ]);
+  assert.equal(state.started, false, "a merely-opened session stays out of the dropdown");
+  assert.equal(state.state, "idle");
+});

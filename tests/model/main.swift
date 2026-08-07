@@ -203,6 +203,32 @@ check(RunningProcesses.exists(named: ProcessInfo.processInfo.processName),
 check(!RunningProcesses.exists(named: "ccb-no-such-process"),
       "and one that is not, is not")
 
+// The python→swift seam. Everything above parses a fixture written BY HAND — the same schema
+// pinned twice independently, so a coordinated key rename passed both suites while the menu
+// silently emptied. This file is written by the real refresh() during the python suite
+// (SeamContract copies it out); parsing it here is the only check that crosses the language
+// border. Run the python suite first — CI does.
+let seamPath = FileManager.default.currentDirectoryPath + "/build/seam/mcp.json"
+if !FileManager.default.fileExists(atPath: seamPath) {
+    check(false, "seam fixture missing at \(seamPath) — run the python suite first "
+        + "(/usr/bin/python3 -m unittest discover -s tests), it writes build/seam/mcp.json")
+} else {
+    let seam = MCPModel(path: seamPath)
+    check(seam.reloadIfChanged(), "the mcp.json the real refresh() wrote parses")
+    let seamWiki = seam.servers.first { $0.name == "wiki" }
+    check(seamWiki != nil, "a user server survives the python→swift trip")
+    check(seamWiki?.tools.count == 3, "its tool list arrives whole")
+    check(seamWiki?.tools.first { $0.name == "Delete" }?.enabled == false,
+          "a deny rule python computed reads as a switched-off tool here")
+    check(seamWiki?.tools.first { $0.name == "Read" }?.params.first?.required == true,
+          "tool parameters survive the real writer, not just the hand fixture")
+    check(seam.servers.first { $0.name == "claude.ai Figma" }?.toolPrefix == "b6d68fb1",
+          "a connector's prefix is its uuid across the border — the deny rule depends on it")
+    check(seam.servers.first { $0.name == "off-one" }?.disabled == true,
+          "a server disabled in settings arrives disabled")
+    check(seam.waitingAuth == ["needs-oauth"], "the waiting-for-auth list crosses over")
+}
+
 try? FileManager.default.removeItem(atPath: dir)
 try? FileManager.default.removeItem(atPath: sessionsRoot)
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")

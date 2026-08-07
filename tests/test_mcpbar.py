@@ -8,10 +8,12 @@
 import glob
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
@@ -1243,6 +1245,120 @@ class UsageToken(unittest.TestCase):
         result = mcpbar.fetch_limits()
         self.assertIn("не удался", result)
         self.assertFalse(os.path.exists(mcpbar.LIMITS))
+
+
+class SeamContract(unittest.TestCase):
+    """Шов python→swift: mcp.json пишет настоящий refresh(), а не рукописная фикстура.
+
+    До этого теста схему пинили дважды независимо — питон в своих тестах, свифт в своих,
+    оба на выдуманных данных. Согласованное переименование ключа (toolNames, deniedTools,
+    toolPrefix…) проходило все сьюты зелёными, а меню молча пустело. Здесь стабы стоят
+    только на границе subprocess/сети; кеш описаний, deny-правила и кеш десктопа читает
+    реальный код. Результат уезжает в build/seam/mcp.json — swift-ская model-проверка
+    парсит именно его (запускать питон раньше свифта, CI так и делает).
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        tmp = self._dir.name
+        desktop = os.path.join(tmp, "desktop-sessions")
+        os.makedirs(desktop)
+        patched = {
+            "ROOT": tmp,
+            "STATE": os.path.join(tmp, "mcp.json"),
+            "LIMITS": os.path.join(tmp, "limits.json"),
+            "SESSIONS": os.path.join(tmp, "state.d"),
+            "CONFIG": os.path.join(tmp, "claude.json"),
+            "SETTINGS": os.path.join(tmp, "settings.json"),
+            "NEEDS_AUTH": os.path.join(tmp, "needs-auth.json"),
+            "LOCK": os.path.join(tmp, "refresh.lock"),
+            "DESCRIPTIONS": os.path.join(tmp, "descriptions.json"),
+            "DESKTOP_SESSIONS": desktop,
+            "MCP_LOGS": os.path.join(tmp, "no-logs", "mcp-logs-*"),
+            "TRANSCRIPTS": os.path.join(tmp, "no-transcripts", "*.jsonl"),
+            # Сеть и Claude Code за границей: сам ответ health-check — фикстура,
+            # всё после него — боевой код.
+            "run_health_check": lambda cwd="/": (
+                [
+                    {"name": "wiki", "target": "", "status": "✔ Connected", "state": mcpbar.OK},
+                    {"name": "claude.ai Figma", "target": "", "status": "✔ Connected",
+                     "state": mcpbar.OK},
+                ],
+                None,
+            ),
+            "session_cwds": lambda: [],
+            "model_windows": lambda: {},
+        }
+        self.saved = {k: getattr(mcpbar, k) for k in patched}
+        for k, v in patched.items():
+            setattr(mcpbar, k, v)
+
+        write = lambda path, data: mcpbar.write_json(path, data)
+        write(mcpbar.CONFIG, {"mcpServers": {"wiki": {"command": "true"}}})
+        write(mcpbar.SETTINGS, {
+            "permissions": {"deny": ["mcp__wiki__Delete", "mcp__b6d68fb1__get_screenshot"]},
+            "deniedMcpServers": [{"serverName": "off-one"}],
+        })
+        write(mcpbar.NEEDS_AUTH, {"needs-oauth": True})
+        # Свежий кеш с текущей версией формата — todo пуст, ни один сервер не поднимается.
+        write(mcpbar.DESCRIPTIONS, {"wiki": {
+            "ts": int(time.time()), "v": mcpbar.DESCRIPTIONS_FORMAT,
+            "tools": [
+                {"name": "Read", "description": "read a page",
+                 "params": [{"name": "id", "type": "integer", "required": True,
+                             "description": "page id"}]},
+                {"name": "Write", "description": "write a page", "params": []},
+                {"name": "Delete", "description": "delete a page", "params": []},
+            ],
+        }})
+        # Кеш десктопа — источник uuid коннектора: правило deny собирается из него,
+        # а не из отображаемого имени (реальный баг 0.5.0).
+        write(os.path.join(desktop, "session.json"), {"remoteMcpServersConfig": [
+            {"name": "Figma", "uuid": "b6d68fb1",
+             "tools": [{"name": "get_screenshot", "description": "shot", "inputSchema": {}}]},
+        ]})
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(mcpbar, k, v)
+        self._dir.cleanup()
+
+    def test_схема_написанного_настоящим_refresh_закреплена_и_уезжает_свифту(self):
+        data = mcpbar.refresh()
+
+        self.assertEqual(
+            sorted(data.keys()),
+            ["auth", "checked_at", "denyRules", "limits", "servers", "sessions"],
+            "верхний уровень mcp.json — ровно эти ключи, их читает MCPModel.swift",
+        )
+        by_name = {s["name"]: s for s in data["servers"]}
+        wiki = by_name["wiki"]
+        self.assertEqual(
+            sorted(wiki.keys()),
+            ["deniedTools", "disabled", "name", "source", "state", "status",
+             "target", "toolDocs", "toolNames", "toolParams", "toolPrefix", "tools"],
+            "инвентарь ключей сервера — то, что парсит MCPModel.server(from:)",
+        )
+        self.assertEqual(wiki["source"], "user")
+        self.assertEqual(wiki["toolNames"], ["Delete", "Read", "Write"])
+        self.assertEqual(wiki["deniedTools"], ["Delete"])
+        self.assertEqual(wiki["toolParams"]["Read"][0]["required"], True)
+        self.assertEqual(wiki["tools"], 3)
+        # Приставка коннектора — uuid из кеша десктопа, не отображаемое имя.
+        figma = by_name["claude.ai Figma"]
+        self.assertEqual(figma["toolPrefix"], "b6d68fb1")
+        self.assertEqual(figma["source"], "claude.ai")
+        self.assertEqual(figma["deniedTools"], ["get_screenshot"])
+        # Выключенный сервер воскресает строкой из deniedMcpServers.
+        self.assertEqual(by_name["off-one"]["state"], mcpbar.OFF)
+        self.assertTrue(by_name["off-one"]["disabled"])
+        self.assertEqual(data["auth"], ["needs-oauth"])
+
+        # Артефакт для swift-стороны шва: model-проверка читает этот файл.
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        seam_dir = os.path.join(repo, "build", "seam")
+        os.makedirs(seam_dir, exist_ok=True)
+        shutil.copyfile(mcpbar.STATE, os.path.join(seam_dir, "mcp.json"))
 
 
 if __name__ == "__main__":
