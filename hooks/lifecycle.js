@@ -64,16 +64,23 @@ setTimeout(run, 1000); // hooks always pipe stdin, but never hang the session
 
 function run() {
   if (done) return; done = true;
-  let id = "", cwd = "", transcript = "";
+  let id = "", cwd = "", transcript = "", source = "";
   // The transcript path is carried from the very first event so the next hook can measure the
   // context window without waiting for one that happens to include it.
-  try { const j = JSON.parse(input); id = j.session_id; cwd = j.cwd || ""; transcript = j.transcript_path || ""; } catch {}
+  try { const j = JSON.parse(input); id = j.session_id; cwd = j.cwd || ""; transcript = j.transcript_path || ""; source = j.source || ""; } catch {}
   id = safeId(id);
   const statePath = path.join(stateDir, id + ".json");
 
   if (event === "start") {
-    // A new session voids a prior explicit Quit (see update.js's self-relaunch suppress).
-    try { fs.rmSync(path.join(dir, "quit-intent"), { force: true }); } catch {}
+    // SessionStart fires for brand-new sessions AND for resumes (--resume/--continue, wake
+    // after sleep, compaction). Only a genuinely new session voids a prior explicit Quit (see
+    // update.js's self-relaunch suppress) — a resume honors it, or the app "comes back on its
+    // own" the moment a laptop lid opens. No source at all is an old Claude Code: it keeps the
+    // pre-source behavior, else one Quit would leave the app permanently down there.
+    const resumed = ["resume", "compact", "fork"].includes(source);
+    if (!resumed) {
+      try { fs.rmSync(path.join(dir, "quit-intent"), { force: true }); } catch {}
+    }
     // Leftovers from a crash would inflate the count, so they go — but only the ones whose
     // process is actually gone. The app not running is no evidence a SESSION is dead: two
     // sessions opening at once both see it down, and the second one's blanket wipe took out
@@ -86,7 +93,9 @@ function run() {
       // the dropdown until it has real activity (update.js flips started:true on a prompt/tool).
       writeAtomic(statePath, { state: "idle", label: "", tool: "", project: cwd ? path.basename(cwd) : "", cwd, sessionId: id, transcript, entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT || "", term_program: process.env.TERM_PROGRAM || "", term_bundle: process.env.__CFBundleIdentifier || "", pid: process.ppid, started: false, startedAt: 0, ts: Math.floor(Date.now() / 1000) });
     } catch {}
-    cp.spawn("open", ["-g", "-b", BUNDLE_ID], { stdio: "ignore", detached: true }).unref();
+    if (!resumed || !fs.existsSync(path.join(dir, "quit-intent"))) {
+      cp.spawn("open", ["-g", "-b", BUNDLE_ID], { stdio: "ignore", detached: true }).unref();
+    }
   } else if (event === "end") {
     // Removing the file drops this session from the aggregate — this is also what recovers a
     // frozen animation on force-quit (SessionEnd fires, but no Stop). No state rewrite needed.

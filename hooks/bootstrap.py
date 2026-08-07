@@ -21,6 +21,27 @@ ROOT = os.path.join(HOME, ".claude", "control-bar")
 PATHS = os.path.join(ROOT, "paths.json")
 OWNER = os.path.join(ROOT, "owner.json")
 SETTINGS = os.path.join(HOME, ".claude", "settings.json")
+# Written by the app's Quit menu item. lifecycle.js deletes it on a genuinely new session;
+# this hook runs IN PARALLEL with lifecycle.js on the same SessionStart, so it applies the
+# same source rule itself instead of relying on that deletion having happened yet.
+QUIT_MARKER = os.path.join(ROOT, "quit-intent")
+RESUMED_SOURCES = ("resume", "compact", "fork")
+
+
+def may_launch(payload):
+    """Whether this SessionStart is consent to bring the app up.
+
+    SessionStart fires for brand-new sessions AND for resumes (--resume/--continue, wake
+    after sleep, compaction). Only a new session (source startup/clear) voids an explicit
+    Quit; a resume honors the marker — or the app "comes back on its own" the moment a
+    laptop lid opens. No source at all is an old Claude Code: it keeps the pre-source
+    behavior, else one Quit would leave the app permanently down there.
+    """
+    if not isinstance(payload, dict):
+        return True
+    if payload.get("source") in RESUMED_SOURCES:
+        return not os.path.exists(QUIT_MARKER)
+    return True
 
 
 def identity():
@@ -227,11 +248,17 @@ def build(target):
 
 
 def main():
-    # The hook gets its event on stdin. Nothing here needs it, but the pipe has to be drained.
+    # The hook gets its event on stdin; `source` decides whether a launch is allowed below.
+    # The pipe has to be drained either way.
+    raw = ""
     try:
-        sys.stdin.read()
+        raw = sys.stdin.read()
     except Exception:
         pass
+    try:
+        payload = json.loads(raw or "{}")
+    except Exception:
+        payload = {}
 
     if sys.platform != "darwin":
         return 0
@@ -243,7 +270,7 @@ def main():
     # believes it manages, and both copies would sit in the menu bar at once. The plugin defers
     # to it and builds its own copy only when that slot is empty.
     if bundle_version(SYSTEM_APP):
-        if not running():
+        if not running() and may_launch(payload):
             subprocess.Popen(["/usr/bin/open", "-g", "-b", BUNDLE_ID],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return 0
@@ -268,7 +295,7 @@ def main():
         finally:
             lock.close()
 
-    if not running():
+    if not running() and may_launch(payload):
         subprocess.Popen(["/usr/bin/open", "-g", "-b", BUNDLE_ID],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return 0

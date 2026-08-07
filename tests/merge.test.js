@@ -355,6 +355,72 @@ test("an event arriving without the env var keeps the bundle id already on file"
   assert.equal(state.term_bundle, "com.todesktop.230313mzl4w4u92");
 });
 
+// An explicit menu Quit writes ~/.claude/control-bar/quit-intent. SessionStart fires for
+// brand-new sessions AND for resumes (--resume/--continue, wake after sleep, compaction) —
+// and both lifecycle.js and bootstrap.py launch the app from it. Only a genuinely new session
+// is fresh consent: voiding the Quit because a laptop lid opened is exactly the reported
+// "I quit it and it came back on its own".
+//
+// Same harness as run(), plus a spy: spawn appends to a file, so a test can assert the app
+// was NOT launched — the stock stub only silences it.
+const runWithSpawnSpy = (scriptPath, home, argv = [], stdin = "{}") => {
+  const spy = path.join(home, "spawn-calls.txt");
+  execFileSync(
+    process.execPath,
+    ["-e", [
+      `require("node:child_process").execSync = () => { throw new Error("pgrep: no match"); };`,
+      `require("node:child_process").spawn = (cmd, args) => {`,
+      `  require("node:fs").appendFileSync(process.env.SPY, cmd + " " + args.join(" ") + "\\n");`,
+      `  return { unref() {} };`,
+      `};`,
+      `require(process.env.SCRIPT_PATH);`,
+    ].join("\n"), scriptPath, ...argv],
+    { env: { ...process.env, HOME: home, SCRIPT_PATH: scriptPath, SPY: spy }, input: stdin, stdio: "pipe" }
+  );
+  return spy;
+};
+
+const quitMarker = (home) => path.join(home, ".claude", "control-bar", "quit-intent");
+
+test("an explicit Quit survives a session resume", () => {
+  const home = sandbox();
+  fs.writeFileSync(quitMarker(home), "");
+  const spy = runWithSpawnSpy(lifecyclePath, home, ["start"],
+    JSON.stringify({ session_id: "r1", cwd: home, source: "resume" }));
+  assert.ok(fs.existsSync(quitMarker(home)), "the marker must outlive a resume");
+  assert.ok(!fs.existsSync(spy), "a resume must not bring a quit app back");
+  // The seed still lands: it is what clears a state frozen mid-turn, resume included.
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "r1.json"), "utf8"));
+  assert.equal(state.state, "idle");
+});
+
+test("a genuinely new session voids the Quit and brings the app back", () => {
+  const home = sandbox();
+  fs.writeFileSync(quitMarker(home), "");
+  const spy = runWithSpawnSpy(lifecyclePath, home, ["start"],
+    JSON.stringify({ session_id: "n2", cwd: home, source: "startup" }));
+  assert.ok(!fs.existsSync(quitMarker(home)), "a new session is fresh consent");
+  assert.ok(fs.existsSync(spy), "and the app comes up for it");
+});
+
+test("a resume with no Quit on file still self-heals the app", () => {
+  const home = sandbox();
+  const spy = runWithSpawnSpy(lifecyclePath, home, ["start"],
+    JSON.stringify({ session_id: "r3", cwd: home, source: "resume" }));
+  assert.ok(fs.existsSync(spy), "no marker means nothing to honor — a crashed app relaunches");
+});
+
+test("a payload without source keeps the pre-source behavior", () => {
+  const home = sandbox();
+  fs.writeFileSync(quitMarker(home), "");
+  const spy = runWithSpawnSpy(lifecyclePath, home, ["start"],
+    JSON.stringify({ session_id: "n4", cwd: home }));
+  // An old Claude Code sends no source; treating that as a resume would leave the app
+  // permanently down after one Quit.
+  assert.ok(!fs.existsSync(quitMarker(home)));
+  assert.ok(fs.existsSync(spy));
+});
+
 // The js→swift seam. These files are parsed by Session.init in Sources/main.swift — a second,
 // independent implementation of the same schema. Nothing else ties the two together: rename a
 // key on either side and every suite stays green while sessions vanish from the menu or
