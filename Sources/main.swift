@@ -425,7 +425,19 @@ final class StatusController: NSObject, NSMenuDelegate {
     // "install the command line developer tools?" dialog — from a menu bar app, out of nowhere.
     // A missing toolchain must read as "not available", never as a prompt. The fixed paths cover
     // the stock installs; `xcode-select -p` (prompt-free) covers one moved with --switch.
-    lazy var canBuildFromSource: Bool = {
+    //
+    // Warmed ONCE on a background queue at launch. This used to be a lazy var, and its first
+    // touch — inside menuNeedsUpdate, on the main thread — spawned xcode-select synchronously
+    // while the user was opening the menu. Until the warm-up lands (sub-second) the update row
+    // takes its no-toolchain shape, which is merely the release-page fallback.
+    var canBuildFromSource = false
+    func warmCanBuildFromSource() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let answer = Self.probeToolchain()
+            DispatchQueue.main.async { self?.canBuildFromSource = answer }
+        }
+    }
+    static func probeToolchain() -> Bool {
         let stock = ["/Library/Developer/CommandLineTools/usr/bin/swiftc",
                      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"]
         if stock.contains(where: { FileManager.default.isExecutableFile(atPath: $0) }) { return true }
@@ -443,7 +455,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         return [root + "/usr/bin/swiftc",
                 root + "/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"]
             .contains { FileManager.default.isExecutableFile(atPath: $0) }
-    }()
+    }
     var iconCache: [Int: NSImage] = [:]  // composed menu bar frames, rebuilt only when the look changes
     var iconCacheKey = ""
     var startedAt: Double = 0  // unix seconds the current turn began (0 = no clock)
@@ -610,6 +622,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         retirePredecessors()
         ensureHooksInstalled()
         checkForUpdate()
+        warmCanBuildFromSource()
     }
 
     // Bundles this project shipped under earlier names. See identity.env: upstream's
