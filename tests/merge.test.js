@@ -429,11 +429,10 @@ test("a payload without source keeps the pre-source behavior", () => {
   assert.ok(fs.existsSync(spawnLog(home)));
 });
 
-// The js→swift seam. These files are parsed by Session.init in Sources/main.swift — a second,
-// independent implementation of the same schema. Nothing else ties the two together: rename a
-// key on either side and every suite stays green while sessions vanish from the menu or
-// liveness breaks. This pin makes the writer's half of that contract explicit; the reader's
-// half joins it when the session model moves out of main.swift into a test-linkable file.
+// The js→swift seam. These files are parsed by Session.init in Sources/Sessions.swift — a
+// second, independent implementation of the same schema. This pin holds the writer's half of
+// the contract; the reader's half is the seam fixture below, which the swift model checks
+// parse with the real Session initializer.
 
 test("the state file a hook event writes carries exactly the keys the swift reader parses", () => {
   const home = sandbox();

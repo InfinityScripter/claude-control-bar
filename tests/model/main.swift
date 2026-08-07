@@ -222,14 +222,23 @@ let sessionsDir = NSTemporaryDirectory() + "ccb-sessions-test/"
 try? FileManager.default.createDirectory(atPath: sessionsDir, withIntermediateDirectories: true)
 
 func makeSession(state: String, ts: Double, transcript: String = "") -> Session {
-    Session(json: ["state": state, "ts": ts, "transcript": transcript,
-                   "sessionId": "s", "pid": 1], id: "s")
+    Session(json: ["state": state, "ts": ts, "transcript": transcript, "pid": 1], id: "s")
 }
 func writeTranscript(_ name: String, lines: [String], mtime: Date? = nil) -> String {
     let path = sessionsDir + name
     try! lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
     if let mtime { try? FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: path) }
     return path
+}
+// The timestamp format real transcripts carry: fractional-second ISO-8601. A bare
+// ISO8601DateFormatter writes WITHOUT fractions, which exercises only turnTimestamp's
+// fallback parser — the primary branch (the one production hits) stayed untested and a
+// probe proved these checks kept passing with that branch broken.
+func turnRecord(ts: Double, content: String) -> String {
+    let iso = ISO8601DateFormatter()
+    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let stamp = iso.string(from: Date(timeIntervalSince1970: ts))
+    return "{\"type\":\"user\",\"timestamp\":\"\(stamp)\",\"message\":{\"content\":\"\(content)\"}}"
 }
 
 let nowTs = Date().timeIntervalSince1970
@@ -254,15 +263,11 @@ check(engine.effectiveState(makeSession(state: "thinking", ts: nowTs - 10, trans
 
 // The permission-answered net: a turn record younger than the prompt means the prompt is gone.
 let promptTs = nowTs - 60
-let answered = writeTranscript("answered.jsonl", lines: [
-    "{\"type\":\"user\",\"timestamp\":\"\(ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: promptTs + 30)))\",\"message\":{\"content\":\"denied\"}}",
-])
+let answered = writeTranscript("answered.jsonl", lines: [turnRecord(ts: promptTs + 30, content: "denied")])
 check(engine.effectiveState(makeSession(state: "permission", ts: promptTs, transcript: answered),
                             now: nowTs) == "idle",
       "a turn record younger than the prompt ends the permission wait")
-let stale = writeTranscript("stale.jsonl", lines: [
-    "{\"type\":\"user\",\"timestamp\":\"\(ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: promptTs - 30)))\",\"message\":{\"content\":\"before\"}}",
-])
+let stale = writeTranscript("stale.jsonl", lines: [turnRecord(ts: promptTs - 30, content: "before")])
 check(engine.effectiveState(makeSession(state: "permission", ts: promptTs, transcript: stale),
                             now: nowTs) == "permission",
       "a turn record older than the prompt does not end the wait")

@@ -204,12 +204,21 @@ class BuildTimeout(unittest.TestCase):
         with open(os.path.join(bootstrap.ROOT, "problems.log")) as fh:
             self.assertIn("timed out", fh.read())
 
+    def test_внутренний_потолок_с_запасом_под_внешним_хук_таймаутом(self):
+        """Равные потолки — гонка: Claude Code убивает хук раньше, чем сборка успеет
+        залогировать таймаут, а start_new_session уводит детей из досягаемости внешнего kill.
+        Дефолт build() обязан быть строго меньше timeout'а SessionStart в hooks.json."""
+        import inspect
+        hooks = json.load(open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks", "hooks.json")))
+        outer = hooks["hooks"]["SessionStart"][0]["hooks"][0]["timeout"]
+        inner = inspect.signature(bootstrap.build).parameters["timeout"].default
+        self.assertLess(inner, outer)
+
     def test_таймаут_убивает_всю_группу_а_не_только_bash(self):
         """bash порождает внука и умирает бы один — внук должен уйти вместе с группой."""
         pidfile = os.path.join(self._dir.name, "grandchild.pid")
-        self._write_build_script(
-            f"(echo $$ > /dev/null; sleep 30 & echo $! > {pidfile}; wait)\n"
-        )
+        self._write_build_script(f"(sleep 30 & echo $! > {pidfile}; wait)\n")
         bootstrap.build(os.path.join(self._dir.name, "out.app"), timeout=1)
         with open(pidfile) as fh:
             pid = int(fh.read().strip())

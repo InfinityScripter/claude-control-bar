@@ -33,11 +33,17 @@ CONTEXT_DIR = os.path.join(ROOT, "context.d")
 
 
 def read_json(path, default=None):
+    # Форма сверяется с default, как в mcpbar.py (обёртка statusLine — самостоятельный скрипт,
+    # общего модуля нет — три строки дублируются осознанно): битый или правленый руками файл
+    # с массивом наверху не должен ронять захват, которому запрещено падать.
     try:
         with open(path) as fh:
-            return json.load(fh)
+            parsed = json.load(fh)
     except Exception:
         return default
+    if default is not None and not isinstance(parsed, type(default)):
+        return default
+    return parsed
 
 
 def atomic_write(path, data):
@@ -79,7 +85,7 @@ def capture_limits(payload):
     # every second with refreshInterval set, and the figures move on the scale of minutes —
     # rewriting an identical record each redraw is pure disk churn. The timestamp is allowed
     # to age up to a minute, so "measured N min ago" stays honest without a write per redraw.
-    previous = read_json(LIMITS) or {}
+    previous = read_json(LIMITS, {})
     same = all(previous.get(k) == v for k, v in record.items() if k not in ("ts", "source"))
     if same and record["ts"] - (previous.get("ts") or 0) < 60:
         return
@@ -97,7 +103,7 @@ def learn_window(payload):
     model = ((payload.get("model") or {}).get("id") or "").lower()
     if not model or not isinstance(size, (int, float)) or size <= 0:
         return
-    cache = read_json(WINDOWS) or {}
+    cache = read_json(WINDOWS, {})
     observed = cache.get("observed") or {}
     if observed.get(model) == int(size):
         return
@@ -144,7 +150,7 @@ def capture_context(payload):
         "ts": int(time.time()),
     }
     path = os.path.join(CONTEXT_DIR, safe + ".json")
-    previous = read_json(path) or {}
+    previous = read_json(path, {})
     # Same rule as the limits: an identical record is not rewritten on every redraw, but the
     # timestamp is allowed to age only a minute — the reader treats a stale record as no
     # record, and a session sitting at one percentage would otherwise expire while still true.

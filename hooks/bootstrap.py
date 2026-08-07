@@ -70,11 +70,17 @@ SYSTEM_APP = os.path.join("/Applications", APP_NAME + ".app")
 
 
 def read_json(path, default=None):
+    # Форма сверяется с default, как в mcpbar.py (хук и панель — разные исполняемые, общего
+    # модуля нет — три строки дублируются осознанно): settings.json правится руками, и массив
+    # наверху там, где ждали словарь, ронял бы AttributeError весь хук.
     try:
         with open(path) as fh:
-            return json.load(fh)
+            parsed = json.load(fh)
     except Exception:
         return default
+    if default is not None and not isinstance(parsed, type(default)):
+        return default
+    return parsed
 
 
 def write_json(path, data):
@@ -88,7 +94,7 @@ def write_json(path, data):
 
 
 def plugin_version():
-    manifest = read_json(os.path.join(PLUGIN_ROOT, ".claude-plugin", "plugin.json")) or {}
+    manifest = read_json(os.path.join(PLUGIN_ROOT, ".claude-plugin", "plugin.json"), {})
     return manifest.get("version", "0.0.0")
 
 
@@ -179,7 +185,7 @@ def app_hooks_present():
     claimed while the duplicate hooks are still installed.
     """
     scripts = (os.path.join(ROOT, "update.js"), os.path.join(ROOT, "lifecycle.js"))
-    for entries in ((read_json(SETTINGS) or {}).get("hooks") or {}).values():
+    for entries in (read_json(SETTINGS, {}).get("hooks") or {}).values():
         for entry in entries or []:
             for hook in (entry or {}).get("hooks") or []:
                 command = hook.get("command") or ""
@@ -240,7 +246,11 @@ def log_problem(text):
         fh.write(text)
 
 
-def build(target, timeout=300):
+def build(target, timeout=240):
+    """timeout держит запас под внешним потолком хука (hooks.json: SessionStart timeout=300):
+    равные потолки — гонка, в которой Claude Code убивает хук раньше, чем сюда доедут
+    killpg и запись в problems.log, а start_new_session уводит детей сборки из группы,
+    которую внешний kill вообще способен достать."""
     script = os.path.join(PLUGIN_ROOT, "build.sh")
     if not os.path.exists(script):
         return False
@@ -248,9 +258,10 @@ def build(target, timeout=300):
     # убивал только непосредственного ребёнка (bash), а его swiftc/lipo/codesign жили дальше
     # без родителя. Сам TimeoutExpired никто не ловил — хук падал трейсбеком, который Claude
     # Code показывает как ошибку хука; затянувшаяся сборка — событие для problems.log.
+    # stdout сборки не читается никем — в DEVNULL, не буферить зря.
     import signal
 
-    proc = subprocess.Popen(["/bin/bash", script], stdout=subprocess.PIPE,
+    proc = subprocess.Popen(["/bin/bash", script], stdout=subprocess.DEVNULL,
                             stderr=subprocess.PIPE, text=True,
                             env={**os.environ, "CONTROL_BAR_APP": target},
                             start_new_session=True)
@@ -261,8 +272,18 @@ def build(target, timeout=300):
             os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
             pass
-        proc.communicate()
-        log_problem(f"build timed out after {timeout}s and was killed\n")
+        # Слив ОГРАНИЧЕН по времени: communicate() ждёт EOF пайпов, а не смерти pid — потомок,
+        # ушедший из группы (setsid внутри сборки), держал бы write-конец вечно, и хук висел
+        # бы молча без следа в логе. Успевший слиться частичный stderr — последние слова
+        # компилятора — идёт в лог, а не выбрасывается.
+        try:
+            _, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            log_problem(f"build timed out after {timeout}s; SIGKILL sent but the tree did not "
+                        f"exit within 5s — a descendant may have escaped the group\n")
+            return False
+        log_problem(f"build timed out after {timeout}s and was killed; last stderr:\n"
+                    f"{(stderr or '')[-2000:]}\n")
         return False
     if proc.returncode != 0:
         log_problem(f"build failed:\n{stderr[-2000:]}\n")

@@ -1,4 +1,4 @@
-import Cocoa
+import Foundation
 
 // The per-session state model, separated from the UI so the model checks can hold it: every
 // serious bug of the 0.7.x review lived in logic main.swift kept untestable. Sources/main.swift
@@ -53,7 +53,8 @@ struct Session {
 
 /// The state machine behind every session row and the menu bar icon.
 final class SessionEngine {
-    var turnLineCache: [String: (size: UInt64, mtime: Date, interrupted: Bool, turnTs: Double?)] = [:]
+    // private so the compiler guards the seam: dropCache is the one sanctioned door in.
+    private var turnLineCache: [String: (size: UInt64, mtime: Date, interrupted: Bool, turnTs: Double?)] = [:]
 
     /// A dead session's transcript leaves the cache with it — keyed by path, not id.
     func dropCache(forTranscript path: String) { turnLineCache[path] = nil }
@@ -72,9 +73,23 @@ final class SessionEngine {
             // transcript nets below this is a last resort, and a frozen amber dot outranks
             // every live session.
             let cap: Double = s.state == "permission" ? 1800 : (s.state == "tool" ? 3600 : 900)
-            if now - s.ts > cap, !streamingRecently(s, now: now) { return "idle" }
-            if !s.transcript.isEmpty {
-                let facts = turnFacts(ofFileAt: s.transcript)
+            let facts = s.transcript.isEmpty ? nil : turnFacts(ofFileAt: s.transcript)
+            if now - s.ts > cap {
+                // A streaming transcript is proof of life past the cap for a THINKING session:
+                // records append every ~1.7s median while the model streams, so a fresh mtime
+                // means work, not a wedge. Extension only — never demotion — so it cannot
+                // collide with the v0.5.6 decision against turn-record-based demotion. Tool
+                // states get no such net on purpose: the transcript is silent by design while
+                // a tool runs (its record lands at completion), which is why their cap is an
+                // hour instead. The mtime comes from the turnFacts stat above — this path used
+                // to stat the same file a second time for the same answer.
+                var streaming = false
+                if s.state == "thinking", let mtime = facts?.mtime {
+                    streaming = now - mtime.timeIntervalSince1970 <= 120
+                }
+                if !streaming { return "idle" }
+            }
+            if let facts {
                 if facts.interrupted { return "idle" }
                 // While a permission prompt waits, the transcript is silent — the tool_use that
                 // opened it is already on disk. So a turn record younger than the prompt means
@@ -90,31 +105,19 @@ final class SessionEngine {
         return s.state == "done" ? "idle" : s.state
     }
 
-    // A streaming transcript is proof of life past the cap for a THINKING session: records
-    // append every ~1.7s median while the model streams, so a fresh mtime means work, not a
-    // wedge. Extension only — never demotion — so it cannot collide with the v0.5.6 decision
-    // against turn-record-based demotion. Tool states get no such net on purpose: the
-    // transcript is silent by design while a tool runs (its record lands at completion),
-    // which is why their cap is an hour instead. Costs one stat(), and only for a session
-    // already past its cap — the common case never gets here.
-    private func streamingRecently(_ s: Session, now: Double) -> Bool {
-        guard s.state == "thinking", !s.transcript.isEmpty,
-              let attrs = try? FileManager.default.attributesOfItem(atPath: s.transcript),
-              let mtime = attrs[.modificationDate] as? Date else { return false }
-        return now - mtime.timeIntervalSince1970 <= 120
-    }
-
     // What the transcript's last turn line (a user/assistant message, ignoring the bookkeeping
-    // Claude Code appends after an interrupt) says about the session: the interrupt marker, and
-    // the record's timestamp. Both answers are computed when the file changes and cached — a
-    // sampling pass once put the raw per-tick read among the timer's top costs, and parsing the
-    // same unchanged line every tick is the same class of waste. One stat() per tick otherwise.
-    func turnFacts(ofFileAt path: String) -> (interrupted: Bool, turnTs: Double?) {
+    // Claude Code appends after an interrupt) says about the session: the interrupt marker, the
+    // record's timestamp, and the file's own mtime (the streaming-proof above rides on it — one
+    // stat serves both questions). Marker and timestamp are computed when the file changes and
+    // cached — a sampling pass once put the raw per-tick read among the timer's top costs, and
+    // parsing the same unchanged line every tick is the same class of waste. One stat() per
+    // tick otherwise.
+    private func turnFacts(ofFileAt path: String) -> (interrupted: Bool, turnTs: Double?, mtime: Date) {
         let attrs = try? FileManager.default.attributesOfItem(atPath: path)
         let size = (attrs?[.size] as? NSNumber)?.uint64Value ?? 0
         let mtime = attrs?[.modificationDate] as? Date ?? .distantPast
         if let hit = turnLineCache[path], hit.size == size, hit.mtime == mtime {
-            return (hit.interrupted, hit.turnTs)
+            return (hit.interrupted, hit.turnTs, mtime)
         }
         let line = readLastTurnLine(ofFileAt: path)
         let interrupted = line.map(Transcript.wasInterrupted) ?? false
@@ -126,7 +129,7 @@ final class SessionEngine {
             NSLog("ClaudeControlBar: turn record without a parseable timestamp — transcript format drift? \(path)")
         }
         turnLineCache[path] = (size, mtime, interrupted, turnTs)
-        return (interrupted, turnTs)
+        return (interrupted, turnTs, mtime)
     }
 
     private func readLastTurnLine(ofFileAt path: String) -> String? {
