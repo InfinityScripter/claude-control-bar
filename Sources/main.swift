@@ -1817,6 +1817,19 @@ final class StatusController: NSObject, NSMenuDelegate {
             NSWorkspace.shared.open(url)
             return
         }
+        // Extension-panel session: jump to the CONVERSATION, not just the editor. The Claude
+        // Code extension registers a URI handler (read out of its extension.js):
+        // <scheme>://anthropic.claude-code/open?session=<id> resumes exactly this session in
+        // the panel. The scheme comes from the editor's own Info.plist — Cursor says "cursor",
+        // VS Code "vscode" — so no fork catalog; `open -b` pins the receiving app in case two
+        // forks claim one scheme. An editor without the handler still comes to the front.
+        if entrypoint == "claude-vscode", !termBundle.isEmpty, let scheme = urlScheme(ofBundle: termBundle) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            p.arguments = ["-b", termBundle, "\(scheme)://anthropic.claude-code/open?session=\(id)"]
+            try? p.run()
+            return
+        }
         // The hooks record __CFBundleIdentifier, which names the exact hosting app — the
         // TERM_PROGRAM map below cannot: Cursor, Windsurf and VS Code all report "vscode"
         // (so the click opened the wrong editor), and the IDE extension panel sets no
@@ -1844,6 +1857,15 @@ final class StatusController: NSObject, NSMenuDelegate {
         try? p.run()
     }
 
+
+    // First CFBundleURLTypes scheme of the app carrying this bundle id; nil when the app is
+    // gone or registers no URL scheme at all.
+    func urlScheme(ofBundle bundleID: String) -> String? {
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID),
+              let types = Bundle(url: appURL)?.infoDictionary?["CFBundleURLTypes"] as? [[String: Any]]
+        else { return nil }
+        return types.compactMap { ($0["CFBundleURLSchemes"] as? [String])?.first }.first
+    }
 
     @objc func chooseColor(_ sender: NSMenuItem) {
         guard let sys = sender.representedObject as? Bool else { return }

@@ -118,7 +118,8 @@ observed from a real `statusLine` payload replaces the guess permanently.
   (the Claude Code extension panel, or the built-in terminal of Cursor / VS Code / Windsurf),
   **APP** for the desktop app. Click a row to bring the app hosting that session to the front —
   the hooks record which bundle launched it, so the click lands on *that* editor, not on
-  whatever `TERM_PROGRAM` claims (every VS Code fork says `vscode`).
+  whatever `TERM_PROGRAM` claims (every VS Code fork says `vscode`). An extension-panel
+  session goes further: the click opens that very conversation in the editor's Claude panel.
   **Local sessions only:** everything here is written by hooks firing on this machine. A session
   running anywhere else — over ssh, in a cloud worktree, on claude.ai in the browser — leaves no
   state here, so it is not listed and cannot be focused from here.
