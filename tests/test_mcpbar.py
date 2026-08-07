@@ -1247,6 +1247,43 @@ class UsageToken(unittest.TestCase):
         self.assertFalse(os.path.exists(mcpbar.LIMITS))
 
 
+class ServerChildReaping(unittest.TestCase):
+    """Опрошенный сервер не имеет права пережить опрос.
+
+    finally делал terminate() без wait()/kill(): сервер, игнорирующий SIGTERM (или просто
+    медленно умирающий), оставался жить. Кеш для неответившего не заполняется, поэтому его
+    переопрашивают каждые ~10 минут — по свежему сироте за цикл, неделями.
+    """
+
+    def test_сервер_игнорирующий_sigterm_мёртв_к_возврату_функции(self):
+        tmp = tempfile.TemporaryDirectory()
+        pidfile = os.path.join(tmp.name, "pid")
+        # Дважды живучий: SIGTERM игнорирует, закрытие stdin переживает вечным сном.
+        stubborn = (
+            "import os,signal,sys,time\n"
+            f"open({pidfile!r},'w').write(str(os.getpid()))\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "sys.stdin.read()\n"
+            "while True: time.sleep(1)\n"
+        )
+        config = {"command": "/usr/bin/python3", "args": ["-c", stubborn]}
+        try:
+            result = mcpbar.ask_server_for_tools("stubborn", config, timeout=2)
+            self.assertIsNone(result)
+            with open(pidfile) as fh:
+                pid = int(fh.read())
+            try:
+                os.kill(pid, 0)
+                alive = True
+            except ProcessLookupError:
+                alive = False
+            if alive:
+                os.kill(pid, 9)  # не оставлять сироту после провала теста
+            self.assertFalse(alive, "ребёнок пережил ask_server_for_tools")
+        finally:
+            tmp.cleanup()
+
+
 class UsagePayloadDrift(unittest.TestCase):
     """Эндпоинт недокументирован — форма ответа может смениться в любой день.
 

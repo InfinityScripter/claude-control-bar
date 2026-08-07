@@ -518,9 +518,21 @@ def ask_server_for_tools(name, config, timeout=20, cwd=None):
     except Exception:
         return None
     finally:
+        # terminate() без wait() оставлял жить сервер, игнорирующий SIGTERM, — и кеш для
+        # неответившего не заполняется, так что каждый следующий refresh плодил ему брата.
+        # Ступени: закрыть stdin (stdio-серверам это штатный сигнал уйти) → SIGTERM →
+        # два тика подождать → SIGKILL. wait() после kill забирает зомби.
         try:
             proc.stdin.close()
+        except Exception:
+            pass
+        try:
             proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
         except Exception:
             pass
 
