@@ -7,6 +7,29 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.7.0] - 2026-08-07
+
+### Fixed
+
+- **A session row click focuses the app that actually hosts the session.** The click used to
+  resolve the app from `TERM_PROGRAM`, and every VS Code fork inherits `vscode` — so a session
+  living in Cursor's terminal opened Visual Studio Code, and a session in the IDE extension
+  panel (which sets no `TERM_PROGRAM` at all) opened nothing. The hooks now record
+  `__CFBundleIdentifier`, the bundle id LaunchServices stamps on every process launched from an
+  app bundle, and the click prefers `open -b <id>` — no name catalog to maintain, and a tmux
+  session (`TERM_PROGRAM` says `tmux`, an app `open -a` cannot find) now focuses the terminal
+  that launched the tmux server. The `TERM_PROGRAM` map stays as the fallback for ssh and
+  pre-upgrade state files.
+
+### Added
+
+- **An IDE badge.** A session living inside an editor — the Claude Code extension panel or a
+  VS Code-family integrated terminal (Cursor, Windsurf, VS Code) — now wears **IDE**;
+  standalone terminals keep **CLI**, the desktop app keeps **APP**.
+- **The README says out loud that sessions are local.** The whole Sessions section is fed by
+  hooks firing on this machine; a session running elsewhere (ssh, a cloud worktree, the
+  browser) writes no state here, so it is not listed and cannot be focused from here.
+
 ## [0.6.0] - 2026-08-07
 
 ### Added
