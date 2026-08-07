@@ -267,6 +267,31 @@ check(engine.effectiveState(makeSession(state: "permission", ts: promptTs, trans
                             now: nowTs) == "permission",
       "a turn record older than the prompt does not end the wait")
 
+// A long tool call is alive, not idle. The ts is stamped at PreToolUse and untouched until
+// PostToolUse — there is no "still running" hook — so a flat 900s cap read a 20-minute build
+// as an idle session and the stale-prune (same clock) hid its row while the tool worked.
+// tool gets an hour: the interrupt net and the pid reap still catch dead ones far earlier
+// in practice, and lying "idle" about a running build is the worse error.
+check(engine.effectiveState(makeSession(state: "tool", ts: nowTs - 1200), now: nowTs) == "tool",
+      "a 20-minute tool call is still a tool call, not idle")
+check(engine.effectiveState(makeSession(state: "tool", ts: nowTs - 4000), now: nowTs) == "idle",
+      "but past an hour even a tool call idles out")
+check(engine.effectiveState(makeSession(state: "thinking", ts: nowTs - 1200), now: nowTs) == "idle",
+      "thinking keeps the 15-minute cap — no stream for that long means stuck")
+// A streaming transcript is proof of life: its mtime moves with every appended record.
+let streaming = writeTranscript("streaming.jsonl", lines: [
+    #"{"type":"assistant","message":{"content":[{"type":"text","text":"still going"}]}}"#,
+], mtime: Date(timeIntervalSince1970: nowTs - 30))
+check(engine.effectiveState(makeSession(state: "thinking", ts: nowTs - 1200, transcript: streaming),
+                            now: nowTs) == "thinking",
+      "a thinking session whose transcript moved recently is alive past the cap")
+let silent = writeTranscript("silent.jsonl", lines: [
+    #"{"type":"assistant","message":{"content":[{"type":"text","text":"long ago"}]}}"#,
+], mtime: Date(timeIntervalSince1970: nowTs - 1100))
+check(engine.effectiveState(makeSession(state: "thinking", ts: nowTs - 1200, transcript: silent),
+                            now: nowTs) == "idle",
+      "and one whose transcript went silent idles out as before")
+
 // The js→swift seam, reader half: parse the state file the real update.js wrote during the
 // node suite. Run the node suite first — CI does.
 let sessionSeamPath = FileManager.default.currentDirectoryPath + "/build/seam/session.json"

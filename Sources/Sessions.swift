@@ -63,10 +63,16 @@ final class SessionEngine {
     // collapses to rest.
     func effectiveState(_ s: Session, now: Double) -> String {
         if s.state == "thinking" || s.state == "tool" || s.state == "permission" {
-            // 30 minutes for permission, not the 2 hours it once was: with the transcript nets
-            // below this is a last resort, and a frozen amber dot outranks every live session.
-            let cap: Double = s.state == "permission" ? 1800 : 900
-            if now - s.ts > cap { return "idle" }
+            // The ts is stamped by the last hook event and untouched while a tool runs — there
+            // is no "still running" hook — so every cap here is a last resort, not a measurement.
+            // tool gets an hour: builds and test suites legitimately run for tens of minutes,
+            // and the old flat 15 read them as idle while the stale-prune (same clock) hid the
+            // row mid-build. A genuinely dead one is caught far earlier by the interrupt net or
+            // the pid reap. 30 minutes for permission, not the 2 hours it once was: with the
+            // transcript nets below this is a last resort, and a frozen amber dot outranks
+            // every live session.
+            let cap: Double = s.state == "permission" ? 1800 : (s.state == "tool" ? 3600 : 900)
+            if now - s.ts > cap, !streamingRecently(s, now: now) { return "idle" }
             if !s.transcript.isEmpty {
                 let facts = turnFacts(ofFileAt: s.transcript)
                 if facts.interrupted { return "idle" }
@@ -82,6 +88,20 @@ final class SessionEngine {
             return s.state
         }
         return s.state == "done" ? "idle" : s.state
+    }
+
+    // A streaming transcript is proof of life past the cap for a THINKING session: records
+    // append every ~1.7s median while the model streams, so a fresh mtime means work, not a
+    // wedge. Extension only — never demotion — so it cannot collide with the v0.5.6 decision
+    // against turn-record-based demotion. Tool states get no such net on purpose: the
+    // transcript is silent by design while a tool runs (its record lands at completion),
+    // which is why their cap is an hour instead. Costs one stat(), and only for a session
+    // already past its cap — the common case never gets here.
+    private func streamingRecently(_ s: Session, now: Double) -> Bool {
+        guard s.state == "thinking", !s.transcript.isEmpty,
+              let attrs = try? FileManager.default.attributesOfItem(atPath: s.transcript),
+              let mtime = attrs[.modificationDate] as? Date else { return false }
+        return now - mtime.timeIntervalSince1970 <= 120
     }
 
     // What the transcript's last turn line (a user/assistant message, ignoring the bookkeeping
