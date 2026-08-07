@@ -590,14 +590,19 @@ def connectors_from_desktop():
         reverse=True,
     )
     for path in files[:200]:
-        remote = (read_json(path) or {}).get("remoteMcpServersConfig")
-        if remote:
+        # Кеш пишет чужое приложение: словарь наверху и словари в списке — не гарантия,
+        # а сегодняшняя случайность. Неожиданная форма — «коннекторов нет», не AttributeError
+        # на весь refresh.
+        parsed = read_json(path)
+        remote = parsed.get("remoteMcpServersConfig") if isinstance(parsed, dict) else None
+        if remote and isinstance(remote, list):
             return {
                 s["name"]: {
                     "uuid": s.get("uuid") or "",
                     "tools": [describe_tool(t) for t in (s.get("tools") or [])],
                 }
                 for s in remote
+                if isinstance(s, dict) and s.get("name")
             }
     return {}
 
@@ -1223,6 +1228,11 @@ def usage_record(payload, now=None):
     used_percentage и всегда int: Swift читает `as? Int`, и дробное значение молча
     выключило бы секцию лимитов при здоровом на вид файле.
     """
+    # Эндпоинт недокументирован: сегодняшний словарь завтра может оказаться массивом или
+    # строкой ошибки. Любая неожиданная форма — это «окон нет», не исключение: вызов стоит
+    # в fetch_limits, чей контракт — молчать при любом сбое и не трогать прошлые цифры.
+    if not isinstance(payload, dict):
+        return None
     record = {"ts": int(now or time.time()), "source": "oauth"}
     for name, block in (payload or {}).items():
         if not isinstance(block, dict):
@@ -1230,8 +1240,12 @@ def usage_record(payload, now=None):
         used = block.get("utilization", block.get("used_percentage"))
         if used is None:
             continue
+        try:
+            pct = int(round(float(used)))
+        except (TypeError, ValueError):
+            continue
         record[name] = {
-            "used_percentage": int(round(float(used))),
+            "used_percentage": pct,
             "resets_at": parse_reset(block.get("resets_at")),
         }
     return record if len(record) > 2 else None
@@ -1263,9 +1277,11 @@ def fetch_limits():
     try:
         with urllib.request.build_opener(NoRedirect).open(req, timeout=15) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
+        # Внутри try, а не после: разбор дрейфующего ответа — такой же сбой опроса, как сеть
+        # или 401. Снаружи он однажды и стоял — и массив вместо объекта ронял весь скрипт.
+        record = usage_record(payload)
     except Exception as exc:  # noqa: BLE001 — сеть, 401, редирект, JSON: файл не трогаем
         return f"опрос не удался: {type(exc).__name__}"
-    record = usage_record(payload)
     if not record:
         return "ответ без единого окна лимитов"
     write_json(LIMITS, record)

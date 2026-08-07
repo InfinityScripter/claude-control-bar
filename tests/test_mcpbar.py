@@ -1247,6 +1247,92 @@ class UsageToken(unittest.TestCase):
         self.assertFalse(os.path.exists(mcpbar.LIMITS))
 
 
+class UsagePayloadDrift(unittest.TestCase):
+    """Эндпоинт недокументирован — форма ответа может смениться в любой день.
+
+    usage_record(payload) стоял ВНЕ try/except fetch_limits и предполагал словарь: JSON-массив
+    вместо объекта ронял весь скрипт AttributeError'ом — вопреки его же контракту «молчалив
+    при любом сбое» (Swift глотает вывод, лимиты просто тихо перестают обновляться). Тот же
+    паттерн в connectors_from_desktop ронял весь refresh на неожиданном кеше десктопа.
+    """
+
+    def test_массив_вместо_объекта_это_none_а_не_краш(self):
+        self.assertIsNone(mcpbar.usage_record([1, 2, 3]))
+        self.assertIsNone(mcpbar.usage_record("строка"))
+        self.assertIsNone(mcpbar.usage_record(42))
+
+    def test_нечисловой_процент_пропускает_окно_не_роняя_остальные(self):
+        record = mcpbar.usage_record({
+            "five_hour": {"utilization": "N/A"},
+            "seven_day": {"utilization": 50},
+        })
+        self.assertIsNotNone(record)
+        self.assertNotIn("five_hour", record)
+        self.assertEqual(record["seven_day"]["used_percentage"], 50)
+
+    def test_fetch_limits_переживает_массив_от_эндпоинта(self):
+        import http.server
+        import threading
+
+        class Drifted(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"[1, 2, 3]"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Drifted)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        tmp = tempfile.TemporaryDirectory()
+        saved = {k: getattr(mcpbar, k) for k in ("USAGE_URL", "LIMITS", "oauth_token")}
+        mcpbar.USAGE_URL = "http://127.0.0.1:%d/" % server.server_address[1]
+        mcpbar.LIMITS = os.path.join(tmp.name, "limits.json")
+        mcpbar.oauth_token = lambda: "SECRET"
+        try:
+            result = mcpbar.fetch_limits()
+            self.assertIsInstance(result, str)
+            self.assertFalse(os.path.exists(mcpbar.LIMITS), "мусор не должен стать limits.json")
+        finally:
+            for k, v in saved.items():
+                setattr(mcpbar, k, v)
+            server.shutdown()
+            server.server_close()
+            tmp.cleanup()
+
+    def test_кеш_десктопа_с_массивом_наверху_не_роняет_refresh(self):
+        tmp = tempfile.TemporaryDirectory()
+        saved = mcpbar.DESKTOP_SESSIONS
+        mcpbar.DESKTOP_SESSIONS = tmp.name
+        try:
+            with open(os.path.join(tmp.name, "drifted.json"), "w") as fh:
+                json.dump([{"это": "массив"}], fh)
+            self.assertEqual(mcpbar.connectors_from_desktop(), {})
+        finally:
+            mcpbar.DESKTOP_SESSIONS = saved
+            tmp.cleanup()
+
+    def test_коннектор_без_имени_пропускается_а_не_роняет(self):
+        tmp = tempfile.TemporaryDirectory()
+        saved = mcpbar.DESKTOP_SESSIONS
+        mcpbar.DESKTOP_SESSIONS = tmp.name
+        try:
+            with open(os.path.join(tmp.name, "s.json"), "w") as fh:
+                json.dump({"remoteMcpServersConfig": [
+                    "не словарь",
+                    {"uuid": "без-имени"},
+                    {"name": "Figma", "uuid": "u1", "tools": []},
+                ]}, fh)
+            connectors = mcpbar.connectors_from_desktop()
+            self.assertEqual(list(connectors), ["Figma"])
+        finally:
+            mcpbar.DESKTOP_SESSIONS = saved
+            tmp.cleanup()
+
+
 class SeamContract(unittest.TestCase):
     """Шов python→swift: mcp.json пишет настоящий refresh(), а не рукописная фикстура.
 
