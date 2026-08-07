@@ -310,3 +310,47 @@ test("a settings file changed underneath us is left alone rather than clobbered"
   assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath(home), "utf8")), { theirs: true });
   assert.equal(fs.readdirSync(path.join(home, ".claude")).filter((f) => f.endsWith(".tmp")).length, 0);
 });
+
+// A row click resolves the app to focus from TERM_PROGRAM — but Cursor, Windsurf and VS Code
+// all report TERM_PROGRAM="vscode" (forks inherit it), so a session living in Cursor's terminal
+// opened Visual Studio Code, and the extension panel (no TERM_PROGRAM at all) opened nothing.
+// LaunchServices stamps every process launched from an app bundle with __CFBundleIdentifier;
+// that names the host exactly, and `open -b` takes it verbatim — no name mapping to maintain.
+//
+// process.env is spread into the child at call time, so tests flip the variable in OUR env and
+// restore it — the runner itself may legitimately carry one (tests launched from an IDE do).
+const withBundleEnv = (value, fn) => {
+  const saved = process.env.__CFBundleIdentifier;
+  if (value === undefined) delete process.env.__CFBundleIdentifier;
+  else process.env.__CFBundleIdentifier = value;
+  try { return fn(); } finally {
+    if (saved === undefined) delete process.env.__CFBundleIdentifier;
+    else process.env.__CFBundleIdentifier = saved;
+  }
+};
+
+test("the session file records the bundle id of the app hosting the session", () => {
+  const home = sandbox();
+  withBundleEnv("com.todesktop.230313mzl4w4u92", () =>
+    run(updatePath, home, ["prompt"], JSON.stringify({ session_id: "s8", cwd: home })));
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "s8.json"), "utf8"));
+  assert.equal(state.term_bundle, "com.todesktop.230313mzl4w4u92");
+});
+
+test("the seeded session carries the host bundle id from the first moment", () => {
+  const home = sandbox();
+  withBundleEnv("com.googlecode.iterm2", () =>
+    run(lifecyclePath, home, ["start"], JSON.stringify({ session_id: "n1", cwd: home })));
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "n1.json"), "utf8"));
+  assert.equal(state.term_bundle, "com.googlecode.iterm2");
+});
+
+test("an event arriving without the env var keeps the bundle id already on file", () => {
+  const home = sandbox();
+  fs.writeFileSync(path.join(stateDir(home), "s7.json"), JSON.stringify(
+    { sessionId: "s7", pid: process.pid, term_bundle: "com.todesktop.230313mzl4w4u92", ts: 1 }));
+  withBundleEnv(undefined, () =>
+    run(updatePath, home, ["prompt"], JSON.stringify({ session_id: "s7", cwd: home })));
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "s7.json"), "utf8"));
+  assert.equal(state.term_bundle, "com.todesktop.230313mzl4w4u92");
+});

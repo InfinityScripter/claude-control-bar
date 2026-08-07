@@ -225,6 +225,11 @@ process.stdin.on("end", () => {
   // TERM_PROGRAM identifies the terminal app for a CLI session (Apple_Terminal, iTerm.app,
   // vscode, WezTerm, …); the app uses it to bring that terminal to the front on a row click.
   const termProgram = process.env.TERM_PROGRAM || prev.term_program || "";
+  // __CFBundleIdentifier (stamped by LaunchServices on every process launched from an app
+  // bundle) names the exact host app — TERM_PROGRAM cannot: Cursor, Windsurf and VS Code all
+  // report "vscode", and the IDE extension panel sets no TERM_PROGRAM at all. The app prefers
+  // this for the row click (`open -b`), keeping the TERM_PROGRAM map as the fallback.
+  const termBundle = process.env.__CFBundleIdentifier || prev.term_bundle || "";
   // process.ppid IS this session's `claude` process (verified: hooks are spawned directly by it,
   // stable for the session's life, on both CLI and desktop). The app uses kill(pid,0) for liveness.
   // started:true — any update.js event (prompt/tool/permission/stop) is real activity, so the session
@@ -238,7 +243,7 @@ process.stdin.on("end", () => {
     || {
       pct: prev.pct, tokens: prev.tokens, window: prev.window, model: prev.model, assumed: prev.assumed,
     };
-  const out = { state, label, tool: p.tool_name || "", project, cwd, sessionId: p.session_id || "", transcript, entrypoint, term_program: termProgram, pid: process.ppid, started: true, startedAt, ts, ...ctx };
+  const out = { state, label, tool: p.tool_name || "", project, cwd, sessionId: p.session_id || "", transcript, entrypoint, term_program: termProgram, term_bundle: termBundle, pid: process.ppid, started: true, startedAt, ts, ...ctx };
   try {
     fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
     const tmp = statePath + "." + process.pid + ".tmp";

@@ -413,6 +413,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         var cwd: String         // session working directory; "" on pre-upgrade files
         var entrypoint: String  // CLAUDE_CODE_ENTRYPOINT: "cli", "claude-desktop", …
         var termProgram: String // TERM_PROGRAM for CLI sessions: "Apple_Terminal", "iTerm.app", …
+        var termBundle: String  // __CFBundleIdentifier of the hosting app; "" over ssh / pre-upgrade files
         var pid: Int32          // the session's `claude` process; kill(pid,0) drives liveness. 0 = pre-upgrade file.
         var started: Bool       // true once the session had real activity (a prompt/tool); a merely-opened
                                 // conversation seeds started=false and stays out of the dropdown.
@@ -439,6 +440,7 @@ final class StatusController: NSObject, NSMenuDelegate {
             self.cwd = o["cwd"] as? String ?? ""
             self.entrypoint = o["entrypoint"] as? String ?? ""
             self.termProgram = o["term_program"] as? String ?? ""
+            self.termBundle = o["term_bundle"] as? String ?? ""
             self.pid = Int32(truncatingIfNeeded: (o["pid"] as? NSNumber)?.intValue ?? 0)
             self.started = o["started"] as? Bool ?? false
             self.startedAt = (o["startedAt"] as? NSNumber)?.doubleValue ?? 0
@@ -1347,11 +1349,13 @@ final class StatusController: NSObject, NSMenuDelegate {
             for s in visible {
                 let eff = s.eff.isEmpty ? effectiveState(s, now: now) : s.eff
                 let view = SessionRowView(id: s.id, width: CGFloat(uiConfig()["boxWidth"] ?? 300))
-                let sid = s.id, ep = s.entrypoint, tp = s.termProgram
-                view.onClick = { [weak self] in menu.cancelTracking(); self?.openSession(sid, entrypoint: ep, termProgram: tp) }
+                let sid = s.id, ep = s.entrypoint, tp = s.termProgram, tb = s.termBundle
+                view.onClick = { [weak self] in menu.cancelTracking(); self?.openSession(sid, entrypoint: ep, termProgram: tp, termBundle: tb) }
                 configureSessionRow(view, s, eff: eff)
                 let it = NSMenuItem()
+                let tag = surfaceTag(s)
                 it.title = sessionMenuLine(s) + (s.pct.map { "  ctx \($0)%" } ?? "")
+                    + (tag.isEmpty ? "" : "  " + tag)
                 it.view = view
                 menu.addItem(it)
                 sessionMenuItems.append((it, s.id))  // kept so tick() can live-update the timers
@@ -1608,7 +1612,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         let nameMax = Int(cfg["nameMax"] ?? 30)
         let working = (eff == "thinking" || eff == "tool") && s.startedAt > 0
         let resting = !(eff == "permission" || eff == "thinking" || eff == "tool")  // the dim caret
-        let tag = surfaceTag(s.entrypoint)
+        let tag = surfaceTag(s)
         v.configure(icon: sessionSymbol(s, eff: eff),
                     iconTint: resting ? .tertiaryLabelColor : .labelColor,  // caret dim; spinner matches the name font; amber image ignores tint
                     spinning: (eff == "thinking" || eff == "tool"),
@@ -1647,15 +1651,16 @@ final class StatusController: NSObject, NSMenuDelegate {
         return s.project.isEmpty ? "session" : s.project
     }
 
-    // CLAUDE_CODE_ENTRYPOINT -> a short all-caps badge tag.
-    // Every surface collapses to a 3-letter pill: the desktop app is APP, everything else (cli,
-    // vscode, cursor, windsurf, …) is a terminal/editor context, so CLI. Keeps pills uniform.
-    func surfaceTag(_ entrypoint: String) -> String {
-        switch entrypoint {
-        case "claude-desktop": return "APP"
-        case "":               return ""
-        default:               return "CLI"
-        }
+    // CLAUDE_CODE_ENTRYPOINT (+ TERM_PROGRAM) -> a short all-caps badge tag, one uniform
+    // 3-letter pill per surface. APP is the desktop app. IDE is a session living inside an
+    // editor — the Claude Code extension panel (entrypoint "claude-vscode") or the CLI in a
+    // VS Code-family integrated terminal (Cursor, Windsurf and VS Code all report
+    // TERM_PROGRAM="vscode"). CLI is a standalone terminal (Apple_Terminal, iTerm.app, …).
+    func surfaceTag(_ s: Session) -> String {
+        if s.entrypoint == "claude-desktop" { return "APP" }
+        if s.entrypoint.isEmpty { return "" }
+        if s.entrypoint == "claude-vscode" || s.termProgram == "vscode" { return "IDE" }
+        return "CLI"
     }
 
     // CLI/APP pill rendered as an image so it can sit inside the row text (right after the timer)
@@ -1804,12 +1809,23 @@ final class StatusController: NSObject, NSMenuDelegate {
     // fallback for a conversation this machine has no record of.
     // CLI session: bring its terminal APP to the front (zero permission). Targeting the exact
     // window/tab needs a one-time Automation grant, deferred to the opt-in build (issue #19).
-    func openSession(_ id: String, entrypoint: String, termProgram: String) {
+    func openSession(_ id: String, entrypoint: String, termProgram: String, termBundle: String) {
         if entrypoint == "claude-desktop" {
             guard let local = DesktopSessions.sessionID(forCLI: id),
                   let url = DesktopSessions.focusURL(sessionID: local)
             else { openClaude(); return }
             NSWorkspace.shared.open(url)
+            return
+        }
+        // The hooks record __CFBundleIdentifier, which names the exact hosting app — the
+        // TERM_PROGRAM map below cannot: Cursor, Windsurf and VS Code all report "vscode"
+        // (so the click opened the wrong editor), and the IDE extension panel sets no
+        // TERM_PROGRAM at all (so the click did nothing). `open -b` takes the id verbatim.
+        if !termBundle.isEmpty {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            p.arguments = ["-b", termBundle]
+            try? p.run()
             return
         }
         // Map TERM_PROGRAM to a name `open -a` understands; most terminals match verbatim.
