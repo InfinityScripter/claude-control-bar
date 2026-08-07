@@ -234,16 +234,38 @@ def write_paths():
     })
 
 
-def build(target):
+def log_problem(text):
+    os.makedirs(ROOT, exist_ok=True)
+    with open(os.path.join(ROOT, "problems.log"), "a") as fh:
+        fh.write(text)
+
+
+def build(target, timeout=300):
     script = os.path.join(PLUGIN_ROOT, "build.sh")
     if not os.path.exists(script):
         return False
-    result = subprocess.run(["/bin/bash", script], capture_output=True, text=True, timeout=300,
-                            env={**os.environ, "CONTROL_BAR_APP": target})
-    if result.returncode != 0:
-        os.makedirs(ROOT, exist_ok=True)
-        with open(os.path.join(ROOT, "problems.log"), "a") as fh:
-            fh.write(f"build failed:\n{result.stderr[-2000:]}\n")
+    # Своя группа процессов, и по таймауту умирает вся группа: subprocess.run(timeout=…)
+    # убивал только непосредственного ребёнка (bash), а его swiftc/lipo/codesign жили дальше
+    # без родителя. Сам TimeoutExpired никто не ловил — хук падал трейсбеком, который Claude
+    # Code показывает как ошибку хука; затянувшаяся сборка — событие для problems.log.
+    import signal
+
+    proc = subprocess.Popen(["/bin/bash", script], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True,
+                            env={**os.environ, "CONTROL_BAR_APP": target},
+                            start_new_session=True)
+    try:
+        _, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.communicate()
+        log_problem(f"build timed out after {timeout}s and was killed\n")
+        return False
+    if proc.returncode != 0:
+        log_problem(f"build failed:\n{stderr[-2000:]}\n")
         return False
     return True
 

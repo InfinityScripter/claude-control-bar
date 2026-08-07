@@ -171,5 +171,55 @@ class QuitIntent(unittest.TestCase):
         self.assertEqual(len(launches), 1)
 
 
+class BuildTimeout(unittest.TestCase):
+    """Затянувшаяся сборка — событие, а не трейсбек.
+
+    subprocess.run(timeout=300) кидает TimeoutExpired, который никто не ловил: хук падал
+    необработанным исключением (Claude Code показывает это как ошибку хука), а дети bash —
+    swiftc/lipo/codesign — оставались жить: питон убивает только непосредственного ребёнка.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self._saved = {k: getattr(bootstrap, k) for k in ("ROOT", "PLUGIN_ROOT")}
+        bootstrap.ROOT = self._dir.name
+        bootstrap.PLUGIN_ROOT = self._dir.name
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            setattr(bootstrap, k, v)
+        self._dir.cleanup()
+
+    def _write_build_script(self, body):
+        path = os.path.join(bootstrap.PLUGIN_ROOT, "build.sh")
+        with open(path, "w") as fh:
+            fh.write("#!/bin/bash\n" + body)
+        os.chmod(path, 0o755)
+
+    def test_таймаут_не_роняет_хук_и_пишет_в_problems_log(self):
+        """Скрипт спит дольше потолка: build() обязан вернуть False, а не кинуть."""
+        self._write_build_script("sleep 30\n")
+        result = bootstrap.build(os.path.join(self._dir.name, "out.app"), timeout=1)
+        self.assertFalse(result)
+        with open(os.path.join(bootstrap.ROOT, "problems.log")) as fh:
+            self.assertIn("timed out", fh.read())
+
+    def test_таймаут_убивает_всю_группу_а_не_только_bash(self):
+        """bash порождает внука и умирает бы один — внук должен уйти вместе с группой."""
+        pidfile = os.path.join(self._dir.name, "grandchild.pid")
+        self._write_build_script(
+            f"(echo $$ > /dev/null; sleep 30 & echo $! > {pidfile}; wait)\n"
+        )
+        bootstrap.build(os.path.join(self._dir.name, "out.app"), timeout=1)
+        with open(pidfile) as fh:
+            pid = int(fh.read().strip())
+        # Группа убита SIGKILL'ом — внука-«sleep 30» быть не должно.
+        try:
+            os.kill(pid, 9)
+            self.fail("внук сборки пережил таймаут")
+        except ProcessLookupError:
+            pass
+
+
 if __name__ == "__main__":
     unittest.main()
