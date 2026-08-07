@@ -7,6 +7,48 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.7.3] - 2026-08-07
+
+### Fixed
+
+- **A 20-minute build is a working session, not an idle one.** The state timestamp is stamped
+  at PreToolUse and untouched until PostToolUse — there is no "still running" hook — so the
+  flat 15-minute cap read any long tool call as idle, and the same clock hid the row while the
+  build ran. A tool call now gets an hour (a genuinely dead one is caught far earlier by the
+  interrupt net or the process reap); thinking keeps its 15 minutes, but a transcript whose
+  mtime moved in the last two minutes is proof of streaming and extends it. Two tempting
+  designs are recorded as dead ends in the code: "the transcript keeps growing during the
+  tool" (it is silent by design — the record lands at completion) and "the session process has
+  children" (always true — idle sessions hold their MCP servers as children).
+- **A plugin build that outlives its ceiling dies as a group and logs, instead of crashing —
+  or hanging — the hook.** The 300-second build timeout raised an exception nothing caught,
+  and Python's own kill reached only the immediate bash child: swiftc, lipo and codesign kept
+  running unparented. The build now runs in its own process group; a timeout SIGKILLs the
+  whole group, drains what stderr already said — the compiler's last words — into
+  problems.log, and the drain itself is bounded, because a descendant that left the group
+  would otherwise hold the pipe open and hang the SessionStart hook forever with no trace.
+  The inner ceiling drops to 240s with a test pinning it below the hook's outer 300s: equal
+  ceilings were a race the graceful path lost.
+- **A hand-edited or foreign JSON file with the wrong top-level shape cannot crash a refresh
+  or a hook.** The same class was patched twice at single call sites in 0.7.2; the shape
+  check now lives in read_json itself — the parsed value must match the type of the default —
+  across all three copies of the helper (the backend and both hook scripts). The three
+  callers that deliberately distinguish "missing" from "wrong shape" are commented in place.
+
+### Changed
+
+- **The session state machine moved out of main.swift and under the model checks.** Session
+  parsing, the effective-state caps and both recovery nets now live in Sources/Sessions.swift,
+  linked into the CI model checks, each behavior pinned by a test. The js→swift seam closed
+  from the reader's side too: the node suite saves a state file written by the real hook, and
+  the model checks parse it with the real Session initializer. Model-test timestamps now carry
+  fractional seconds — the format real transcripts write; the bare format exercised only the
+  parser's fallback branch, and a probe proved those checks stayed green with the primary
+  branch broken.
+- **The toolchain probe left the menu-open path.** Whether the app can build itself from
+  source used to be resolved lazily — a synchronous xcode-select spawn on the main thread,
+  inside the first menu open. It is warmed once on a background queue at launch instead.
+
 ## [0.7.2] - 2026-08-07
 
 ### Fixed
