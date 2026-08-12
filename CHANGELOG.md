@@ -7,6 +7,17 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.7.6] - 2026-08-12
+
+### Changed
+
+- **The bar no longer polls the system for Claude Desktop.** It used to ask macOS for the full
+  list of running applications on every idle tick; now it subscribes to the workspace
+  launch/terminate notifications and just reads a flag. Before the app would quit itself it
+  re-checks with a live, targeted query, so a missed notification can delay the quit but can
+  never close the bar while Claude Desktop is actually running. Ported from upstream
+  [claude-status-bar 0.4.4](https://github.com/m1ckc3s/claude-status-bar) (issue #53).
+
 ## [0.7.5] - 2026-08-12
 
 ### Changed

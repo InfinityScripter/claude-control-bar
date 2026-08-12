@@ -551,6 +551,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         let t = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(t, forMode: .common)
         pollTimer = t
+        observeDesktopApp()
         // Rebuilding the MCP picture is expensive (`claude mcp list` plus a tools/list round trip
         // per server) so it gets its own slow timer rather than riding the 0.4s render tick.
         Timer.scheduledTimer(withTimeInterval: Self.mcpRefreshInterval, repeats: true) {
@@ -1432,7 +1433,7 @@ final class StatusController: NSObject, NSMenuDelegate {
                 sessionMenuItems.append((it, s.id))  // kept so tick() can live-update the timers
             }
             menu.addItem(.separator())
-        } else if claudeDesktopRunning() {
+        } else if desktopRunning {
             // No live session to pin, but the desktop app is up — give a way to jump back in.
             menu.addItem(header("Sessions"))
             let open = NSMenuItem(title: "Open Claude", action: #selector(openClaude), keyEquivalent: "")
@@ -2181,8 +2182,28 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     // MARK: self-quit lifecycle
 
-    func claudeDesktopRunning() -> Bool {
-        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == claudeDesktopBundleID }
+    // Asking LaunchServices about the desktop app on a timer is a synchronous XPC round-trip;
+    // workspace launch/terminate notifications keep this flag instead. The authoritative query
+    // runs only at the quit decision, so a missed notification can delay a quit by one debounce
+    // but can never quit under a live app.
+    var desktopRunning = false
+
+    func claudeDesktopRunningLive() -> Bool {
+        !NSRunningApplication.runningApplications(withBundleIdentifier: claudeDesktopBundleID).isEmpty
+    }
+
+    func observeDesktopApp() {
+        desktopRunning = claudeDesktopRunningLive()
+        let nc = NSWorkspace.shared.notificationCenter
+        for (name, running) in [(NSWorkspace.didLaunchApplicationNotification, true),
+                                (NSWorkspace.didTerminateApplicationNotification, false)] {
+            nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let self,
+                      let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                      app.bundleIdentifier == self.claudeDesktopBundleID else { return }
+                self.desktopRunning = running
+            }
+        }
     }
 
     func sessionCount() -> Int { stateFileNames().count }
@@ -2215,11 +2236,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     func checkLifecycle() {
         let now = Date()
         if now.timeIntervalSince(launchedAt) < launchGrace { return }
-        // Sessions first. Counting files in one directory is a directory read; the other side of
-        // this `||` asks LaunchServices about every running application over IPC, and a sample of
-        // the running app showed that one call was half of everything the timer did. In the case
-        // that matters — Claude is working, so a session file exists — it is now never reached.
-        if sessionCount() > 0 || claudeDesktopRunning() {
+        if sessionCount() > 0 || desktopRunning {
             notNeededSince = nil
             return
         }
@@ -2229,6 +2246,9 @@ final class StatusController: NSObject, NSMenuDelegate {
             // leaves no state file, and quitting on that evidence killed the app ten seconds
             // after launch with Claude Code running in a terminal the whole time.
             guard now.timeIntervalSince(since) >= idleQuitDelay, !claudeCodeRunning() else { return }
+            // Notification-fed flag could have missed a launch (e.g. delivered while the run loop
+            // was blocked); confirm with LaunchServices before the irreversible step.
+            if claudeDesktopRunningLive() { desktopRunning = true; notNeededSince = nil; return }
             NSApp.terminate(nil)
         } else {
             notNeededSince = now
