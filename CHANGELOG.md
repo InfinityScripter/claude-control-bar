@@ -7,6 +7,25 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.7.4] - 2026-08-12
+
+### Added
+
+- **Updates stopped being invisible.** The plugin channel rebuilds and swaps the app with no
+  user action — which is convenient exactly until you wonder why the app behaves differently
+  and nothing anywhere says it changed. Every version change now announces itself the way
+  auto-updating apps do (VS Code, Raycast, Chrome): a notification on the first launch of the
+  new version, and a one-time "What's new in X" menu row that opens the changelog section for
+  exactly that version — read from the CHANGELOG.md the build now ships inside the bundle, so
+  it matches the running copy and works offline. The row retires once opened; a fresh install
+  says nothing, because nothing changed.
+- **An available update explains itself before you take it.** The daily release check already
+  downloads the release notes with the tag; they were dropped on the floor. A newer release
+  now raises one notification per version — never a daily drumbeat — and the update section of
+  the menu gains "What's new in X" showing those notes, so the decision to update comes with
+  the reasons in hand. No new network requests and nothing new sent anywhere: same single
+  `releases/latest` call as before.
+
 ## [0.7.3] - 2026-08-07
 
 ### Fixed

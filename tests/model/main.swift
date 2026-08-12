@@ -343,6 +343,60 @@ if !FileManager.default.fileExists(atPath: seamPath) {
     check(seam.waitingAuth == ["needs-oauth"], "the waiting-for-auth list crosses over")
 }
 
+// MARK: Changelog — the "What's new" source
+
+let changelogFixture = """
+# Changelog
+
+Intro prose that belongs to no version.
+
+## [0.7.4] - 2026-08-12
+
+### Added
+
+- **A first bullet.** Its continuation line,
+  hard-wrapped like the real file writes them.
+- A second bullet with `inline code`.
+
+A closing paragraph
+on two lines.
+
+## [0.7.3] - 2026-08-07
+
+### Fixed
+
+- The last section runs to the end of the file.
+"""
+
+check(Changelog.section(for: "0.9.9", in: changelogFixture) == nil,
+      "a version the changelog has never heard of is nil, not garbage")
+let mid = Changelog.section(for: "0.7.4", in: changelogFixture)
+check(mid?.hasPrefix("### Added") == true, "a section starts at its own first content line")
+check(mid?.contains("0.7.3") == false, "a section stops at the next version header")
+check(Changelog.section(for: "0.7.3", in: changelogFixture)?
+        .contains("end of the file") == true, "the last section is bounded by EOF")
+
+let blocks = Changelog.blocks(from: mid ?? "")
+check(blocks.first == .heading("Added"), "### becomes a heading block, marker gone")
+check(blocks.contains(.bullet("A first bullet. Its continuation line, hard-wrapped like the real file writes them.")),
+      "a wrapped continuation line reflows into its bullet and ** markers are stripped")
+check(blocks.contains(.bullet("A second bullet with inline code.")),
+      "backticks are stripped from a bullet")
+check(blocks.last == .paragraph("A closing paragraph on two lines."),
+      "a plain paragraph reflows too")
+
+// The shipped CHANGELOG.md must actually contain the version this source tree claims,
+// or the row falls back to the release page for everyone: pin the contract here.
+let repoRoot = FileManager.default.currentDirectoryPath
+if let real = try? String(contentsOfFile: repoRoot + "/CHANGELOG.md", encoding: .utf8),
+   let manifest = try? String(contentsOfFile: repoRoot + "/.claude-plugin/plugin.json", encoding: .utf8),
+   let vRange = manifest.range(of: "\"version\": \""),
+   let vEnd = manifest[vRange.upperBound...].firstIndex(of: "\"") {
+    let want = String(manifest[vRange.upperBound..<vEnd])
+    check(Changelog.section(for: want, in: real) != nil,
+          "CHANGELOG.md carries a section for the manifest version \(want)")
+}
+
 try? FileManager.default.removeItem(atPath: dir)
 try? FileManager.default.removeItem(atPath: sessionsRoot)
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")

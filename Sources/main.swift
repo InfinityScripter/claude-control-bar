@@ -622,6 +622,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         retirePredecessors()
         ensureHooksInstalled()
         checkForUpdate()
+        announceVersionChange()
         warmCanBuildFromSource()
     }
 
@@ -810,13 +811,26 @@ final class StatusController: NSObject, NSMenuDelegate {
         guard let url = URL(string: releaseAPIURL) else { return }
         var req = URLRequest(url: url)
         req.setValue("ClaudeControlBar", forHTTPHeaderField: "User-Agent") // GitHub API requires a UA
-        URLSession.shared.dataTask(with: req) { data, _, _ in
+        URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
             guard let data = data,
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let tag = obj["tag_name"] as? String else { return }
             let ver = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
             UserDefaults.standard.set(ver, forKey: "latestVersion")
             UserDefaults.standard.set(now, forKey: "lastUpdateSuccess")
+            // The release body rides in the same response — the "What's new in X" row shows
+            // it before the user decides to update, at no extra request. Written together
+            // with latestVersion so the two always describe the same release.
+            UserDefaults.standard.set((obj["body"] as? String) ?? "", forKey: "latestReleaseNotes")
+            // Once per version, ever: the point is "an update exists, the menu explains it",
+            // not a daily drumbeat. The plugin channel gets this too — it will update itself
+            // on its own schedule, but a heads-up with readable notes beats a silent swap.
+            if let self, Self.versionIsNewer(ver, than: self.currentVersion),
+               UserDefaults.standard.string(forKey: "updateNotifiedVersion") != ver {
+                UserDefaults.standard.set(ver, forKey: "updateNotifiedVersion")
+                self.notify(title: "Claude Control Bar \(ver) is available",
+                            body: "The menu has \u{201C}What\u{2019}s new in \(ver)\u{201D} and the update.")
+            }
         }.resume()
         guard let brewURL = URL(string: brewCaskAPIURL) else { return }
         URLSession.shared.dataTask(with: URLRequest(url: brewURL)) { data, _, _ in
@@ -851,6 +865,125 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     @objc func openLatestRelease() {
         if let url = URL(string: releasePageURL) { NSWorkspace.shared.open(url) }
+    }
+
+    // MARK: what's new
+
+    /// The version whose changelog hasn't been opened yet. UserDefaults, not a transient flag:
+    /// the plugin channel updates by replacing the bundle and relaunching, so the row has to
+    /// survive exactly that restart to ever be seen.
+    var whatsNewUnseen: String? {
+        get { UserDefaults.standard.string(forKey: "whatsNewUnseen") }
+        set {
+            if let v = newValue { UserDefaults.standard.set(v, forKey: "whatsNewUnseen") }
+            else { UserDefaults.standard.removeObject(forKey: "whatsNewUnseen") }
+        }
+    }
+
+    /// Both update channels end the same way — a new version starts running — so this one
+    /// launch-time check is what makes either of them visible. The plugin channel in
+    /// particular rebuilds and swaps the app with no user action at all; without this the
+    /// only trace of an update was the version row quietly reading a different number.
+    ///
+    /// The first launch ever is silent: there is no previous version to have changed from,
+    /// and greeting a fresh install with "updated!" would be noise.
+    func announceVersionChange() {
+        let d = UserDefaults.standard
+        let last = d.string(forKey: "lastRunVersion")
+        d.set(currentVersion, forKey: "lastRunVersion")
+        // Strictly newer, not merely different: a rollback (a dev branch, an older DMG put
+        // back on purpose) announcing "Updated from 0.7.4" would be reporting the opposite
+        // of what happened.
+        guard let last, Self.versionIsNewer(currentVersion, than: last) else { return }
+        whatsNewUnseen = currentVersion
+        notify(title: "Claude Control Bar \(currentVersion)",
+               body: "Updated from \(last). \u{201C}What\u{2019}s new\u{201D} in the menu has the changes.")
+    }
+
+    /// The changes of the copy that is running: the CHANGELOG.md the build shipped alongside
+    /// the binary, so the answer matches this exact version and works offline.
+    @objc func showWhatsNewCurrent() {
+        whatsNewUnseen = nil
+        let bundled = Bundle.main.url(forResource: "CHANGELOG", withExtension: "md")
+            .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+        if let md = bundled, let text = Changelog.section(for: currentVersion, in: md) {
+            showWhatsNewWindow(version: currentVersion, markdown: text)
+        } else if let url = URL(string:
+            "https://github.com/InfinityScripter/claude-control-bar/releases/tag/v\(currentVersion)") {
+            // A bundle built before the changelog shipped as a resource: the release page has it.
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// The changes of the version that is only available yet — the release body the daily
+    /// update check already fetched (`releases/latest` carries it; no extra request).
+    @objc func showWhatsNewLatest() {
+        let d = UserDefaults.standard
+        if let latest = d.string(forKey: "latestVersion"),
+           let notes = d.string(forKey: "latestReleaseNotes"), !notes.isEmpty {
+            showWhatsNewWindow(version: latest, markdown: notes)
+        } else {
+            openLatestRelease()
+        }
+    }
+
+    var whatsNewWindow: NSWindow?
+
+    func showWhatsNewWindow(version: String, markdown: String) {
+        let text = NSMutableAttributedString()
+        let body = NSFont.systemFont(ofSize: 13)
+        let head = NSFont.boldSystemFont(ofSize: 14)
+        let para = NSMutableParagraphStyle()
+        para.paragraphSpacing = 7
+        let bulletPara = NSMutableParagraphStyle()
+        bulletPara.paragraphSpacing = 7
+        bulletPara.headIndent = 14
+        for block in Changelog.blocks(from: markdown) {
+            switch block {
+            case .heading(let s):
+                text.append(NSAttributedString(string: s + "\n", attributes: [
+                    .font: head, .foregroundColor: NSColor.labelColor, .paragraphStyle: para]))
+            case .bullet(let s):
+                text.append(NSAttributedString(string: "\u{2022}  " + s + "\n", attributes: [
+                    .font: body, .foregroundColor: NSColor.labelColor, .paragraphStyle: bulletPara]))
+            case .paragraph(let s):
+                text.append(NSAttributedString(string: s + "\n", attributes: [
+                    .font: body, .foregroundColor: NSColor.labelColor, .paragraphStyle: para]))
+            }
+        }
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 560, height: 440))
+        scroll.hasVerticalScroller = true
+        scroll.autoresizingMask = [.width, .height]
+        let tv = NSTextView(frame: scroll.bounds)
+        tv.isEditable = false
+        tv.drawsBackground = false
+        tv.textContainerInset = NSSize(width: 18, height: 16)
+        tv.autoresizingMask = [.width]
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.minSize = NSSize(width: 0, height: 0)
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                            height: CGFloat.greatestFiniteMagnitude)
+        tv.textContainer?.widthTracksTextView = true
+        tv.textStorage?.setAttributedString(text)
+        scroll.documentView = tv
+        // One window, reused: a second click brings the same panel forward instead of
+        // stacking copies. Closing releases the content, not the app (isReleasedWhenClosed
+        // stays false because the controller keeps the reference).
+        let win = whatsNewWindow ?? {
+            let w = NSWindow(contentRect: scroll.frame,
+                             styleMask: [.titled, .closable, .resizable],
+                             backing: .buffered, defer: false)
+            w.isReleasedWhenClosed = false
+            w.center()
+            whatsNewWindow = w
+            return w
+        }()
+        win.title = "What\u{2019}s new in \(version)"
+        win.contentView = scroll
+        NSApp.activate(ignoringOtherApps: true)
+        win.makeKeyAndOrderFront(nil)
+        tv.scroll(.zero)
     }
 
     /// Quit, then come back as the copy on disk.
@@ -1414,6 +1547,16 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Version \(currentVersion)", action: nil, keyEquivalent: ""))
+        // Shown until opened once, then it retires: the menu is long enough, and the changelog
+        // stays reachable through the release pages. Appears after any update — the plugin
+        // channel's silent rebuild included, which is the whole reason this row exists.
+        if whatsNewUnseen == currentVersion {
+            let wn = NSMenuItem(title: "What\u{2019}s new in \(currentVersion)",
+                                action: #selector(showWhatsNewCurrent), keyEquivalent: "")
+            wn.target = self
+            wn.toolTip = "This copy was updated. One click shows what changed."
+            menu.addItem(wn)
+        }
         // Checked before the download line and instead of it: when the newer copy is already on
         // disk there is nothing left to fetch, and offering "Update to 0.5.1" next to a 0.5.1
         // bundle sends the user to download what they installed an hour ago.
@@ -1467,6 +1610,13 @@ final class StatusController: NSObject, NSMenuDelegate {
                     menu.addItem(sw)
                 }
             }
+            // The release notes, before deciding to update — the body of releases/latest the
+            // daily check already cached. Falls back to the release page when the cache is
+            // empty (a check that ran before this build, or a release with no notes).
+            let wn = NSMenuItem(title: "What\u{2019}s new in \(latest)",
+                                action: #selector(showWhatsNewLatest), keyEquivalent: "")
+            wn.target = self
+            menu.addItem(wn)
         }
         if notificationsDenied {
             let n = NSMenuItem(title: "Notifications are off — open System Settings",

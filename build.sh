@@ -61,6 +61,7 @@ cp hooks/update.js hooks/lifecycle.js hooks/install.js hooks/uninstall.js hooks/
 mkdir -p "$STAGE_APP/Contents/Resources/scripts"
 cp scripts/mcpbar.py "$STAGE_APP/Contents/Resources/scripts/"
 cp assets/AppIcon.icns "$STAGE_APP/Contents/Resources/AppIcon.icns"
+cp CHANGELOG.md "$STAGE_APP/Contents/Resources/CHANGELOG.md"  # the menu's "What's new" reads it
 cp assets/completion.mp3 "$STAGE_APP/Contents/Resources/completion.mp3"
 
 # --- Signing / notarization ---
