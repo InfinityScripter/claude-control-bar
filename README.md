@@ -4,11 +4,11 @@
 
 https://github.com/user-attachments/assets/39381f85-c8ce-4d32-8baa-dce67d39ee7e
 
-A macOS menu bar app for **Claude Code**: see what Claude is doing right now and manage what it works with — without opening anything.
+A macOS menu bar app for **Claude Code**. It shows what Claude is doing and lets you manage sessions, MCP servers and usage limits from the menu bar.
 
-- **Sessions** — animated icon while Claude thinks, a yellow dot when it needs permission, a live turn timer, and context-window usage per session. Click a session to focus the terminal or editor it lives in.
-- **MCP** — every server and every tool with its own on/off switch. A muted tool is dropped from Claude's context entirely, not just blocked.
-- **Limits** — 5-hour and 7-day usage as bars right in the menu bar, with reset times in the menu.
+- **Sessions.** An animated icon while Claude works, a yellow dot when it waits for your permission, a turn timer and context-window usage for each session. Click a session to focus the terminal or editor it runs in.
+- **MCP.** Every server and every tool has its own switch. A muted tool disappears from Claude's context at the next session start.
+- **Limits.** 5-hour and 7-day usage as bars in the menu bar, with reset times in the menu.
 
 ## Install
 
@@ -22,53 +22,53 @@ A macOS menu bar app for **Claude Code**: see what Claude is doing right now and
 /plugin install claude-control-bar
 ```
 
-The app is compiled from source on your Mac at the next session start, so it needs the Xcode Command Line Tools (`xcode-select --install`). Updates arrive with the plugin.
+The app compiles from source on your Mac at the next session start, so you need the Xcode Command Line Tools (`xcode-select --install`). Updates arrive with the plugin.
 
 ### DMG
 
 1. Download `claude-control-bar.dmg` from [the latest release](../../releases/latest).
 2. Drag **Claude Control Bar** into Applications.
-3. Launch it once — that installs the hooks.
+3. Launch it once to install the hooks.
 
 > [!IMPORTANT]
 > The DMG is not notarized, so macOS blocks the first launch. Open **System Settings → Privacy & Security** and press **Open Anyway**, or run
 > `xattr -dr com.apple.quarantine "/Applications/Claude Control Bar.app"`.
 
-Pick one channel — installing both means duplicate hooks (the app resolves it in favor of the plugin, but don't).
+Pick one install channel. With both installed every hook runs twice; the app resolves the conflict in favor of the plugin, but there is no reason to keep both.
 
 ## Usage
 
-You don't open the app: it launches itself when a Claude Code session starts and quits when none is running. Everything lives in the menu bar icon — sessions, limits, MCP switches, and Options.
+You never open the app yourself. It starts with the first Claude Code session and quits when the last one ends. Sessions, limits, MCP switches and Options all live in the menu bar icon.
 
-Switching a server or tool takes effect in **new** sessions (Claude Code assembles the tool list at session start).
+Server and tool switches apply to new sessions: Claude Code assembles the tool list at session start, so sessions that are already open keep their old set.
 
-Limits come from Anthropic's usage endpoint (the same one `/usage` asks), polled with the OAuth token Claude Code keeps in your Keychain. The token stays local and is sent to `api.anthropic.com` only; there's an off switch in Options. Every file written and request made is listed in [PRIVACY.md](PRIVACY.md).
+The limit figures come from the same Anthropic usage endpoint that the `/usage` command asks. The app polls it with the OAuth token Claude Code keeps in your Keychain and sends it to `api.anthropic.com` only. The poll has an off switch in Options. [PRIVACY.md](PRIVACY.md) lists every file the app writes and every request it makes.
 
 ## Requirements
 
 - macOS 12+
 - [Claude Code](https://claude.com/claude-code) (CLI or Desktop app)
 - Node.js and the system `/usr/bin/python3`
-- Xcode Command Line Tools — plugin channel only (it compiles the app locally); not needed for the DMG
+- Xcode Command Line Tools for the plugin channel (it compiles the app locally); the DMG doesn't need them
 
 ## Uninstall
 
-Plugin: `/plugin uninstall claude-control-bar`, then drag `~/Applications/Claude Control Bar.app` to the Trash.
+Installed as a plugin: run `/plugin uninstall claude-control-bar`, then drag `~/Applications/Claude Control Bar.app` to the Trash.
 
-DMG:
+Installed from the DMG:
 
 ```bash
 node "/Applications/Claude Control Bar.app/Contents/Resources/uninstall.js"
 ```
 
-Then drag the app to the Trash. State lives in `~/.claude/control-bar/`.
+The script removes the hooks; after that drag the app to the Trash. State lives in `~/.claude/control-bar/`.
 
 ## Troubleshooting
 
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
-## Acknowledgements & License
+## Acknowledgements & license
 
-A fork of [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar) by Mick Cesanek, merged with [claude-mcp-bar](https://github.com/InfinityScripter/claude-mcp-bar). [Contributors →](ACKNOWLEDGEMENTS.md)
+The project grew out of [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar) by Mick Cesanek, merged with [claude-mcp-bar](https://github.com/InfinityScripter/claude-mcp-bar). Contributors are listed in [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).
 
-MIT — see [LICENSE](LICENSE). Unofficial project, not affiliated with or endorsed by Anthropic; "Claude" is Anthropic's trademark, used nominatively.
+MIT, see [LICENSE](LICENSE). This is an unofficial project with no affiliation to Anthropic. "Claude" is a trademark of Anthropic, used nominatively.
