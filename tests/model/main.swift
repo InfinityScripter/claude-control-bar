@@ -378,12 +378,33 @@ check(Changelog.section(for: "0.7.3", in: changelogFixture)?
 
 let blocks = Changelog.blocks(from: mid ?? "")
 check(blocks.first == .heading("Added"), "### becomes a heading block, marker gone")
-check(blocks.contains(.bullet("A first bullet. Its continuation line, hard-wrapped like the real file writes them.")),
-      "a wrapped continuation line reflows into its bullet and ** markers are stripped")
-check(blocks.contains(.bullet("A second bullet with inline code.")),
-      "backticks are stripped from a bullet")
+check(blocks.contains(.bullet("**A first bullet.** Its continuation line, hard-wrapped like the real file writes them.")),
+      "a wrapped continuation line reflows into its bullet, inline markers intact")
+check(blocks.contains(.bullet("A second bullet with `inline code`.")),
+      "backticks ride through blocks for spans to resolve")
 check(blocks.last == .paragraph("A closing paragraph on two lines."),
       "a plain paragraph reflows too")
+
+check(Changelog.blocks(from: "- a bullet\r\n  wrapped over CRLF\r\n")
+        == [.bullet("a bullet wrapped over CRLF")],
+      "a GitHub release body's CRLF line endings reflow cleanly")
+
+check(Changelog.date(for: "0.7.4", in: changelogFixture) == "2026-08-12",
+      "the header's date half comes out alone")
+check(Changelog.date(for: "0.9.9", in: changelogFixture) == nil,
+      "no header, no date")
+
+check(Changelog.spans(from: "**Lead.** Rest with `code`.") ==
+        [.bold("Lead."), .plain(" Rest with "), .code("code"), .plain(".")],
+      "bold lead and inline code split into styled runs")
+check(Changelog.spans(from: "an ** unpaired marker") ==
+        [.plain("an "), .plain("** unpaired marker")],
+      "an unbalanced ** stays literal instead of bolding the rest of the text")
+check(Changelog.spans(from: "odd ` tick") == [.plain("odd "), .plain("` tick")],
+      "an unbalanced backtick stays literal too")
+check(Changelog.spans(from: "**bold with `code` inside**") ==
+        [.bold("bold with "), .code("code"), .bold(" inside")],
+      "code nested in bold keeps both runs")
 
 // The shipped CHANGELOG.md must actually contain the version this source tree claims,
 // or the row falls back to the release page for everyone: pin the contract here.

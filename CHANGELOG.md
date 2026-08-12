@@ -7,6 +7,19 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.7.5] - 2026-08-12
+
+### Changed
+
+- **The "What's new" window looks like the app talking, not a text dump.** It gains a header
+  with the app icon, a large title and the version with its release date; section names render
+  as small colored labels (added green, fixed blue, changed amber); the changelog's bold lead
+  sentences actually show bold in full text color while the prose around them steps back to
+  secondary, and inline code gets a monospaced face — so the window scans like release notes
+  instead of a wall of matter-of-fact text. The panel content moved to its own source file and
+  is rendered to an image by a bare harness, which is how the design was reviewed before
+  shipping — main.swift never links into any test.
+
 ## [0.7.4] - 2026-08-12
 
 ### Added

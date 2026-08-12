@@ -907,7 +907,8 @@ final class StatusController: NSObject, NSMenuDelegate {
         let bundled = Bundle.main.url(forResource: "CHANGELOG", withExtension: "md")
             .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
         if let md = bundled, let text = Changelog.section(for: currentVersion, in: md) {
-            showWhatsNewWindow(version: currentVersion, markdown: text)
+            showWhatsNewWindow(version: currentVersion, markdown: text,
+                               date: Changelog.date(for: currentVersion, in: md))
         } else if let url = URL(string:
             "https://github.com/InfinityScripter/claude-control-bar/releases/tag/v\(currentVersion)") {
             // A bundle built before the changelog shipped as a resource: the release page has it.
@@ -921,7 +922,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         let d = UserDefaults.standard
         if let latest = d.string(forKey: "latestVersion"),
            let notes = d.string(forKey: "latestReleaseNotes"), !notes.isEmpty {
-            showWhatsNewWindow(version: latest, markdown: notes)
+            showWhatsNewWindow(version: latest, markdown: notes, date: nil)
         } else {
             openLatestRelease()
         }
@@ -929,61 +930,29 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     var whatsNewWindow: NSWindow?
 
-    func showWhatsNewWindow(version: String, markdown: String) {
-        let text = NSMutableAttributedString()
-        let body = NSFont.systemFont(ofSize: 13)
-        let head = NSFont.boldSystemFont(ofSize: 14)
-        let para = NSMutableParagraphStyle()
-        para.paragraphSpacing = 7
-        let bulletPara = NSMutableParagraphStyle()
-        bulletPara.paragraphSpacing = 7
-        bulletPara.headIndent = 14
-        for block in Changelog.blocks(from: markdown) {
-            switch block {
-            case .heading(let s):
-                text.append(NSAttributedString(string: s + "\n", attributes: [
-                    .font: head, .foregroundColor: NSColor.labelColor, .paragraphStyle: para]))
-            case .bullet(let s):
-                text.append(NSAttributedString(string: "\u{2022}  " + s + "\n", attributes: [
-                    .font: body, .foregroundColor: NSColor.labelColor, .paragraphStyle: bulletPara]))
-            case .paragraph(let s):
-                text.append(NSAttributedString(string: s + "\n", attributes: [
-                    .font: body, .foregroundColor: NSColor.labelColor, .paragraphStyle: para]))
-            }
-        }
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 560, height: 440))
-        scroll.hasVerticalScroller = true
-        scroll.autoresizingMask = [.width, .height]
-        let tv = NSTextView(frame: scroll.bounds)
-        tv.isEditable = false
-        tv.drawsBackground = false
-        tv.textContainerInset = NSSize(width: 18, height: 16)
-        tv.autoresizingMask = [.width]
-        tv.isVerticallyResizable = true
-        tv.isHorizontallyResizable = false
-        tv.minSize = NSSize(width: 0, height: 0)
-        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
-                            height: CGFloat.greatestFiniteMagnitude)
-        tv.textContainer?.widthTracksTextView = true
-        tv.textStorage?.setAttributedString(text)
-        scroll.documentView = tv
+    func showWhatsNewWindow(version: String, markdown: String, date: String?) {
+        let container = WhatsNewPanel.contentView(version: version, markdown: markdown,
+                                                  date: date, icon: NSApp.applicationIconImage)
         // One window, reused: a second click brings the same panel forward instead of
         // stacking copies. Closing releases the content, not the app (isReleasedWhenClosed
         // stays false because the controller keeps the reference).
         let win = whatsNewWindow ?? {
-            let w = NSWindow(contentRect: scroll.frame,
+            let w = NSWindow(contentRect: container.frame,
                              styleMask: [.titled, .closable, .resizable],
                              backing: .buffered, defer: false)
             w.isReleasedWhenClosed = false
+            // The header inside the content is the title; the system bar above it would say
+            // the same thing twice. The window name stays set for Mission Control and VoiceOver.
+            w.titlebarAppearsTransparent = true
+            w.titleVisibility = .hidden
             w.center()
             whatsNewWindow = w
             return w
         }()
         win.title = "What\u{2019}s new in \(version)"
-        win.contentView = scroll
+        win.contentView = container
         NSApp.activate(ignoringOtherApps: true)
         win.makeKeyAndOrderFront(nil)
-        tv.scroll(.zero)
     }
 
     /// Quit, then come back as the copy on disk.
