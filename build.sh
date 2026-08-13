@@ -193,7 +193,12 @@ OSA
   # Mount point taken from hdiutil's own answer, not assembled from the volume name: a leftover
   # mount of the same name (a failed detach on the previous run) makes macOS mount this one as
   # "…  1", and the guard would then inspect the OLD image and pass an image it never looked at.
-  attached="$(hdiutil attach -nobrowse -noautoopen -readonly "$DMG" | grep -E '^/dev/' | tail -1)"
+  # The line taken is the last one that actually NAMES a mount point, not simply the last
+  # /dev/ line: an APFS-formatted image answers with four of them — the synthesized volume,
+  # which is the mounted one, comes first, and the physical store comes last with an empty
+  # mount column. `tail -1` therefore read "no mount point" and aborted a clean image.
+  attached="$(hdiutil attach -nobrowse -noautoopen -readonly "$DMG" \
+    | awk -F'\t' '$1 ~ /^\/dev\// && $3 != "" { last = $0 } END { print last }')"
   vdev="$(printf '%s' "$attached" | awk '{print $1}')"
   vmount="$(printf '%s' "$attached" | awk '{ $1=""; $2=""; sub(/^[ \t]+/, ""); print }')"
   stray=""
