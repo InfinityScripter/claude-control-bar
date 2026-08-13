@@ -1,7 +1,7 @@
 import Cocoa
 
 // Checks on the MCP model, the transcript reader and the desktop-session lookup:
-//   swiftc -O Sources/MCPModel.swift Sources/Transcript.swift Sources/DesktopSessions.swift \
+//   swiftc -O Sources/MCPModel.swift Sources/Transcript.swift Sources/DesktopSessions.swift Sources/Gauge.swift \
 //     Sources/RunningProcesses.swift tests/model/main.swift -o /tmp/t -framework Cocoa && /tmp/t
 // There is no test target in this project (it builds with a bare swiftc, no Xcode project), so
 // this is a plain executable that exits non-zero on the first failure.
@@ -417,6 +417,57 @@ if let real = try? String(contentsOfFile: repoRoot + "/CHANGELOG.md", encoding: 
     check(Changelog.section(for: want, in: real) != nil,
           "CHANGELOG.md carries a section for the manifest version \(want)")
 }
+
+// MARK: Gauge — the limit bars must be honest
+
+// The measurable contract: fill width = round(percent × track width) in device pixels.
+// The old formula floored the fill at barH (15% of the track), so 1% and 15% drew the same
+// stub and the user read 18% as "almost empty".
+// 1% is the one sanctioned deviation from pure rounding: round(0.01 × 40px) = 0, but the
+// battery gauge never draws "empty" for a non-zero charge, so anything above zero keeps a
+// one-device-pixel sliver.
+for (pct, px) in [(0.01, 1.0), (0.05, 2.0), (0.18, 7.0), (0.50, 20.0), (0.95, 38.0), (1.00, 40.0)] {
+    check(Gauge.fillWidth(pct) * 2 == CGFloat(px),
+          "fillWidth(\(Int(pct * 100))%) is \(Gauge.fillWidth(pct) * 2)px, expected \(px)px")
+}
+check(Gauge.fillWidth(-0.5) == 0, "a negative value clamps to empty")
+check(Gauge.fillWidth(3.0) == Gauge.barW, "an absurd value clamps to full")
+
+// And the same width must survive the actual drawing code: rasterise image(icon:) at 2x and
+// count the filled pixels along the bar's centre row. A pure function can be honest while the
+// bezier path lies (that is exactly what happened).
+func measuredFillPx(_ pct: Double) -> Int {
+    let image = Gauge(fiveHour: pct, sevenDay: nil).image(icon: nil)
+    let w = Int(image.size.width * 2), h = Int(image.size.height * 2)
+    guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
+                                     bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                     isPlanar: false, colorSpaceName: .deviceRGB,
+                                     bytesPerRow: 0, bitsPerPixel: 0) else { return -1 }
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    NSGraphicsContext.current?.imageInterpolation = .none
+    image.draw(in: NSRect(x: 0, y: 0, width: image.size.width * 2, height: image.size.height * 2),
+               from: .zero, operation: .sourceOver, fraction: 1)
+    NSGraphicsContext.restoreGraphicsState()
+    let barHeight = image.size.height
+    let y0 = ((barHeight - Gauge.rowH) / 2).rounded()
+    let barY = y0 + ((Gauge.rowH - Gauge.barH) / 2).rounded() + Gauge.barH / 2
+    let row = h - 1 - Int(barY * 2)            // bitmap rows are top-down, the image is not
+    let barX = Int((Gauge.sideInset + Gauge.labelW + Gauge.labelGap) * 2)
+    var count = 0
+    for x in barX..<(barX + Int(Gauge.barW * 2)) {
+        guard let c = rep.colorAt(x: x, y: row) else { continue }
+        if c.alphaComponent > 0.6 { count += 1 }
+    }
+    return count
+}
+for (pct, px) in [(0.05, 2), (0.18, 7), (0.50, 20), (0.95, 38), (1.00, 40)] {
+    let got = measuredFillPx(pct)
+    check(abs(got - px) <= 1,
+          "drawn fill at \(Int(pct * 100))% is \(got)px of 40, expected \(px)±1 (antialiasing)")
+}
+let sliver = measuredFillPx(0.01)
+check(sliver >= 1 && sliver <= 2, "1% draws a \(sliver)px sliver — visible, but nothing like the 15% stub")
 
 try? FileManager.default.removeItem(atPath: dir)
 try? FileManager.default.removeItem(atPath: sessionsRoot)

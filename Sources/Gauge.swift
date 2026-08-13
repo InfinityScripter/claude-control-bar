@@ -35,6 +35,18 @@ struct Gauge {
     /// Ceiling, not a fixed size: the crab frames are wider than tall and must keep their shape.
     static let iconMaxW: CGFloat = 28
 
+    /// Honest fill width: round(percent × track width) in device pixels, nothing else. The old
+    /// formula floored the fill at barH (3pt of a 20pt track), so every value from 0 to 15%
+    /// drew the same stub and 18% read as "almost empty". A wrong small number must still be
+    /// a small number, not a lie in either direction.
+    static func fillWidth(_ value: Double, trackWidth: CGFloat = barW, scale: CGFloat = 2) -> CGFloat {
+        let pct = min(max(value, 0), 1)
+        let honest = (trackWidth * pct * scale).rounded() / scale
+        // One device pixel is the floor for anything above zero — the battery gauge makes the
+        // same promise, so "critically low" and "empty" stay distinguishable.
+        return pct > 0 ? max(honest, 1 / scale) : 0
+    }
+
     static func level(_ value: Double) -> NSColor? {
         // nil means "neutral": nothing alarming, so the whole image can stay a template and
         // behave like every other menu bar icon — light on a dark bar, dark on a light one.
@@ -97,16 +109,24 @@ struct Gauge {
                 let barX = x + Gauge.labelW + Gauge.labelGap
                 let barY = y + ((Gauge.rowH - Gauge.barH) / 2).rounded()
                 let radius = Gauge.barH / 2
+                let track = NSBezierPath(roundedRect: NSRect(x: barX, y: barY,
+                                                             width: Gauge.barW,
+                                                             height: Gauge.barH),
+                                         xRadius: radius, yRadius: radius)
                 NSColor.labelColor.withAlphaComponent(0.30).setFill()
-                NSBezierPath(roundedRect: NSRect(x: barX, y: barY, width: Gauge.barW,
-                                                 height: Gauge.barH),
-                             xRadius: radius, yRadius: radius).fill()
-                (colour ?? NSColor.labelColor).setFill()
-                let filled = max(Gauge.barH,
-                                 (Gauge.barW * CGFloat(min(max(row.1, 0), 1)) * 2).rounded() / 2)
-                NSBezierPath(roundedRect: NSRect(x: barX, y: barY, width: filled,
-                                                 height: Gauge.barH),
-                             xRadius: radius, yRadius: radius).fill()
+                track.fill()
+                // The fill is a straight-edged rect clipped by the track capsule — the way the
+                // system battery gauge draws its charge. A rounded fill of its own eats the
+                // width of small values: at 18% a 3.6pt capsule with 1.5pt corners reads as a
+                // dot, and the honest number looks like 5%.
+                let filled = Gauge.fillWidth(row.1)
+                if filled > 0 {
+                    NSGraphicsContext.current?.saveGraphicsState()
+                    track.setClip()
+                    (colour ?? NSColor.labelColor).setFill()
+                    NSRect(x: barX, y: barY, width: filled, height: Gauge.barH).fill()
+                    NSGraphicsContext.current?.restoreGraphicsState()
+                }
             }
             return true
         }

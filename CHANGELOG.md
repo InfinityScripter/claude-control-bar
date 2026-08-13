@@ -7,6 +7,18 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.7.7] - 2026-08-13
+
+### Fixed
+
+- **The limit bars tell the truth now.** The 5h/7d gauge used to floor its fill at the bar's
+  own height — 3pt of a 20pt track — so every value from 0 to 15% drew the same stub, and the
+  rounded fill shape ate what little width was left: 18% of the weekly quota read as almost
+  empty. The fill is now a straight-edged rect clipped by the track capsule, the way the
+  system battery gauge draws its charge, and its width is round(percent × track width) in
+  device pixels — with a one-pixel floor above zero, so "critically low" never looks like
+  "empty". Pinned by pixel-measuring tests on the actual drawing code in the model suite.
+
 ## [0.7.6] - 2026-08-12
 
 ### Changed
