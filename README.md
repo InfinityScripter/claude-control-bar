@@ -40,6 +40,20 @@ Pick one install channel. With both installed every hook runs twice; the app res
 
 You never open the app yourself. It starts with the first Claude Code session and quits when the last one ends. Sessions, limits, MCP switches and Options all live in the menu bar icon.
 
+### Crab mascot
+
+**Crab Walking** is the default animation on a fresh install. The mascot changes with the number of Claude Code sessions working in parallel. Only sessions that are currently thinking or running a tool count; open but idle sessions do not.
+
+| Working sessions | What the Crab does |
+| ---: | --- |
+| 0 | Sleeps |
+| 1 | Relaxes with a cigar |
+| 2–3 | Uses the original walking animation |
+| 4–5 | Turns red, sways and sweats |
+| 6+ | Its head catches fire |
+
+When a session needs permission, the Crab switches to a separate waiting scene: it checks its watch, then looks at the screen. A yellow warning dot stays beside it, and the status text reads `Needs you`. Once permission is handled, it returns to the state for the current number of working sessions.
+
 Server and tool switches apply to new sessions: Claude Code assembles the tool list at session start, so sessions that are already open keep their old set.
 
 The limit figures come from the same Anthropic usage endpoint that the `/usage` command asks. The app polls it with the OAuth token Claude Code keeps in your Keychain and sends it to `api.anthropic.com` only. The poll has an off switch in Options. [PRIVACY.md](PRIVACY.md) lists every file the app writes and every request it makes.
