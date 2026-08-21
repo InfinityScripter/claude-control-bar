@@ -460,14 +460,15 @@ final class StatusController: NSObject, NSMenuDelegate {
     var iconCacheKey = ""
     var startedAt: Double = 0  // unix seconds the current turn began (0 = no clock)
     var activeColor: NSColor? = nil
+    var activeBadge = false
 
     let brand = NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1) // #d97757, Anthropic's official "Orange" accent
-    let amber = NSColor(srgbRed: 0.95, green: 0.73, blue: 0.18, alpha: 1) // "awaiting permission" yellow dot
+    let amber = NSColor(srgbRed: 0.95, green: 0.73, blue: 0.18, alpha: 1) // "Needs you" badge
     let frames: [NSImage] = StatusController.loadFrames()
     let spriteFPS: Double = 9 // tune: 8 frames per loop -> ~0.9s/cycle
 
     enum AnimStyle: String { case web, code, crab }
-    var animStyle: AnimStyle = .web
+    var animStyle: AnimStyle = .crab
     var showTimer = false
     var iconSystem = false // false = brand Orange; true = adaptive black/white (template image)
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
@@ -515,23 +516,27 @@ final class StatusController: NSObject, NSMenuDelegate {
     let codeSub = 18            // sub-frames per glyph (tween smoothness)
     let codeCycle: Double = 3.8 // seconds for the full loop (lower = faster)
     lazy var codeGlyphMasks: [NSImage] = codeGlyphs.map { StatusController.glyphMask($0) }
-    let crabFPS: Double = 12.5 // matches the source GIF's 0.08s frame delay
     lazy var crabFrames: [NSImage] = StatusController.decodePNGs(clawdCrabFramePNGs)
+    lazy var crabFrameSet = CrabFrameSet(walking: crabFrames)
     // Template frames: bright pixels (white eyes) become transparent holes so they're
     // visible as negative space against the menu bar in System color mode.
-    lazy var crabTemplateFrames: [NSImage] = crabFrames.map { adaptiveCrabFrame($0) }
+    lazy var crabTemplateFrames: [CrabMood: [NSImage]] = Dictionary(uniqueKeysWithValues:
+        CrabMood.allCases.map { mood in
+            (mood, crabFrameSet.frames(for: mood).map(adaptiveCrabFrame))
+        })
+    var crabMood: CrabMood = .sleeping
     var fps: Double {
         switch animStyle {
         case .web: return spriteFPS
         case .code: return Double(codeGlyphs.count * codeSub) / codeCycle
-        case .crab: return crabFPS
+        case .crab: return crabMood.framesPerSecond
         }
     }
     var frameCount: Int {
         switch animStyle {
         case .web: return max(1, frames.count)
         case .code: return codeGlyphs.count * codeSub
-        case .crab: return max(1, crabFrames.count)
+        case .crab: return max(1, crabFrameSet.frames(for: crabMood).count)
         }
     }
 
@@ -1727,7 +1732,7 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func statusText(_ s: Session, eff: String) -> String {
         switch eff {
-        case "permission":       return "Awaiting permission"
+        case "permission":       return "Needs you"
         case "thinking", "tool": return workingLabel(s)
         default:                 return s.state == "done" ? "Done" : "Idle"
         }
@@ -2163,20 +2168,40 @@ final class StatusController: NSObject, NSMenuDelegate {
             let pa = priority(of: a.eff), pb = priority(of: b.eff)
             return pa == pb ? a.ts < b.ts : pa < pb
         }
+        setCrabMood(CrabMood.display(forEffectiveStates: sessions.values.map(\.eff),
+                                     leadState: lead?.eff))
         statusItem.button?.toolTip = lead.map(sessionMenuLine)  // names repo + surface + state on hover
 
         guard let lead = lead else { renderResting(); return }
         switch lead.eff {
         case "permission":
-            render(label: statusText(lead, eff: lead.eff), color: amber, animate: false, startedAt: 0, dot: true)
+            render(label: statusText(lead, eff: lead.eff), color: crabRenderColor,
+                   animate: animStyle == .crab || crabMood != .sleeping, startedAt: 0, badge: true)
         case "thinking", "tool":
-            render(label: statusText(lead, eff: lead.eff), color: iconColor, animate: true, startedAt: lead.startedAt)
+            render(label: statusText(lead, eff: lead.eff), color: crabRenderColor, animate: true, startedAt: lead.startedAt)
         default:
             renderResting()
         }
     }
 
-    func renderResting() { render(label: "", color: iconColor, animate: false, startedAt: 0) }
+    var crabRenderColor: NSColor? {
+        animStyle == .crab && crabMood.keepsColorInSystem ? brand : iconColor
+    }
+
+    func setCrabMood(_ mood: CrabMood) {
+        guard mood != crabMood else { return }
+        crabMood = mood
+        guard animStyle == .crab else { return }
+        animTimer?.invalidate(); animTimer = nil
+        frameIdx = 0
+        iconCacheKey = ""
+        iconCache.removeAll()
+        statusItem.button?.image = nil
+    }
+
+    func renderResting() {
+        render(label: "", color: crabRenderColor, animate: animStyle == .crab, startedAt: 0)
+    }
 
 
 
@@ -2258,12 +2283,18 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     // MARK: render
 
-    func render(label: String, color: NSColor?, animate: Bool, startedAt: Double, dot: Bool = false) {
+    func render(label: String, color: NSColor?, animate: Bool, startedAt: Double, badge: Bool = false) {
         guard let button = statusItem.button else { return }
         button.contentTintColor = nil // we paint the icon color ourselves; template-tint is unreliable
         activeBase = label
         activeColor = color
         self.startedAt = startedAt
+        if activeBadge != badge {
+            activeBadge = badge
+            iconCacheKey = ""
+            iconCache.removeAll()
+            button.image = nil
+        }
 
         if animate {
             if animTimer == nil {
@@ -2274,10 +2305,14 @@ final class StatusController: NSObject, NSMenuDelegate {
         } else {
             animTimer?.invalidate(); animTimer = nil
             frameIdx = 0
-            button.image = decorate(dot ? dotIcon(color: color) : restingIcon(color: color))
+            let icon = restingIcon(color: color)
+            button.image = decorate(badge ? attentionBadgeIcon(icon, color: amber) : icon)
         }
         applyTitle()
-        if button.image == nil { button.image = decorate(dot ? dotIcon(color: color) : restingIcon(color: color)) }
+        if button.image == nil {
+            button.image = animate ? cachedIcon(frame: frameIdx)
+                                   : decorate(restingIcon(color: color))
+        }
     }
 
     func animStep() {
@@ -2294,6 +2329,8 @@ final class StatusController: NSObject, NSMenuDelegate {
     /// because a cached image must not outlive a switch between a light and a dark menu bar.
     func cachedIcon(frame: Int) -> NSImage? {
         let key = [animStyle.rawValue,
+                   animStyle == .crab ? crabMood.rawValue : "",
+                   activeBadge ? "badge" : "",
                    activeColor.map { "\($0)" } ?? "template",
                    currentGauge().signature,
                    NSApp.effectiveAppearance.name.rawValue].joined(separator: "|")
@@ -2302,7 +2339,8 @@ final class StatusController: NSObject, NSMenuDelegate {
             iconCache.removeAll()
         }
         if let hit = iconCache[frame] { return hit }
-        let made = decorate(iconImage(color: activeColor, frame: frame))
+        let icon = iconImage(color: activeColor, frame: frame)
+        let made = decorate(activeBadge ? attentionBadgeIcon(icon, color: amber) : icon)
         iconCache[frame] = made
         return made
     }
@@ -2417,8 +2455,9 @@ final class StatusController: NSObject, NSMenuDelegate {
     // nil color (System) => adaptive shaded template (see adaptiveCrabFrame in CrabRender.swift);
     // non-nil (Orange) => the original full-color sprite, drawn as-is.
     func crabIcon(color: NSColor?, frame: Int) -> NSImage {
-        guard !crabFrames.isEmpty else { return NSImage(size: NSSize(width: 18, height: 18)) }
-        let pool = color == nil ? crabTemplateFrames : crabFrames
+        let fullColor = crabFrameSet.frames(for: crabMood)
+        let pool = color == nil ? (crabTemplateFrames[crabMood] ?? fullColor) : fullColor
+        guard !pool.isEmpty else { return NSImage(size: NSSize(width: 18, height: 18)) }
         let src = pool[frame % pool.count]
         let rep = src.representations.first
         let pw = CGFloat(rep?.pixelsWide ?? Int(src.size.width))
@@ -2426,17 +2465,6 @@ final class StatusController: NSObject, NSMenuDelegate {
         let h: CGFloat = 18, w = (ph > 0 ? h * (pw / ph) : h)
         let img = NSImage(size: NSSize(width: w, height: h), flipped: false) { rect in
             src.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1.0)
-            return true
-        }
-        img.isTemplate = (color == nil)
-        return img
-    }
-
-    func dotIcon(color: NSColor?) -> NSImage {
-        let s: CGFloat = 18, d: CGFloat = 9
-        let img = NSImage(size: NSSize(width: s, height: s), flipped: false) { _ in
-            (color ?? .systemYellow).setFill()
-            NSBezierPath(ovalIn: NSRect(x: (s - d) / 2, y: (s - d) / 2, width: d, height: d)).fill()
             return true
         }
         img.isTemplate = (color == nil)

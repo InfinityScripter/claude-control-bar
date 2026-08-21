@@ -2,7 +2,8 @@ import Cocoa
 
 // Checks on the MCP model, the transcript reader and the desktop-session lookup:
 //   swiftc -O Sources/MCPModel.swift Sources/Transcript.swift Sources/DesktopSessions.swift Sources/Gauge.swift \
-//     Sources/RunningProcesses.swift tests/model/main.swift -o /tmp/t -framework Cocoa && /tmp/t
+//     Sources/RunningProcesses.swift Sources/CrabFrames.swift Sources/CrabRender.swift \
+//     Sources/CrabMoodFrames.swift tests/model/main.swift -o /tmp/t -framework Cocoa && /tmp/t
 // There is no test target in this project (it builds with a bare swiftc, no Xcode project), so
 // this is a plain executable that exits non-zero on the first failure.
 
@@ -468,6 +469,304 @@ for (pct, px) in [(0.05, 2), (0.18, 7), (0.50, 20), (0.95, 38), (1.00, 40)] {
 }
 let sliver = measuredFillPx(0.01)
 check(sliver >= 1 && sliver <= 2, "1% draws a \(sliver)px sliver — visible, but nothing like the 15% stub")
+
+let redIcon = NSImage(size: NSSize(width: 4, height: 4), flipped: false) { rect in
+    NSColor(deviceRed: 0.9, green: 0.1, blue: 0.05, alpha: 1).setFill(); rect.fill(); return true
+}
+redIcon.isTemplate = false
+func renderedPixel(_ image: NSImage, at point: NSPoint, scale: CGFloat = 2) -> NSColor? {
+    let w = Int(image.size.width * scale), h = Int(image.size.height * scale)
+    guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
+                                     bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                     isPlanar: false, colorSpaceName: .deviceRGB,
+                                     bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    image.draw(in: NSRect(x: 0, y: 0, width: image.size.width * scale, height: image.size.height * scale),
+               from: .zero, operation: .sourceOver, fraction: 1)
+    NSGraphicsContext.restoreGraphicsState()
+    return rep.colorAt(x: Int(point.x * scale), y: h - 1 - Int(point.y * scale))
+}
+let neutralGaugeWithRedIcon = Gauge(fiveHour: 0.50, sevenDay: nil).image(icon: redIcon)
+check(!neutralGaugeWithRedIcon.isTemplate,
+      "a full-colour icon keeps a neutral gauge composite out of template mode")
+let criticalGaugeWithRedIcon = Gauge(fiveHour: 0.95, sevenDay: nil).image(icon: redIcon)
+let preservedRed = renderedPixel(criticalGaugeWithRedIcon,
+                                 at: NSPoint(x: Gauge.sideInset + 2, y: criticalGaugeWithRedIcon.size.height / 2))
+check((preservedRed?.redComponent ?? 0) > 0.7 && (preservedRed?.greenComponent ?? 1) < 0.3,
+      "a critical coloured gauge preserves the icon's own red pixels")
+
+let badgeBase = NSImage(size: NSSize(width: 10, height: 18), flipped: false) { rect in
+    NSColor(deviceRed: 0.15, green: 0.45, blue: 0.85, alpha: 1).setFill(); rect.fill(); return true
+}
+badgeBase.isTemplate = false
+let badgeAmber = NSColor(deviceRed: 0.95, green: 0.73, blue: 0.18, alpha: 1)
+let badgedIcon = attentionBadgeIcon(badgeBase, color: badgeAmber)
+check(badgedIcon.size == NSSize(width: 12, height: 18),
+      "the permission badge adds only a 2pt trailing gutter")
+check(!badgedIcon.isTemplate, "a coloured permission badge makes the composite non-template")
+check(crabHasPixel(badgedIcon) { $0.blueComponent > 0.7 && $0.redComponent < 0.3 },
+      "the permission badge keeps the mascot pixels instead of replacing them")
+check(crabHasPixel(badgedIcon) { $0.redComponent > 0.8 && $0.greenComponent > 0.55
+    && $0.blueComponent < 0.35 }, "the permission badge contains visible amber pixels")
+let gaugedBadge = Gauge(fiveHour: 0.50, sevenDay: nil).image(icon: badgedIcon)
+check(crabHasPixel(gaugedBadge) { $0.redComponent > 0.8 && $0.greenComponent > 0.55
+    && $0.blueComponent < 0.35 }, "a neutral usage gauge preserves the amber permission badge")
+let templateBadgeBase = NSImage(size: NSSize(width: 10, height: 18), flipped: false) { rect in
+    NSColor.black.setFill(); rect.fill(); return true
+}
+templateBadgeBase.isTemplate = true
+let templateBadgedIcon = attentionBadgeIcon(templateBadgeBase, color: badgeAmber)
+let templateMascotPixel = renderedPixel(templateBadgedIcon, at: NSPoint(x: 2, y: 9))
+check((templateMascotPixel?.alphaComponent ?? 0) > 0.5,
+      "the permission badge preserves a System-template mascot")
+
+// MARK: Crab load — the mascot reflects work happening now, not merely open sessions
+
+if let mainSource = try? String(contentsOfFile: repoRoot + "/Sources/main.swift", encoding: .utf8) {
+    check(mainSource.contains("var animStyle: AnimStyle = .crab"),
+          "Crab is the default animation when no preference was saved")
+    check(mainSource.contains("d.string(forKey: \"animStyle\")"),
+          "a saved animation preference still overrides the Crab default")
+    check(mainSource.contains("return \"Needs you\"") && !mainSource.contains("Awaiting permission"),
+          "permission uses the short Needs you status-bar label")
+    check(mainSource.contains("badge: true") && !mainSource.contains("dot: true"),
+          "permission renders a badge over the mascot instead of replacing it with a dot")
+    check(mainSource.contains("CrabMood.display("),
+          "the status-bar mood is selected with the permission-aware display model")
+} else {
+    check(false, "Sources/main.swift is readable for the presentation defaults contract")
+}
+
+check(CrabMood.forEffectiveStates([]) == .sleeping,
+      "zero working sessions puts the crab to sleep")
+check(CrabMood.forEffectiveStates(["thinking"]) == .cigar,
+      "one working session lets the crab relax with a cigar")
+check(CrabMood.forEffectiveStates(["thinking", "tool"]) == .walking,
+      "two working sessions keep the original walk")
+check(CrabMood.forEffectiveStates(["tool", "thinking", "tool"]) == .walking,
+      "three working sessions still keep the original walk")
+check(CrabMood.forEffectiveStates(["thinking", "tool", "thinking", "tool"]) == .overheated,
+      "four working sessions make the crab overheat")
+check(CrabMood.forEffectiveStates(Array(repeating: "tool", count: 5)) == .overheated,
+      "five working sessions are still the sweating tier")
+check(CrabMood.forEffectiveStates(Array(repeating: "thinking", count: 6)) == .onFire,
+      "six working sessions set the crab's head on fire")
+check(CrabMood.forEffectiveStates(Array(repeating: "tool", count: 20)) == .onFire,
+      "the fire tier has no upper bound")
+check(CrabMood.forEffectiveStates(["permission", "idle", "done", "unknown"]) == .sleeping,
+      "permission and resting sessions do not count as work")
+check(CrabMood.forEffectiveStates(["permission", "thinking", "idle"]) == .cigar,
+      "a permission wait does not inflate one genuinely working session")
+check(CrabMood.display(forEffectiveStates: [], leadState: "permission") == .waitingPermission,
+      "permission selects the dedicated waiting cycle over sleep")
+check(CrabMood.display(forEffectiveStates: ["thinking", "permission"], leadState: "permission")
+        == .waitingPermission,
+      "permission selects the waiting cycle over concurrent load")
+check(CrabMood.display(forEffectiveStates: ["thinking"], leadState: "thinking") == .cigar,
+      "clearing permission returns immediately to the load mood")
+check(CrabMood.display(forEffectiveStates: Array(repeating: "tool", count: 6), leadState: "tool")
+        == .onFire,
+      "ordinary lead states still use the load scale")
+
+check(CrabMood.sleeping.framesPerSecond == 2, "sleep runs at a quiet 2 FPS")
+check(CrabMood.waitingPermission.framesPerSecond == 3, "permission waits at a readable 3 FPS")
+check(CrabMood.cigar.framesPerSecond == 4, "cigar smoke runs at 4 FPS")
+check(CrabMood.walking.framesPerSecond == 12.5, "the original walk keeps its 12.5 FPS")
+check(CrabMood.overheated.framesPerSecond == 8, "sweating runs at 8 FPS")
+check(CrabMood.onFire.framesPerSecond == 10, "fire flickers at 10 FPS")
+check(!CrabMood.sleeping.keepsColorInSystem && !CrabMood.cigar.keepsColorInSystem
+        && !CrabMood.walking.keepsColorInSystem && !CrabMood.waitingPermission.keepsColorInSystem,
+      "ordinary moods continue to respect System colour")
+check(CrabMood.overheated.keepsColorInSystem && CrabMood.onFire.keepsColorInSystem,
+      "semantic red and fire stay coloured in System mode")
+
+let walkingCrabFrames = clawdCrabFramePNGs.compactMap {
+    Data(base64Encoded: $0).flatMap(NSImage.init(data:))
+}
+let crabFrameSet = CrabFrameSet(walking: walkingCrabFrames)
+check(crabFrameSet.frames(for: .sleeping).count == 6, "sleep has six production frames")
+check(crabFrameSet.frames(for: .waitingPermission).count == 8,
+      "permission has eight production frames")
+check(crabFrameSet.frames(for: .cigar).count == 8, "cigar has eight production frames")
+check(crabFrameSet.frames(for: .walking).count == 20, "walking keeps all twenty source frames")
+check(crabFrameSet.frames(for: .overheated).count == 12, "overheating has twelve production frames")
+check(crabFrameSet.frames(for: .onFire).count == 12, "fire has twelve production frames")
+check(crabFrameSet.frames(for: .walking).first === walkingCrabFrames.first,
+      "the ordinary walk reuses the original image rather than redrawing it")
+
+func crabBitmap(_ image: NSImage) -> NSBitmapImageRep? {
+    image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:))
+}
+for mood in CrabMood.allCases {
+    let frames = crabFrameSet.frames(for: mood)
+    check(frames.allSatisfy { frame in
+        guard let rep = crabBitmap(frame) else { return false }
+        return rep.pixelsWide == 51 && rep.pixelsHigh == 36 && rep.hasAlpha
+    }, "every \(mood.rawValue) frame is a transparent 51×36 bitmap")
+}
+
+func crabHasPixel(_ image: NSImage, where predicate: (NSColor) -> Bool) -> Bool {
+    guard let rep = crabBitmap(image) else { return false }
+    for y in 0..<rep.pixelsHigh {
+        for x in 0..<rep.pixelsWide {
+            if let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
+               color.alphaComponent > 0.5, predicate(color) { return true }
+        }
+    }
+    return false
+}
+func crabPixelCount(_ image: NSImage, xRange: ClosedRange<Int>, yRange: ClosedRange<Int>,
+                    where predicate: (NSColor) -> Bool) -> Int {
+    guard let rep = crabBitmap(image) else { return -1 }
+    var count = 0
+    for y in yRange {
+        for x in xRange {
+            if let color = rep.colorAt(x: x, y: y), color.alphaComponent > 0.5,
+               predicate(color) { count += 1 }
+        }
+    }
+    return count
+}
+func crabAlphaCount(_ image: NSImage, xRange: ClosedRange<Int>, yRange: ClosedRange<Int>,
+                    above threshold: CGFloat) -> Int {
+    guard let rep = crabBitmap(image) else { return -1 }
+    var count = 0
+    for y in yRange {
+        for x in xRange where (rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) > threshold {
+            count += 1
+        }
+    }
+    return count
+}
+func crabTopY(_ image: NSImage, xRange: ClosedRange<Int>) -> Int? {
+    guard let rep = crabBitmap(image) else { return nil }
+    for y in 0..<rep.pixelsHigh {
+        if xRange.contains(where: { (rep.colorAt(x: $0, y: y)?.alphaComponent ?? 0) > 0.5 }) {
+            return y
+        }
+    }
+    return nil
+}
+func crabLeftEyeX(_ image: NSImage) -> Int? {
+    guard let rep = crabBitmap(image) else { return nil }
+    for x in 8...25 {
+        for y in 5...16 {
+            guard let color = rep.colorAt(x: x, y: y), color.alphaComponent > 0.5 else { continue }
+            let luminance = 0.299 * color.redComponent + 0.587 * color.greenComponent
+                + 0.114 * color.blueComponent
+            if luminance < 0.15 { return x }
+        }
+    }
+    return nil
+}
+func crabEffectYRange(_ frames: [NSImage], where predicate: (NSColor) -> Bool) -> Int {
+    var ys: [Int] = []
+    for frame in frames {
+        guard let rep = crabBitmap(frame) else { continue }
+        for y in 0..<rep.pixelsHigh {
+            for x in 0..<rep.pixelsWide {
+                if let color = rep.colorAt(x: x, y: y), color.alphaComponent > 0.5,
+                   predicate(color) { ys.append(y) }
+            }
+        }
+    }
+    guard let low = ys.min(), let high = ys.max() else { return -1 }
+    return high - low
+}
+let sleepingBodyTops = crabFrameSet.frames(for: .sleeping).compactMap {
+    crabTopY($0, xRange: 20...30)
+}
+check((sleepingBodyTops.max() ?? 0) - (sleepingBodyTops.min() ?? 0) >= 3,
+      "sleep has at least 3px between its breathing key poses")
+let cigarEyePositions = crabFrameSet.frames(for: .cigar).compactMap(crabLeftEyeX)
+check((cigarEyePositions.max() ?? 0) - (cigarEyePositions.min() ?? 0) >= 2,
+      "the cigar anticipation leans the mascot at least 2px")
+check(crabEffectYRange(crabFrameSet.frames(for: .cigar)) { color in
+    abs(color.redComponent - color.greenComponent) < 0.08
+        && abs(color.greenComponent - color.blueComponent) < 0.08
+        && color.redComponent > 0.5
+} >= 9, "the cigar smoke travels a clear vertical arc")
+let overheatedEyePositions = crabFrameSet.frames(for: .overheated).compactMap(crabLeftEyeX)
+check((overheatedEyePositions.max() ?? 0) - (overheatedEyePositions.min() ?? 0) >= 4,
+      "overheating has distinct -2px/+2px sway key poses")
+check(crabEffectYRange(crabFrameSet.frames(for: .overheated)) { color in
+    color.blueComponent > color.redComponent + 0.3 && color.blueComponent > 0.8
+} >= 12, "overheated sweat visibly falls instead of blinking in place")
+let fireEyePositions = crabFrameSet.frames(for: .onFire).compactMap(crabLeftEyeX)
+check((fireEyePositions.max() ?? 0) - (fireEyePositions.min() ?? 0) >= 4,
+      "fire shakes the mascot across at least 4px")
+let fireTopRange = crabFrameSet.frames(for: .onFire).compactMap { frame -> Int? in
+    guard let rep = crabBitmap(frame) else { return nil }
+    for y in 0..<rep.pixelsHigh {
+        for x in 0..<rep.pixelsWide {
+            if let color = rep.colorAt(x: x, y: y), color.alphaComponent > 0.5,
+               color.redComponent > 0.9, color.greenComponent > 0.4,
+               color.blueComponent < 0.2 { return y }
+        }
+    }
+    return nil
+}
+check((fireTopRange.max() ?? 0) - (fireTopRange.min() ?? 0) >= 4,
+      "fire key poses have a clearly different flame height")
+let permissionFrames = crabFrameSet.frames(for: .waitingPermission)
+let permissionEyePositions = permissionFrames.compactMap(crabLeftEyeX)
+check((permissionEyePositions.max() ?? 0) - (permissionEyePositions.min() ?? 0) >= 2,
+      "permission moves its gaze between the watch and the screen")
+check(permissionFrames.allSatisfy { frame in
+    crabPixelCount(frame, xRange: 2...9, yRange: 11...20) { color in
+        abs(color.redComponent - color.greenComponent) < 0.08
+            && abs(color.greenComponent - color.blueComponent) < 0.08
+            && color.redComponent > 0.45
+    } >= 6
+}, "the watch remains visible throughout the permission cycle")
+func crabPixelDifference(_ lhs: NSImage, _ rhs: NSImage,
+                         xRange: ClosedRange<Int>, yRange: ClosedRange<Int>) -> Int {
+    guard let a = crabBitmap(lhs), let b = crabBitmap(rhs) else { return -1 }
+    var count = 0
+    for y in yRange {
+        for x in xRange {
+            let ca = a.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB)
+            let cb = b.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB)
+            if abs((ca?.redComponent ?? 0) - (cb?.redComponent ?? 0)) > 0.05
+                || abs((ca?.greenComponent ?? 0) - (cb?.greenComponent ?? 0)) > 0.05
+                || abs((ca?.blueComponent ?? 0) - (cb?.blueComponent ?? 0)) > 0.05
+                || abs((ca?.alphaComponent ?? 0) - (cb?.alphaComponent ?? 0)) > 0.05 {
+                count += 1
+            }
+        }
+    }
+    return count
+}
+check(crabPixelDifference(permissionFrames[3], permissionFrames[4],
+                          xRange: 2...9, yRange: 11...20) >= 1,
+      "the watch hand advances during the waiting hold")
+let systemPermission = adaptiveCrabFrame(permissionFrames[3])
+check(crabAlphaCount(systemPermission, xRange: 2...9, yRange: 11...20, above: 0.2) >= 6,
+      "the watch remains visible in System colour")
+let sleepingFirst = crabFrameSet.frames(for: .sleeping)[0]
+check(crabPixelCount(sleepingFirst, xRange: 13...37, yRange: 9...9) { color in
+    0.299 * color.redComponent + 0.587 * color.greenComponent + 0.114 * color.blueComponent < 0.45
+} == 0, "sleep clears the old eye shadow above its closed slits")
+check(crabFrameSet.frames(for: .cigar).contains { frame in
+    crabHasPixel(frame) { $0.redComponent > 0.25 && $0.greenComponent > 0.15
+        && $0.redComponent > $0.greenComponent * 1.2 && $0.blueComponent < 0.15 }
+}, "the cigar cycle contains a visible brown cigar")
+let systemCigar = adaptiveCrabFrame(crabFrameSet.frames(for: .cigar)[0])
+check(crabAlphaCount(systemCigar, xRange: 40...48, yRange: 14...16, above: 0.2) >= 12,
+      "the cigar remains a visible template stroke in System colour")
+check(crabFrameSet.frames(for: .overheated).allSatisfy { frame in
+    crabHasPixel(frame) { $0.redComponent > 0.75 && $0.greenComponent < 0.35 }
+}, "every overheated frame visibly reddens the crab")
+check(crabFrameSet.frames(for: .onFire).allSatisfy { frame in
+    crabHasPixel(frame) { $0.redComponent > 0.9 && $0.greenComponent > 0.45
+        && $0.blueComponent < 0.2 }
+}, "every fire frame contains a hot orange or yellow flame pixel")
+check(crabFrameSet.frames(for: .onFire).allSatisfy { frame in
+    crabPixelCount(frame, xRange: 0...50, yRange: 5...5) { color in
+        color.redComponent > 0.9 && color.greenComponent > 0.4 && color.blueComponent < 0.2
+    } >= 12
+}, "the flames join the shell instead of floating above a dark seam")
 
 try? FileManager.default.removeItem(atPath: dir)
 try? FileManager.default.removeItem(atPath: sessionsRoot)

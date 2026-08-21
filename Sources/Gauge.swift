@@ -56,7 +56,8 @@ struct Gauge {
     }
 
     /// `icon` is the icon the app was about to show anyway — a spark frame, a crab frame, or the
-    /// amber "awaiting permission" dot — used as an alpha mask exactly as tint(_:color:frame:) does.
+    /// amber "Needs you" badge. Template icons use their alpha as ink; full-colour icons
+    /// keep their own pixels so semantic red/fire and the Orange crab survive the composite.
     ///
     /// Neutral parts are painted with NSColor.labelColor rather than a hand-picked black or
     /// white, and that is the whole trick. There is no reliable way to ask "is the menu bar
@@ -76,7 +77,7 @@ struct Gauge {
         let w = Gauge.sideInset * 2 + (icon != nil ? iconSize.width + Gauge.iconGap : 0) + strip
         // One coloured bar makes the whole image non-template: the system tints a template by
         // alpha alone, so a hue cannot survive in one.
-        let template = shown.allSatisfy { Gauge.level($0.1) == nil }
+        let template = shown.allSatisfy { Gauge.level($0.1) == nil } && (icon?.isTemplate ?? true)
         let blockH = CGFloat(shown.count) * Gauge.rowH
             + CGFloat(max(shown.count - 1, 0)) * Gauge.rowGap
         let y0 = ((h - blockH) / 2).rounded()   // whole points: crisp at 1x, 2x and 3x alike
@@ -87,7 +88,9 @@ struct Gauge {
             if let icon {
                 let box = NSRect(x: x, y: ((h - iconSize.height) / 2).rounded(),
                                  width: iconSize.width, height: iconSize.height)
-                if template {
+                if !icon.isTemplate {
+                    icon.draw(in: box, from: .zero, operation: .sourceOver, fraction: 1)
+                } else if template {
                     // Alpha is all the system will read, so draw the frame as-is and let it ink.
                     icon.draw(in: box, from: .zero, operation: .sourceOver, fraction: 1)
                 } else {

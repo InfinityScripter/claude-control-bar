@@ -7,6 +7,24 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [Unreleased]
+
+### Added
+
+- **The Crab now shows how much work is happening.** With no active work it sleeps; with one
+  working session it relaxes with a cigar; two or three keep the original walk; four or five
+  make it turn red, sway and sweat; six or more set its head on fire. Only sessions currently
+  thinking or running a tool count, so an open but idle tab does not make the mascot panic.
+- **A permission request looks like waiting, not a replacement icon.** The Crab checks a watch,
+  looks back at the screen and blinks while the shorter `Needs you` label is visible. A small
+  amber badge sits beside the still-animated mascot instead of replacing it, and both the badge
+  and the Crab keep their colours when the 5h/7d gauges are present.
+
+### Changed
+
+- **Crab Walking is the default animation for a fresh install.** An existing saved choice still
+  wins, so upgrades do not switch people away from Claude Spark or Claude Code.
+
 ## [0.7.7] - 2026-08-13
 
 ### Fixed

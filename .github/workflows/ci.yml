@@ -23,7 +23,7 @@ jobs:
       # plain executable that exits non-zero on the first failure.
       - name: Swift model checks
         run: |
-          swiftc -O Sources/MCPModel.swift Sources/Transcript.swift Sources/DesktopSessions.swift Sources/RunningProcesses.swift Sources/SafeInt.swift Sources/Sessions.swift Sources/Changelog.swift Sources/Gauge.swift tests/model/main.swift -o "$RUNNER_TEMP/model" -framework Cocoa
+          swiftc -O Sources/MCPModel.swift Sources/Transcript.swift Sources/DesktopSessions.swift Sources/RunningProcesses.swift Sources/SafeInt.swift Sources/Sessions.swift Sources/Changelog.swift Sources/Gauge.swift Sources/CrabFrames.swift Sources/CrabRender.swift Sources/CrabMoodFrames.swift tests/model/main.swift -o "$RUNNER_TEMP/model" -framework Cocoa
           "$RUNNER_TEMP/model"
 
       - name: Build the app
