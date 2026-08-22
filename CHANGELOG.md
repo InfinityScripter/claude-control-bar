@@ -7,6 +7,24 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.7.10] - 2026-08-22
+
+### Changed
+
+- **The Crab's busier moods now read as distinct emotions at menu-bar size.** The cigar pose has
+  an asymmetric smug squint, overheating opens into a pant with a visible tongue, and the fire
+  panic uses unmistakable `><` eyes with clenched teeth. Stronger anticipation, action and
+  recovery poses make the watch check, smoke puff, pant and claw flail feel less static while
+  the feet and claw hinges stay planted.
+- **Both READMEs now show the actual Crab animations.** The Russian guide has the same six-state
+  GIF gallery as the English guide, generated from the app's production frames and timing.
+
+### Fixed
+
+- **Animated README previews no longer show a false gap through the Crab.** Every GIF frame is
+  composited onto an opaque background before encoding, avoiding transparency/disposal artifacts
+  that could make the connected head and shell look separated in some Markdown viewers.
+
 ## [0.7.9] - 2026-08-22
 
 ### Changed

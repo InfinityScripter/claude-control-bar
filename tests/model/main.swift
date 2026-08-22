@@ -755,6 +755,13 @@ func crabPixelDifference(_ lhs: NSImage, _ rhs: NSImage,
     }
     return count
 }
+func crabIsInk(_ image: NSImage, x: Int, y: Int) -> Bool {
+    guard let color = crabBitmap(image)?.colorAt(x: x, y: y), color.alphaComponent > 0.5 else {
+        return false
+    }
+    return 0.299 * color.redComponent + 0.587 * color.greenComponent
+        + 0.114 * color.blueComponent < 0.15
+}
 let restingCrab = walkingCrabFrames[0]
 let sleepingFrames = crabFrameSet.frames(for: .sleeping)
 let footRanges = [9...12, 17...20, 30...33, 38...41]
@@ -808,6 +815,32 @@ check(crabAlphaDifference(fireFrames[0], fireFrames[2],
         && crabAlphaDifference(fireFrames[0], fireFrames[3],
                                xRange: 42...50, yRange: 9...20) >= 12,
       "fire panic flails the claws on alternating action frames")
+check(crabPixelDifference(cigarFrames[0], sleepingFrames[0],
+                          xRange: 13...37, yRange: 6...10) >= 4,
+      "the cigar mood wears an asymmetric smug squint instead of the sleeping face")
+check(crabPixelCount(overheatedFrames[3], xRange: 22...28, yRange: 11...18) { color in
+    0.299 * color.redComponent + 0.587 * color.greenComponent
+        + 0.114 * color.blueComponent < 0.15
+} >= 8, "overheating opens a clearly readable panting mouth on its heave frame")
+let angryEyeInk = [
+    (13, 7), (14, 7), (15, 8), (16, 8), (13, 9), (14, 9),
+    (36, 7), (37, 7), (34, 8), (35, 8), (36, 9), (37, 9),
+]
+let angryEyeGaps = [(15, 7), (13, 8), (34, 7), (36, 8)]
+check(angryEyeInk.allSatisfy { crabIsInk(fireFrames[0], x: $0.0, y: $0.1) }
+        && angryEyeGaps.allSatisfy { !crabIsInk(fireFrames[0], x: $0.0, y: $0.1) },
+      "fire anger draws unmistakable >< eye silhouettes")
+check([2, 3].allSatisfy { frameIndex in
+    angryEyeInk.allSatisfy {
+        crabIsInk(fireFrames[frameIndex], x: $0.0, y: $0.1 - 3)
+    }
+}, "fire keeps the >< eyes readable through its strongest action frames")
+check(crabPixelCount(fireFrames[0], xRange: 22...28, yRange: 13...18) { color in
+    color.redComponent > 0.75 && color.greenComponent > 0.75 && color.blueComponent > 0.7
+} >= 4, "fire anger shows bright clenched teeth inside a dark mouth")
+check(crabPixelDifference(overheatedFrames[0], fireFrames[0],
+                          xRange: 13...37, yRange: 6...18) >= 12,
+      "overheating and fire remain distinct emotions even without sweat and flames")
 check(crabAlphaDifference(crabFrameSet.frames(for: .sleeping)[0],
                           crabFrameSet.frames(for: .sleeping)[1],
                           xRange: 0...50, yRange: 3...35) == 0

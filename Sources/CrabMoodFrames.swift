@@ -196,22 +196,48 @@ struct CrabFrameSet {
         }
     }
 
+    private enum EyeExpression {
+        case closed
+        case smug
+        case strained
+        case angry
+    }
+
     private static func redrawEyes(_ rep: NSBitmapImageRep, left: Int, right: Int, top: Int,
                                    xOffset: Int = 0, yOffset: Int = 0,
-                                   hot: Bool = false, squeezed: Bool = false) {
+                                   hot: Bool = false, expression: EyeExpression = .closed) {
         let bodyColor = hot ? hotBody : body
         fill(rep, x: left, y: 6, width: 4, height: 5, color: bodyColor)
         fill(rep, x: right, y: 6, width: 4, height: 5, color: bodyColor)
         fill(rep, x: left + xOffset, y: top - 1 + yOffset, width: 4, height: 5, color: bodyColor)
         fill(rep, x: right + xOffset, y: top - 1 + yOffset, width: 4, height: 5, color: bodyColor)
-        if squeezed {
+        switch expression {
+        case .closed:
+            fill(rep, x: left + xOffset, y: top + 2 + yOffset, width: 4, height: 1, color: ink)
+            fill(rep, x: right + xOffset, y: top + 2 + yOffset, width: 4, height: 1, color: ink)
+        case .smug:
+            fill(rep, x: left + xOffset, y: top + 2 + yOffset, width: 4, height: 1, color: ink)
+            fill(rep, x: right + 1 + xOffset, y: top + 1 + yOffset,
+                 width: 3, height: 1, color: ink)
+            fill(rep, x: right + xOffset, y: top + 2 + yOffset,
+                 width: 3, height: 1, color: ink)
+        case .strained:
             fill(rep, x: left + xOffset, y: top + 1 + yOffset, width: 3, height: 1, color: ink)
             fill(rep, x: left + 1 + xOffset, y: top + 2 + yOffset, width: 3, height: 1, color: ink)
             fill(rep, x: right + 1 + xOffset, y: top + 1 + yOffset, width: 3, height: 1, color: ink)
             fill(rep, x: right + xOffset, y: top + 2 + yOffset, width: 3, height: 1, color: ink)
-        } else {
-            fill(rep, x: left + xOffset, y: top + 2 + yOffset, width: 4, height: 1, color: ink)
-            fill(rep, x: right + xOffset, y: top + 2 + yOffset, width: 4, height: 1, color: ink)
+        case .angry:
+            fill(rep, x: left + xOffset, y: top + yOffset, width: 2, height: 1, color: ink)
+            fill(rep, x: left + 2 + xOffset, y: top + 1 + yOffset,
+                 width: 2, height: 1, color: ink)
+            fill(rep, x: left + xOffset, y: top + 2 + yOffset,
+                 width: 2, height: 1, color: ink)
+            fill(rep, x: right + 2 + xOffset, y: top + yOffset,
+                 width: 2, height: 1, color: ink)
+            fill(rep, x: right + xOffset, y: top + 1 + yOffset,
+                 width: 2, height: 1, color: ink)
+            fill(rep, x: right + 2 + xOffset, y: top + 2 + yOffset,
+                 width: 2, height: 1, color: ink)
         }
     }
 
@@ -280,7 +306,7 @@ struct CrabFrameSet {
 
     private static func waitingPermissionFrames(_ source: NSBitmapImageRep) -> [NSImage] {
         let clawOffsets: [(Int, Int)] = [
-            (0, 0), (0, 0), (1, -1), (2, -2), (2, -2), (1, -1), (0, 0), (0, 0),
+            (0, 0), (0, 0), (1, -1), (3, -3), (3, -3), (1, -1), (0, 0), (0, 0),
         ]
         let eyeDirections = [0, 0, 1, 1, 1, 0, 2, 0]
         let handPhases = [0, 0, 0, 0, 1, 1, 1, 0]
@@ -311,9 +337,12 @@ struct CrabFrameSet {
     }
 
     private static func cigarFrames(_ source: NSBitmapImageRep) -> [NSImage] {
-        let headOffsets = [0, 0, 1, -1, -1, 0, 0, 0]
+        let headOffsets = [0, 0, 1, -2, -2, 1, 0, 0]
         let clawOffsets: [(Int, Int)] = [
             (0, 0), (0, 0), (-1, -1), (-2, -2), (-2, -2), (-1, -1), (0, 0), (0, 0),
+        ]
+        let eyeExpressions: [EyeExpression] = [
+            .smug, .smug, .smug, .closed, .closed, .smug, .smug, .smug,
         ]
         let smokePhases = [0, 0, 0, 0, 0, 3, 5, 7]
         return (0..<8).map { index in
@@ -322,7 +351,8 @@ struct CrabFrameSet {
             reshapeHead(rep, yOffset: headY)
             moveRegion(rep, xRange: 44...50, yRange: 11...18,
                        xOffset: claw.0, yOffset: claw.1)
-            redrawEyes(rep, left: 13, right: 34, top: 7 + headY)
+            redrawEyes(rep, left: 13, right: 34, top: 7 + headY,
+                       expression: eyeExpressions[index])
             let cigarX = 38, cigarY = 14 + headY
             fill(rep, x: cigarX, y: cigarY, width: 9, height: 3, color: cigarBrown)
             fill(rep, x: cigarX + 9, y: cigarY, width: 2, height: 3, color: ember)
@@ -343,13 +373,34 @@ struct CrabFrameSet {
         fill(rep, x: x + 1 + xOffset, y: y + 3 + yOffset, width: 1, height: 1, color: sweat)
     }
 
+    private static func drawPantingMouth(_ rep: NSBitmapImageRep, phase: Int, yOffset: Int) {
+        let y = 14 + yOffset
+        if phase == 0 {
+            fill(rep, x: 24, y: y + 2, width: 3, height: 1, color: ink)
+        } else if phase == 1 {
+            fill(rep, x: 24, y: y + 1, width: 3, height: 2, color: ink)
+        } else {
+            fill(rep, x: 23, y: y, width: 5, height: 3, color: ink)
+            fill(rep, x: 24, y: y + 2, width: 3, height: 1, color: ember)
+        }
+    }
+
+    private static func drawAngryMouth(_ rep: NSBitmapImageRep, phase: Int, yOffset: Int) {
+        let y = 14 + yOffset
+        fill(rep, x: 22, y: y, width: 7, height: 3, color: ink)
+        fill(rep, x: 23, y: y + 1, width: 5, height: 1, color: watchFace)
+        fill(rep, x: phase.isMultiple(of: 2) ? 25 : 26, y: y + 1,
+             width: 1, height: 1, color: ink)
+    }
+
     private static func overheatedFrames(_ source: NSBitmapImageRep) -> [NSImage] {
-        let headOffsets = [0, 0, 1, -2, -1, 0, 0, 1, -1, 0, 0, 0]
+        let headOffsets = [0, 0, 1, -3, -2, 1, 0, 1, -2, 1, 0, 0]
         let leftClaws: [(Int, Int)] = [
             (0, 0), (0, 0), (1, 1), (0, -1), (0, -1), (1, 1),
             (0, 0), (1, 1), (0, -1), (1, 1), (0, 0), (0, 0),
         ]
         let rightClaws = leftClaws.map { (-$0.0, $0.1) }
+        let mouthPhases = [0, 0, 1, 2, 2, 1, 0, 1, 2, 1, 0, 0]
         let sweatPhases = [0, 0, 0, 1, 2, 3, 4, 0, 6, 7, 8, 9]
         return (0..<12).map { index in
             let headY = headOffsets[index]
@@ -360,7 +411,8 @@ struct CrabFrameSet {
             moveRegion(rep, xRange: 44...50, yRange: 11...18,
                        xOffset: rightClaws[index].0, yOffset: rightClaws[index].1)
             redrawEyes(rep, left: 13, right: 34, top: 7 + headY,
-                       hot: true, squeezed: true)
+                       hot: true, expression: .strained)
+            drawPantingMouth(rep, phase: mouthPhases[index], yOffset: headY)
             drawSweat(rep, phase: sweatPhases[index], xOffset: 0, yOffset: 0)
             return image(rep)
         }
@@ -372,7 +424,7 @@ struct CrabFrameSet {
             [5, 2, 4], [3, 5, 2], [1, 3, 5], [4, 2, 3],
             [2, 5, 4], [5, 3, 1], [3, 4, 5], [1, 1, 1],
         ][phase]
-        for (column, x) in [12, 23, 35].enumerated() {
+        for (column, x) in [8, 23, 38].enumerated() {
             let height = heights[column]
             fill(rep, x: x, y: 5 - height, width: 5, height: height, color: flameOrange)
             fill(rep, x: x, y: 5, width: 5, height: 1, color: flameOrange)
@@ -386,14 +438,14 @@ struct CrabFrameSet {
     }
 
     private static func fireFrames(_ source: NSBitmapImageRep) -> [NSImage] {
-        let headOffsets = [0, 1, -2, -2, -1, 1, 0, 0, -1, -1, 0, 0]
+        let headOffsets = [0, 1, -3, -3, -1, 1, 0, 0, -2, -2, 0, 0]
         let leftClaws: [(Int, Int)] = [
-            (0, 0), (1, 1), (0, -2), (0, 1), (0, -1), (1, 1),
-            (0, 0), (0, 0), (0, -1), (0, 0), (0, 0), (0, 0),
+            (0, 0), (1, 1), (0, -3), (0, 1), (0, -2), (1, 1),
+            (0, 0), (0, 0), (0, -2), (0, 0), (0, 0), (0, 0),
         ]
         let rightClaws: [(Int, Int)] = [
-            (0, 0), (-1, 1), (0, 1), (0, -2), (0, -1), (-1, 1),
-            (0, 0), (0, 0), (0, 0), (0, -1), (0, 0), (0, 0),
+            (0, 0), (-1, 1), (0, 1), (0, -3), (0, -2), (-1, 1),
+            (0, 0), (0, 0), (0, 0), (0, -2), (0, 0), (0, 0),
         ]
         let flamePhases = [0, 1, 2, 5, 4, 1, 0, 0, 3, 1, 0, 0]
         let sweatPhases = [0, 0, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0]
@@ -405,10 +457,11 @@ struct CrabFrameSet {
                        xOffset: leftClaws[index].0, yOffset: leftClaws[index].1)
             moveRegion(rep, xRange: 44...50, yRange: 11...18,
                        xOffset: rightClaws[index].0, yOffset: rightClaws[index].1)
-            redrawEyes(rep, left: 13, right: 34, top: 7 + headY,
-                       hot: true, squeezed: true)
-            drawSweat(rep, phase: sweatPhases[index], xOffset: 0, yOffset: 0)
             drawFlames(rep, phase: flamePhases[index])
+            redrawEyes(rep, left: 13, right: 34, top: 7 + headY,
+                       hot: true, expression: .angry)
+            drawAngryMouth(rep, phase: index, yOffset: headY)
+            drawSweat(rep, phase: sweatPhases[index], xOffset: 0, yOffset: 0)
             return image(rep)
         }
     }
