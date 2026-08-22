@@ -639,6 +639,32 @@ func crabAlphaCount(_ image: NSImage, xRange: ClosedRange<Int>, yRange: ClosedRa
     }
     return count
 }
+func crabAlphaDifference(_ lhs: NSImage, _ rhs: NSImage,
+                         xRange: ClosedRange<Int>, yRange: ClosedRange<Int>) -> Int {
+    guard let a = crabBitmap(lhs), let b = crabBitmap(rhs) else { return -1 }
+    var count = 0
+    for y in yRange {
+        for x in xRange {
+            let aOpaque = (a.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5
+            let bOpaque = (b.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5
+            if aOpaque != bOpaque { count += 1 }
+        }
+    }
+    return count
+}
+func crabMissingBaseAlpha(_ base: NSImage, _ frame: NSImage,
+                          xRange: ClosedRange<Int>, yRange: ClosedRange<Int>) -> Int {
+    guard let baseRep = crabBitmap(base), let frameRep = crabBitmap(frame) else { return -1 }
+    var count = 0
+    for y in yRange {
+        for x in xRange {
+            let baseOpaque = (baseRep.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5
+            let frameOpaque = (frameRep.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5
+            if baseOpaque && !frameOpaque { count += 1 }
+        }
+    }
+    return count
+}
 func crabTopY(_ image: NSImage, xRange: ClosedRange<Int>) -> Int? {
     guard let rep = crabBitmap(image) else { return nil }
     for y in 0..<rep.pixelsHigh {
@@ -675,27 +701,18 @@ func crabEffectYRange(_ frames: [NSImage], where predicate: (NSColor) -> Bool) -
     return high - low
 }
 let sleepingBodyTops = crabFrameSet.frames(for: .sleeping).compactMap {
-    crabTopY($0, xRange: 20...30)
+    crabTopY($0, xRange: 20...29)
 }
-check((sleepingBodyTops.max() ?? 0) - (sleepingBodyTops.min() ?? 0) >= 3,
-      "sleep has at least 3px between its breathing key poses")
-let cigarEyePositions = crabFrameSet.frames(for: .cigar).compactMap(crabLeftEyeX)
-check((cigarEyePositions.max() ?? 0) - (cigarEyePositions.min() ?? 0) >= 2,
-      "the cigar anticipation leans the mascot at least 2px")
+check((sleepingBodyTops.max() ?? 0) - (sleepingBodyTops.min() ?? 0) >= 2,
+      "sleep has at least 2px between its connected breathing key poses")
 check(crabEffectYRange(crabFrameSet.frames(for: .cigar)) { color in
     abs(color.redComponent - color.greenComponent) < 0.08
         && abs(color.greenComponent - color.blueComponent) < 0.08
         && color.redComponent > 0.5
 } >= 9, "the cigar smoke travels a clear vertical arc")
-let overheatedEyePositions = crabFrameSet.frames(for: .overheated).compactMap(crabLeftEyeX)
-check((overheatedEyePositions.max() ?? 0) - (overheatedEyePositions.min() ?? 0) >= 4,
-      "overheating has distinct -2px/+2px sway key poses")
 check(crabEffectYRange(crabFrameSet.frames(for: .overheated)) { color in
     color.blueComponent > color.redComponent + 0.3 && color.blueComponent > 0.8
 } >= 12, "overheated sweat visibly falls instead of blinking in place")
-let fireEyePositions = crabFrameSet.frames(for: .onFire).compactMap(crabLeftEyeX)
-check((fireEyePositions.max() ?? 0) - (fireEyePositions.min() ?? 0) >= 4,
-      "fire shakes the mascot across at least 4px")
 let fireTopRange = crabFrameSet.frames(for: .onFire).compactMap { frame -> Int? in
     guard let rep = crabBitmap(frame) else { return nil }
     for y in 0..<rep.pixelsHigh {
@@ -738,6 +755,83 @@ func crabPixelDifference(_ lhs: NSImage, _ rhs: NSImage,
     }
     return count
 }
+let restingCrab = walkingCrabFrames[0]
+let sleepingFrames = crabFrameSet.frames(for: .sleeping)
+let footRanges = [9...12, 17...20, 30...33, 38...41]
+for mood in [CrabMood.sleeping, .waitingPermission, .cigar, .overheated, .onFire] {
+    check(crabFrameSet.frames(for: mood).allSatisfy { frame in
+        footRanges.allSatisfy {
+            crabAlphaDifference(restingCrab, frame, xRange: $0, yRange: 27...35) == 0
+        }
+    }, "\(mood.rawValue) keeps all four feet planted while the acting happens above them")
+}
+for mood in [CrabMood.sleeping, .waitingPermission, .cigar, .overheated, .onFire] {
+    let frames = crabFrameSet.frames(for: mood)
+    check(frames.allSatisfy { frame in
+        crabMissingBaseAlpha(frames[0], frame, xRange: 7...8, yRange: 11...18) == 0
+            && crabMissingBaseAlpha(frames[0], frame,
+                                    xRange: 42...43, yRange: 11...18) == 0
+    }, "\(mood.rawValue) keeps both claw hinges attached to the shell")
+}
+check(crabAlphaDifference(permissionFrames[0], permissionFrames[3],
+                          xRange: 0...8, yRange: 9...20) >= 6,
+      "permission visibly raises the watch claw")
+check(crabAlphaDifference(permissionFrames[0], permissionFrames[3],
+                          xRange: 42...50, yRange: 9...20) == 0,
+      "permission leaves the opposite claw still while checking the watch")
+let cigarFrames = crabFrameSet.frames(for: .cigar)
+check(sleepingFrames.allSatisfy {
+    crabMissingBaseAlpha(sleepingFrames[0], $0, xRange: 9...41, yRange: 3...26) == 0
+}, "sleeping deforms the head without cutting pixels out of the connected shell")
+check(cigarFrames.allSatisfy {
+    crabMissingBaseAlpha(cigarFrames[0], $0, xRange: 9...41, yRange: 3...26) == 0
+}, "the cigar pose deforms the head without cutting it away from the body")
+check(crabAlphaDifference(cigarFrames[0], cigarFrames[3],
+                          xRange: 42...50, yRange: 9...20) >= 4,
+      "the cigar action lifts the cigar-side claw")
+check(crabAlphaDifference(cigarFrames[0], cigarFrames[3],
+                          xRange: 0...8, yRange: 9...20) == 0,
+      "the cigar action keeps the opposite claw relaxed")
+let overheatedFrames = crabFrameSet.frames(for: .overheated)
+check(overheatedFrames.allSatisfy {
+    crabMissingBaseAlpha(overheatedFrames[0], $0, xRange: 9...41, yRange: 3...26) == 0
+}, "overheating keeps one unbroken shell while the head stretches")
+check(crabPixelDifference(overheatedFrames[0], overheatedFrames[3],
+                          xRange: 9...41, yRange: 3...24) >= 20,
+      "overheating stretches the upper body through a visible panting action")
+let fireFrames = crabFrameSet.frames(for: .onFire)
+check(fireFrames.allSatisfy {
+    crabMissingBaseAlpha(fireFrames[0], $0, xRange: 9...41, yRange: 3...26) == 0
+}, "fire panic keeps one unbroken shell while the head stretches")
+check(crabAlphaDifference(fireFrames[0], fireFrames[2],
+                          xRange: 0...8, yRange: 9...20) >= 12
+        && crabAlphaDifference(fireFrames[0], fireFrames[3],
+                               xRange: 42...50, yRange: 9...20) >= 12,
+      "fire panic flails the claws on alternating action frames")
+check(crabAlphaDifference(crabFrameSet.frames(for: .sleeping)[0],
+                          crabFrameSet.frames(for: .sleeping)[1],
+                          xRange: 0...50, yRange: 3...35) == 0
+        && crabAlphaDifference(permissionFrames[0], permissionFrames[1],
+                               xRange: 0...50, yRange: 3...35) == 0
+        && crabAlphaDifference(cigarFrames[0], cigarFrames[1],
+                               xRange: 0...50, yRange: 3...35) == 0
+        && crabAlphaDifference(overheatedFrames[0], overheatedFrames[1],
+                               xRange: 0...50, yRange: 3...35) == 0
+        && crabAlphaDifference(fireFrames[6], fireFrames[7],
+                               xRange: 0...50, yRange: 3...35) == 0,
+      "each mood includes a readable hold between its action phases")
+check(crabAlphaDifference(permissionFrames[0], permissionFrames[7],
+                          xRange: 0...50, yRange: 3...35) == 0,
+      "permission recovers to its resting pose before the loop closes")
+check(crabAlphaDifference(cigarFrames[0], cigarFrames[7],
+                          xRange: 0...40, yRange: 3...35) == 0,
+      "the cigar-side action recovers while the last smoke drifts away")
+check(crabAlphaDifference(overheatedFrames[0], overheatedFrames[11],
+                          xRange: 9...41, yRange: 3...35) == 0,
+      "overheating closes the panting loop in its resting body pose")
+check(crabAlphaDifference(fireFrames[0], fireFrames[11],
+                          xRange: 0...50, yRange: 6...35) == 0,
+      "fire recovers the body before the low-flame loop restarts")
 check(crabPixelDifference(permissionFrames[3], permissionFrames[4],
                           xRange: 2...9, yRange: 11...20) >= 1,
       "the watch hand advances during the waiting hold")
@@ -745,7 +839,7 @@ let systemPermission = adaptiveCrabFrame(permissionFrames[3])
 check(crabAlphaCount(systemPermission, xRange: 2...9, yRange: 11...20, above: 0.2) >= 6,
       "the watch remains visible in System colour")
 let sleepingFirst = crabFrameSet.frames(for: .sleeping)[0]
-check(crabPixelCount(sleepingFirst, xRange: 13...37, yRange: 9...9) { color in
+check(crabPixelCount(sleepingFirst, xRange: 13...37, yRange: 8...8) { color in
     0.299 * color.redComponent + 0.587 * color.greenComponent + 0.114 * color.blueComponent < 0.45
 } == 0, "sleep clears the old eye shadow above its closed slits")
 check(crabFrameSet.frames(for: .cigar).contains { frame in
