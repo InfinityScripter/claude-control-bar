@@ -52,6 +52,14 @@ You never open the app yourself. It starts with the first Claude Code session an
 | 4–5 | Turns red, sways and sweats |
 | 6+ | Its head catches fire |
 
+These previews use the same runtime frames and timing as the menu-bar app:
+
+| 0 · Sleeping | 1 · Cigar | 2–3 · Walking |
+| :---: | :---: | :---: |
+| ![Crab sleeping animation](assets/crab-moods/sleeping.gif) | ![Crab cigar animation](assets/crab-moods/cigar.gif) | ![Crab walking animation](assets/crab-moods/walking.gif) |
+| 4–5 · Overheated | 6+ · On fire | Permission needed |
+| ![Overheated Crab animation](assets/crab-moods/overheated.gif) | ![Crab on fire animation](assets/crab-moods/on-fire.gif) | ![Crab waiting for permission animation](assets/crab-moods/permission.gif) |
+
 When a session needs permission, the Crab switches to a separate waiting scene: it checks its watch, then looks at the screen. A yellow warning dot stays beside it, and the status text reads `Needs you`. Once permission is handled, it returns to the state for the current number of working sessions.
 
 Server and tool switches apply to new sessions: Claude Code assembles the tool list at session start, so sessions that are already open keep their old set.
