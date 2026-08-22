@@ -7,6 +7,23 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.7.9] - 2026-08-22
+
+### Changed
+
+- **Every non-walking Crab mood now acts out its state instead of sliding as one rigid sprite.**
+  Sleep has a planted breathing cycle and drifting Zs; permission raises only the watch claw and
+  moves its gaze; the cigar-side claw lifts while smoke travels upward; overheating pants and
+  sweats; and fire alternates its flailing claws under changing flame heights. The original
+  twenty-frame walk remains untouched for the normal two-to-three-session load.
+
+### Fixed
+
+- **The Crab keeps one connected silhouette through every key pose.** Head squash-and-stretch is
+  anchored to the shell instead of translating a rectangular layer, both claw hinges stay joined,
+  all four feet remain planted outside the walking cycle, and each animation recovers cleanly
+  before looping.
+
 ## [0.7.8] - 2026-08-21
 
 ### Added
