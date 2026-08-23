@@ -1521,17 +1521,14 @@ final class StatusController: NSObject, NSMenuDelegate {
         menu.addItem(settings)
 
         menu.addItem(.separator())
+        let latestVersion = UserDefaults.standard.string(forKey: "latestVersion")
+        let updateAvailable = latestVersion.map {
+            Self.versionIsNewer($0, than: currentVersion)
+        } ?? false
+        let whatsNewSelection = WhatsNewMenuSelection(
+            currentIsUnseen: whatsNewUnseen == currentVersion,
+            updateAvailable: updateAvailable)
         menu.addItem(NSMenuItem(title: "Version \(currentVersion)", action: nil, keyEquivalent: ""))
-        // Shown until opened once, then it retires: the menu is long enough, and the changelog
-        // stays reachable through the release pages. Appears after any update — the plugin
-        // channel's silent rebuild included, which is the whole reason this row exists.
-        if whatsNewUnseen == currentVersion {
-            let wn = NSMenuItem(title: "What\u{2019}s new in \(currentVersion)",
-                                action: #selector(showWhatsNewCurrent), keyEquivalent: "")
-            wn.target = self
-            wn.toolTip = "This copy was updated. One click shows what changed."
-            menu.addItem(wn)
-        }
         // Checked before the download line and instead of it: when the newer copy is already on
         // disk there is nothing left to fetch, and offering "Update to 0.5.1" next to a 0.5.1
         // bundle sends the user to download what they installed an hour ago.
@@ -1542,7 +1539,7 @@ final class StatusController: NSObject, NSMenuDelegate {
             it.toolTip = "\(onDisk) is already installed. macOS keeps the copy that was running"
                 + " when it was replaced, so this one is still \(currentVersion) until it restarts."
             menu.addItem(it)
-        } else if let latest = UserDefaults.standard.string(forKey: "latestVersion"), Self.versionIsNewer(latest, than: currentVersion) {
+        } else if let latest = latestVersion, updateAvailable {
             let width = CGFloat(uiConfig()["boxWidth"] ?? 300)
             let brewVer = UserDefaults.standard.string(forKey: "brewCaskVersion")
             if brewManaged {
@@ -1585,13 +1582,27 @@ final class StatusController: NSObject, NSMenuDelegate {
                     menu.addItem(sw)
                 }
             }
-            // The release notes, before deciding to update — the body of releases/latest the
-            // daily check already cached. Falls back to the release page when the cache is
-            // empty (a check that ran before this build, or a release with no notes).
-            let wn = NSMenuItem(title: "What\u{2019}s new in \(latest)",
-                                action: #selector(showWhatsNewLatest), keyEquivalent: "")
+        }
+        switch whatsNewSelection {
+        case .current:
+            // Shown until opened once, then it retires. Appears after any update — the plugin
+            // channel's silent rebuild included, which is the whole reason this row exists.
+            let wn = NSMenuItem(title: "What\u{2019}s new in \(currentVersion)",
+                                action: #selector(showWhatsNewCurrent), keyEquivalent: "")
             wn.target = self
+            wn.toolTip = "This copy was updated. One click shows what changed."
             menu.addItem(wn)
+        case .latest:
+            // Release notes before deciding to update. Falls back to the release page when the
+            // cached response predates notes or the release body is empty.
+            if let latest = latestVersion {
+                let wn = NSMenuItem(title: "What\u{2019}s new in \(latest)",
+                                    action: #selector(showWhatsNewLatest), keyEquivalent: "")
+                wn.target = self
+                menu.addItem(wn)
+            }
+        case .none:
+            break
         }
         if notificationsDenied {
             let n = NSMenuItem(title: "Notifications are off — open System Settings",

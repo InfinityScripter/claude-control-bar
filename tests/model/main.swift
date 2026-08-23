@@ -407,6 +407,15 @@ check(Changelog.spans(from: "**bold with `code` inside**") ==
         [.bold("bold with "), .code("code"), .bold(" inside")],
       "code nested in bold keeps both runs")
 
+check(WhatsNewMenuSelection(currentIsUnseen: true, updateAvailable: true) == .latest,
+      "an available update replaces the current-version notes instead of duplicating them")
+check(WhatsNewMenuSelection(currentIsUnseen: true, updateAvailable: false) == .current,
+      "current-version notes remain visible when there is no newer release")
+check(WhatsNewMenuSelection(currentIsUnseen: false, updateAvailable: true) == .latest,
+      "latest release notes remain visible after current-version notes were opened")
+check(WhatsNewMenuSelection(currentIsUnseen: false, updateAvailable: false) == .none,
+      "no release-notes row appears when neither version needs one")
+
 // The shipped CHANGELOG.md must actually contain the version this source tree claims,
 // or the row falls back to the release page for everyone: pin the contract here.
 let repoRoot = FileManager.default.currentDirectoryPath

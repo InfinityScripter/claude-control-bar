@@ -7,6 +7,15 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.7.11] - 2026-08-23
+
+### Fixed
+
+- **The update menu shows one set of release notes, not two competing versions.** When notes for
+  the running version are still unseen and a newer release is already available, the menu now
+  shows only `What’s new` for the newer version. The current version’s notes remain available
+  whenever no update is being offered.
+
 ## [0.7.10] - 2026-08-22
 
 ### Changed

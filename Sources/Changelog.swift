@@ -1,5 +1,23 @@
 import Foundation
 
+/// One release-notes row at most. When both the just-installed version and a newer available
+/// version have unread notes, the newer release is the useful choice while the update is offered.
+enum WhatsNewMenuSelection: Equatable {
+    case none
+    case current
+    case latest
+
+    init(currentIsUnseen: Bool, updateAvailable: Bool) {
+        if updateAvailable {
+            self = .latest
+        } else if currentIsUnseen {
+            self = .current
+        } else {
+            self = .none
+        }
+    }
+}
+
 /// The app's own "what's new" source: build.sh ships CHANGELOG.md into Contents/Resources,
 /// and the menu shows the section for the version that just started running (or the release
 /// body GitHub returned, for a version that is only available yet).
