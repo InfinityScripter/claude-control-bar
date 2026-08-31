@@ -7,6 +7,60 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.7.12] - 2026-08-31
+
+### Fixed
+
+- **The app no longer quits itself while Claude is plainly running.** The last-word liveness
+  check walked only the first quarter of the process table — a units mix-up in the libproc
+  answer — so a `claude` process anywhere in the other three quarters read as "not running"
+  and the app could close mid-session. The whole table is scanned now, and a model check
+  pins that it stays scanned.
+- **A hand-edited file can no longer crash-loop the app or silently freeze the MCP menu.**
+  A negative `nameMax` in `uiconfig.json` crashed every menu open, straight into the hooks'
+  relaunch loop; valid JSON of the wrong shape — `"permissions"` written as a list, a string
+  where the `statusLine` object belongs, junk tool entries in the desktop connector cache —
+  killed every MCP refresh without a trace, leaving the menu stale forever. Every reader of
+  a hand-editable or foreign file now degrades to "no data" instead, and the switches refuse
+  to edit a shape they don't understand rather than guess.
+- **Installing no longer races the hooks it rewrites.** The installer overwrote `update.js`
+  and `lifecycle.js` in place on every app launch — while live hooks execute those very
+  files, so node could parse a half-written script and fail the event it was handling. All
+  installer writes are atomic now, the ownership lease file included.
+- **The DMG uninstall gives your status line back.** Following the README — run the
+  uninstaller, trash the app — left `statusLine` pointing into the trashed bundle and the
+  command it had replaced stranded on disk; the uninstaller now restores the original first.
+- **A Mac without the Xcode Command Line Tools is told, not interrogated.** The plugin's
+  build step used to pop the system's "install the developer tools?" dialog from a background
+  hook on every session start; it now probes quietly, writes the reason to `problems.log`
+  once, and keeps launching an already-built older copy while it waits.
+- **A broken MCP server is no longer poked awake every ten minutes.** An unresponsive stdio
+  server used to be started fresh on every description refresh and sat out a 20-second
+  timeout each time, forever; a failed probe is now remembered and retried hourly.
+- A cluster of smaller ones: duplicate "server went down / is back" notifications inside the
+  45-second window; a data race in the self-update's error capture; context files leaking one
+  per session after SessionEnd; a corrupt pid of `0` making a session immortal; the update
+  menu row not greying out while a check runs; `toggle-tool --off` writing the literal rule
+  `--off` into the deny list; the `limits` command answering in Russian on English machines.
+
+### Changed
+
+- **The limit bars stopped costing a JSON parse 2.5 times a second.** `limits.json` is
+  re-read only when it actually changed; the "Limits via Anthropic API" switch still takes
+  effect on the next tick.
+- CI answers minutes sooner: a Linux job mirrors the Python and Node suites, shellcheck
+  guards the shell scripts, and a superseded pull-request run cancels itself.
+
+### Documentation
+
+- **Both READMEs walk the first launch step by step** — where the icon appears, why the app
+  is never opened by hand, that the plugin channel's first session compiles for a minute or
+  three, that a DMG copy opened with no session quits again by design, and a short "no
+  icon?" checklist before the full troubleshooting guide.
+- PRIVACY.md names the one request it had missed: the one-click update downloads that
+  release's source archive from GitHub, and only when you click it. The last sixteen
+  releases' changelog headings render as links again.
+
 ## [0.7.11] - 2026-08-23
 
 ### Fixed
@@ -855,6 +909,7 @@ reports on Claude Code — it switches parts of it off.
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[0.7.12]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.12
 [0.7.11]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.11
 [0.7.10]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.10
 [0.7.9]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.9
