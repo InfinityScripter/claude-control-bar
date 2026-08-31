@@ -429,6 +429,37 @@ test("a payload without source keeps the pre-source behavior", () => {
   assert.ok(fs.existsSync(spawnLog(home)));
 });
 
+test("update.js's self-heal relaunch honors an explicit Quit too", () => {
+  // The same marker, the other opener: every prompt/tool event self-heals a killed app, and
+  // without the check a menu Quit lasted exactly until the next tool call.
+  const healed = sandbox();
+  run(updatePath, healed, ["post"], JSON.stringify({ session_id: "s1", cwd: healed }));
+  assert.ok(fs.existsSync(spawnLog(healed)),
+    "with no marker, a live session relaunches the missing app");
+
+  const quit = sandbox();
+  fs.writeFileSync(quitMarker(quit), "");
+  run(updatePath, quit, ["post"], JSON.stringify({ session_id: "s1", cwd: quit }));
+  assert.ok(!fs.existsSync(spawnLog(quit)), "the marker suppresses the self-heal");
+});
+
+test("a start sweeps context files orphaned by a late statusline capture", () => {
+  // statusline.py runs detached, and a capture from the session's final redraw can land AFTER
+  // SessionEnd removed the state file — a context.d entry no loop ever visited again.
+  const home = sandbox();
+  const contextDir = path.join(home, ".claude", "control-bar", "context.d");
+  fs.mkdirSync(contextDir, { recursive: true });
+  fs.writeFileSync(path.join(contextDir, "orphan.json"), "{}");
+  fs.writeFileSync(path.join(stateDir(home), "live.json"),
+    JSON.stringify({ sessionId: "live", pid: process.pid, ts: 1 }));
+  fs.writeFileSync(path.join(contextDir, "live.json"), "{}");
+
+  run(lifecyclePath, home, ["start"], JSON.stringify({ session_id: "new", cwd: home }));
+
+  assert.deepEqual(fs.readdirSync(contextDir).sort(), ["live.json"],
+    "the orphan goes, a live session's context file stays");
+});
+
 // The js→swift seam. These files are parsed by Session.init in Sources/Sessions.swift — a
 // second, independent implementation of the same schema. This pin holds the writer's half of
 // the contract; the reader's half is the seam fixture below, which the swift model checks

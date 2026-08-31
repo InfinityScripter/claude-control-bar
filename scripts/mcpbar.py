@@ -153,6 +153,11 @@ STRINGS = {
     "sl.off": ("capture off", "перехват выключен"),
     "sl.current": ("current command: {cmd}", "текущая команда: {cmd}"),
     "sl.unset": ("(statusLine not configured)", "(statusLine не настроен)"),
+    "lim.notoken": ("no token: Claude Code is not logged in via browser OAuth",
+                    "нет токена: Claude Code не залогинен через браузерный OAuth"),
+    "lim.failed": ("poll failed: {e}", "опрос не удался: {e}"),
+    "lim.empty": ("the response carried no limit windows", "ответ без единого окна лимитов"),
+    "lim.updated": ("updated: {w}", "обновлено: {w}"),
 }
 
 
@@ -270,7 +275,10 @@ def write_json(path, data, indent=None, mode=None):
     # заменяет саму ссылку обычным файлом — оригинал в dotfiles остаётся старым, и человек
     # тихо теряет синхронизацию своих настроек.
     path = os.path.realpath(path)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # mode= как у secure_root(): первым командой на свежей машине может оказаться `limits`
+    # или `doctor`, и без него ~/.claude/control-bar рождался с umask-правами (0755) и лежал
+    # открытым staff-группе до первого refresh. На уже существующие каталоги mode не влияет.
+    os.makedirs(os.path.dirname(path), mode=SECURE_DIR, exist_ok=True)
     tmp = f"{path}.{os.getpid()}.tmp"
     # Права исходника переезжают на замену. Временный файл рождается с umask процесса,
     # и без этого settings.json с правами 0600 после первого переключателя становился
@@ -449,6 +457,8 @@ def counts_from_logs():
 
 DESCRIPTIONS = os.path.join(ROOT, "descriptions.json")
 DESCRIPTIONS_TTL = 24 * 3600
+# Через сколько повторить опрос сервера, который на прошлой попытке не ответил.
+FAILED_PROBE_RETRY = 3600
 DESCRIPTIONS_FORMAT = 2
 
 
@@ -459,8 +469,16 @@ def describe_tool(tool):
     Порядок properties оставляем как отдал сервер: он осмысленный, у большинства серверов
     обязательное идёт первым, и сортировка по алфавиту эту подсказку теряет.
     """
-    schema = tool.get("inputSchema") or tool.get("input_schema") or {}
-    required = set(schema.get("required") or [])
+    # Форма на каждом уровне, не только у prop: инструмент приходит из кеша чужого приложения
+    # или от чужого сервера, и строка на месте словаря (tools: ["имя"], inputSchema: "…")
+    # роняла AttributeError'ом весь refresh — молча, stderr его процесса смотрит в DEVNULL.
+    if not isinstance(tool, dict):
+        return {"name": "", "description": "", "params": []}
+    schema = tool.get("inputSchema") or tool.get("input_schema")
+    schema = schema if isinstance(schema, dict) else {}
+    required = schema.get("required")
+    required = set(required) if isinstance(required, list) else set()
+    props = schema.get("properties")
     params = [
         {
             "name": name,
@@ -468,10 +486,10 @@ def describe_tool(tool):
             "required": name in required,
             "description": ((prop.get("description") if isinstance(prop, dict) else "") or "").strip(),
         }
-        for name, prop in (schema.get("properties") or {}).items()
+        for name, prop in (props.items() if isinstance(props, dict) else [])
     ]
     return {
-        "name": tool.get("name", ""),
+        "name": tool.get("name") or "",
         "description": (tool.get("description") or "").strip(),
         "params": params,
     }
@@ -602,8 +620,11 @@ def refresh_descriptions(force=False):
     todo = [
         (name, config) for name, config in servers.items()
         if force
-        or (cached.get(name, {}).get("ts") or 0) < fresh_until
-        or cached.get(name, {}).get("v") != DESCRIPTIONS_FORMAT
+        # Запись не той формы (руками правленный descriptions.json) — то же, что её нет:
+        # .get на строке ронял AttributeError'ом весь refresh.
+        or not isinstance(cached.get(name), dict)
+        or (cached[name].get("ts") or 0) < fresh_until
+        or cached[name].get("v") != DESCRIPTIONS_FORMAT
     ]
     if not todo:
         return cached
@@ -617,6 +638,19 @@ def refresh_descriptions(force=False):
             with lock:
                 results[name] = {
                     "ts": int(time.time()), "v": DESCRIPTIONS_FORMAT, "tools": tools
+                }
+        elif config.get("command") and config.get("type", "stdio") == "stdio":
+            # Опрошенный и не ответивший stdio-сервер — тоже результат. Без записи каждый
+            # refresh (раз в ~10 минут) заново поднимал его процесс и высиживал 20-секундный
+            # таймаут — вечно. Штамп сдвинут в прошлое, чтобы попытка вернулась через час,
+            # а не через сутки: сервер могли просто починить. Пустой список инструментов
+            # attach_tools() и так замещает кешем десктопа или именами из транскриптов.
+            # Только stdio с командой: для remote/SSE ask_server_for_tools() выходит сразу,
+            # и запись о «неответившем» глушила бы кеш коннекторов на ровном месте.
+            with lock:
+                results[name] = {
+                    "ts": int(time.time()) - DESCRIPTIONS_TTL + FAILED_PROBE_RETRY,
+                    "v": DESCRIPTIONS_FORMAT, "tools": [],
                 }
 
     threads = [threading.Thread(target=work, args=pair, daemon=True) for pair in todo]
@@ -651,7 +685,8 @@ def connectors_from_desktop():
             return {
                 s["name"]: {
                     "uuid": s.get("uuid") or "",
-                    "tools": [describe_tool(t) for t in (s.get("tools") or [])],
+                    "tools": [describe_tool(t) for t in
+                              (s["tools"] if isinstance(s.get("tools"), list) else [])],
                 }
                 for s in remote
                 if isinstance(s, dict) and s.get("name")
@@ -673,9 +708,15 @@ def tool_names_from_transcripts():
                 for line in fh:
                     if '"deferred_tools_delta"' not in line:
                         continue
-                    delta = (read_json_line(line) or {}).get("attachment") or {}
-                    names += delta.get("addedNames", []) + delta.get("readdedNames", [])
-                    for gone in delta.get("removedNames", []):
+                    record = read_json_line(line)
+                    delta = record.get("attachment") if isinstance(record, dict) else None
+                    if not isinstance(delta, dict):
+                        continue
+                    for key in ("addedNames", "readdedNames"):
+                        added = delta.get(key)
+                        names += added if isinstance(added, list) else []
+                    removed = delta.get("removedNames")
+                    for gone in removed if isinstance(removed, list) else []:
                         if gone in names:
                             names.remove(gone)
         except OSError:
@@ -684,6 +725,8 @@ def tool_names_from_transcripts():
             continue
         grouped = {}
         for full in names:
+            if not isinstance(full, str):
+                continue
             parts = full.split("__", 2)
             if full.startswith("mcp__") and len(parts) == 3:
                 grouped.setdefault(parts[1], []).append(parts[2])
@@ -749,8 +792,13 @@ def session_cwds():
     cwds = []
     for path in glob.glob(os.path.join(SESSIONS, "*.json")):
         info = read_json(path, {})
+        # pid ≤ 0 — сигнал группе процессов, а не процессу: os.kill(0, 0) успешен всегда,
+        # и битая запись с pid 0 становилась бессмертной «живой» сессией.
         try:
-            os.kill(int(info.get("pid")), 0)
+            pid = int(info.get("pid"))
+            if pid <= 0:
+                continue
+            os.kill(pid, 0)
         except (OSError, ValueError, TypeError):
             continue
         cwd = info.get("cwd")
@@ -801,11 +849,15 @@ def attach_tools(servers):
     for entry in servers:
         bare = short_name(entry["name"])
         connector = connectors.get(bare) or {}
-        described = []
-        if entry["name"] in asked:
-            described = asked[entry["name"]]["tools"]
-        elif connector:
-            described = connector["tools"]
+        # Форма кеша проверяется и здесь: descriptions.json лежит на диске и может быть
+        # испорчен руками. Пустой ответ опроса (негативная запись) отдаёт слово кешу
+        # десктопа, а не глушит его.
+        probed = asked.get(entry["name"])
+        described = probed.get("tools") if isinstance(probed, dict) else None
+        described = [t for t in described or [] if isinstance(t, dict) and t.get("name")]
+        if not described and connector:
+            described = [t for t in connector.get("tools") or []
+                         if isinstance(t, dict) and t.get("name")]
         prefix = tool_prefix(entry["name"], index, connector.get("uuid", ""))
         # Приставка едет в состояние: правило deny собирает приложение, и второй экземпляр этой
         # логики в Swift разошёлся бы с этим — ровно так и появилось правило, которое ничего
@@ -838,8 +890,12 @@ def denied_tools():
 
     Проверено: одно правило mcp__docs__read_page уменьшило список с 26 инструментов до 25.
     """
-    perms = read_json(SETTINGS, {}).get("permissions") or {}
-    return [rule for rule in (perms.get("deny") or []) if rule.startswith("mcp__")]
+    # Форма, не только наличие: settings.json правят руками, и "permissions": [...] на месте
+    # словаря ронял AttributeError'ом и refresh, и оба тумблера. Не та форма — правил нет.
+    perms = read_json(SETTINGS, {}).get("permissions")
+    deny = perms.get("deny") if isinstance(perms, dict) else None
+    return [rule for rule in (deny if isinstance(deny, list) else [])
+            if isinstance(rule, str) and rule.startswith("mcp__")]
 
 
 def tool_denied(rules, prefix, tool):
@@ -968,7 +1024,13 @@ def _toggle_server_locked(name, turn_off):
     settings, seen = read_settings_for_edit()
     if settings is None:
         return False
-    current = settings.get("deniedMcpServers") or []
+    current = settings.get("deniedMcpServers")
+    if current is None:
+        current = []
+    elif not isinstance(current, list):
+        # Ключ есть, но не список — файл правили руками. Отказ, как на нечитаемом файле:
+        # чинить чужую форму своим переключателем значит молча снести то, что там лежало.
+        return False
     kept = [
         d for d in current
         if not (isinstance(d, dict) and d.get("serverName") == name)
@@ -1009,7 +1071,14 @@ def _toggle_tool_locked(rule, turn_off, stale=()):
     if settings is None:
         return False
     perms = settings.setdefault("permissions", {})
-    current = list(perms.get("deny") or [])
+    if not isinstance(perms, dict):
+        # setdefault вернул существующее значение не той формы (руками вписанный список).
+        # Отказ, как на нечитаемом файле: crash внутри замка хуже честного «не вышло».
+        return False
+    deny = perms.get("deny")
+    if deny is not None and not isinstance(deny, list):
+        return False
+    current = list(deny or [])
     drop = {rule, *stale}
     kept = [r for r in current if r not in drop]
     if turn_off:
@@ -1120,9 +1189,16 @@ def statusline_ours(command):
     return False
 
 
+def statusline_command(settings):
+    """Команда statusLine с проверкой формы: строка на месте объекта — «команды нет»,
+    а не AttributeError (settings.json правят руками)."""
+    entry = settings.get("statusLine")
+    return ((entry.get("command") if isinstance(entry, dict) else "") or "").strip()
+
+
 def statusline_state():
-    current = (read_json(SETTINGS, {}).get("statusLine") or {}).get("command") or ""
-    return current.strip(), statusline_ours(current)
+    current = statusline_command(read_json(SETTINGS, {}))
+    return current, statusline_ours(current)
 
 
 def statusline_install():
@@ -1146,8 +1222,7 @@ def statusline_install():
         settings, seen = read_settings_for_edit()
         if settings is None:
             return t("sl.busy")
-        current = (settings.get("statusLine") or {}).get("command") or ""
-        current = current.strip()
+        current = statusline_command(settings)
         if statusline_ours(current):
             return t("sl.already")
 
@@ -1184,7 +1259,7 @@ def statusline_uninstall():
         settings, seen = read_settings_for_edit()
         if settings is None:
             return t("sl.busy")
-        current = ((settings.get("statusLine") or {}).get("command") or "").strip()
+        current = statusline_command(settings)
         if not statusline_ours(current):
             # След установки есть, а команда уже другая: человек сменил statusLine руками
             # ПОСЛЕ установки. Восстановить «как было» = затереть его самую свежую настройку
@@ -1291,6 +1366,10 @@ def usage_record(payload, now=None):
     for name, block in payload.items():
         if not isinstance(block, dict):
             continue
+        # Окно с служебным именем затёрло бы штамп времени — и report() падал бы
+        # на `time.time() - limits["ts"]` с TypeError.
+        if name in ("ts", "source"):
+            continue
         used = block.get("utilization", block.get("used_percentage"))
         if used is None:
             continue
@@ -1312,7 +1391,7 @@ def fetch_limits():
     цифры в файле лучше, чем затёртые ошибкой."""
     token = oauth_token()
     if not token:
-        return "нет токена: Claude Code не залогинен через браузерный OAuth"
+        return t("lim.notoken")
     import urllib.request
 
     # Редиректы запрещены целиком. Стандартный обработчик urllib переносит Authorization на
@@ -1337,13 +1416,13 @@ def fetch_limits():
         # или 401. Снаружи он однажды и стоял — и массив вместо объекта ронял весь скрипт.
         record = usage_record(payload)
     except Exception as exc:  # noqa: BLE001 — сеть, 401, редирект, JSON: файл не трогаем
-        return f"опрос не удался: {type(exc).__name__}"
+        return t("lim.failed", e=type(exc).__name__)
     if not record:
-        return "ответ без единого окна лимитов"
+        return t("lim.empty")
     write_json(LIMITS, record)
     windows = ", ".join(f"{k} {v['used_percentage']}%" for k, v in record.items()
                         if isinstance(v, dict))
-    return f"обновлено: {windows}"
+    return t("lim.updated", w=windows)
 
 
 # ──────────────────────────────────────────────────────────── контекстное окно
@@ -1389,7 +1468,11 @@ def model_windows():
     observed = cached.get("observed") or {}
     claude = find_claude()
     version = os.path.realpath(claude) if claude else ""
-    if cached.get("version") == version and cached.get("models"):
+    # isinstance, не истинность: пустая таблица от сдвинувшегося паттерна — тоже результат.
+    # Условие «непустая» после такого сдвига не выполнялось больше никогда, и каждый refresh
+    # заново читал и декодировал весь бинарь CLI (сотни МБ, секунды, под замком проверки).
+    # Наблюдения statusline.py в кеш дописывает сам statusline.py — прямо в models.
+    if cached.get("version") == version and isinstance(cached.get("models"), dict):
         return cached["models"]
     # Таблица собирается на машине пользователя из его же установленного Claude Code.
     # Захардкоженного списка моделей здесь намеренно нет: он и устаревает с каждым
@@ -1510,9 +1593,12 @@ def live_sessions():
         info = read_json(path, {})
         if not info:
             continue
-        pid = info.get("pid")
+        # Та же граница, что в session_cwds(): pid ≤ 0 сигналит группе и «жив» всегда.
         try:
-            os.kill(int(pid), 0)
+            pid = int(info.get("pid"))
+            if pid <= 0:
+                continue
+            os.kill(pid, 0)
         except (OSError, ValueError, TypeError):
             continue
         entry = {
@@ -1796,9 +1882,11 @@ def report(force=False):
         out.append(paint(t("head.sessions"), "1"))
         for session in measured:
             label = session["project"] or session["id"]
+            # .get: запись пишет Node-хук, и pct без tokens/window представим (перенос из
+            # старой версии хука) — жёсткий индекс ронял KeyError'ом весь отчёт.
             spent = t("session.spent",
-                      used=f"{session['tokens']:,}".replace(",", " "),
-                      total=f"{session['window']:,}".replace(",", " "))
+                      used=f"{session.get('tokens') or 0:,}".replace(",", " "),
+                      total=f"{session.get('window') or 0:,}".replace(",", " "))
             context = t("session.context", pct=session["pct"])
             out.append(f"  {label:<{width}}  {context}  ({spent})")
         out.append("")
@@ -1808,7 +1896,7 @@ def report(force=False):
         out.append(paint(t("head.limits"), "1"))
         for key, label in (("five_hour", t("limits.five")), ("seven_day", t("limits.seven"))):
             block = limits.get(key)
-            if block:
+            if isinstance(block, dict) and block.get("used_percentage") is not None:
                 out.append(f"  {label:<{width}}  {block['used_percentage']:>3}%")
         age = int(time.time() - (limits.get("ts") or 0)) // 60
         out.append(paint("  " + t("limits.age", n=age, src=limits.get("source", "?")), "2"))
@@ -1883,8 +1971,14 @@ def main(argv):
                   + "\n" + t("sl.current", cmd=current or t("sl.unset")))
     elif command in ("toggle-server", "toggle-tool"):
         turn_off = "--off" in rest
+        # Первое не-флаговое слово, а не rest[0]: `toggle-tool --off` без цели писал бы
+        # правило "--off" прямо в permissions.deny, а пустой rest ронял IndexError.
+        target = next((a for a in rest if not a.startswith("--")), "")
         if command == "toggle-server":
-            changed = toggle_server(rest[0], turn_off)
+            if not target:
+                print(__doc__)
+                return 1
+            changed = toggle_server(target, turn_off)
         else:
             # Приложение присылает и готовое правило (первым словом), и сервер с инструментом
             # по отдельности. Правило нужно старым сборкам скрипта, пара — этой: только здесь
@@ -1893,8 +1987,11 @@ def main(argv):
             server, tool = flag_value(rest, "--server"), flag_value(rest, "--tool")
             if server and tool:
                 rule, stale = rule_for_tool(server, tool)
+            elif target.startswith("mcp__"):
+                rule, stale = target, ()
             else:
-                rule, stale = rest[0], ()
+                print(__doc__)
+                return 1
             changed = toggle_tool(rule, turn_off, stale)
         # Меню ждёт мгновенного отклика, поэтому по умолчанию только пересчёт признаков.
         # Полная проверка — по явному --refresh.

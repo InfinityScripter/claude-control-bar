@@ -28,7 +28,7 @@ The app compiles from source on your Mac at the next session start, so you need 
 
 1. Download `claude-control-bar.dmg` from [the latest release](../../releases/latest).
 2. Drag **Claude Control Bar** into Applications.
-3. Launch it once to install the hooks.
+3. Launch it once to install the hooks — with no Claude session running it may quit again right away, and that's fine: the hooks are in.
 
 > [!IMPORTANT]
 > The DMG is not notarized, so macOS blocks the first launch. Open **System Settings → Privacy & Security** and press **Open Anyway**, or run
@@ -36,9 +36,25 @@ The app compiles from source on your Mac at the next session start, so you need 
 
 Pick one install channel. With both installed every hook runs twice; the app resolves the conflict in favor of the plugin, but there is no reason to keep both.
 
+## First launch
+
+The app has no window and no Dock icon — it lives in the **menu bar**, in the top-right corner of the screen, next to the clock. You don't open it yourself: it starts with the first Claude Code session and quits when the last one ends.
+
+After installing:
+
+1. **Start a new Claude Code session** — `claude` in a terminal, or a Code session in the desktop app. Sessions that were already open before the install show up only after their next prompt or tool call.
+2. **Plugin channel: wait out the first build.** The first session start compiles the app from source, which takes a minute or three; the icon appears when the build finishes. If it never does, look in `~/.claude/control-bar/problems.log`.
+3. **Find the crab in the menu bar.** With no session working it sleeps; it walks while Claude works, and a yellow dot means a session waits for your permission. Click the icon — sessions, MCP switches, limits and Options all live in that menu.
+
+No icon?
+
+- A DMG-installed app opened by hand **quits right away when no session is active** — designed behavior, not a crash. Launch it once so it installs its hooks, then start a session.
+- A full menu bar is the most common cause: macOS parks items that don't fit behind the `›` overflow chevron, which from the outside looks exactly like "the app didn't start". Cmd-drag a few icons out of the bar to free a slot.
+- `pgrep -x ClaudeControlBar` in a terminal: a number means the app is running and only the icon is hidden; no output means it isn't — start a session, or see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
 ## Usage
 
-You never open the app yourself. It starts with the first Claude Code session and quits when the last one ends. Sessions, limits, MCP switches and Options all live in the menu bar icon.
+Sessions, limits, MCP switches and Options all live in the menu bar icon; the app starts and quits on its own, as described above.
 
 ### Crab mascot
 

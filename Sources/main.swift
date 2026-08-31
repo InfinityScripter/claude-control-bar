@@ -419,6 +419,8 @@ final class StatusController: NSObject, NSMenuDelegate {
     var renderedTitle: String? // what the status item is actually showing, to skip identical redraws
     var lastLifecycleCheck: Double = 0  // the quit decision is sampled far slower than the UI
     var notificationsDenied = false     // the one macOS permission this app has; see notify()
+    var lastNotifiedChangeAt: Date?     // dedupe: notifyMCPChange runs on every reload, the change lives 45 s
+    var limitsMTime: Date?              // limits.json parse gate; nil forces a re-read (see loadLimits)
     var selfUpdating = false            // one build-from-source update at a time; also the menu text
     var updateBuild: Process?           // the in-flight update's build; Quit terminates it (see quit())
     // Never `xcrun --find`: querying xcrun with no developer tools installed pops the system's
@@ -1071,8 +1073,20 @@ final class StatusController: NSObject, NSMenuDelegate {
         build.standardOutput = FileHandle.nullDevice
         let errPipe = Pipe()
         build.standardError = errPipe
+        // Appends serialized on their own queue: the readability handler runs on FileHandle's
+        // private queue while this thread reads the tail after waitUntilExit — and nilling the
+        // handler does not wait out an in-flight invocation, so the plain shared `var` was an
+        // unsynchronized cross-thread mutation on exactly the failure path where the tail
+        // matters. The empty-read check also stops the EOF spin (the handler is re-invoked
+        // with empty data until removed).
+        let stderrQueue = DispatchQueue(
+            label: "io.github.infinityscripter.claude-control-bar.update-stderr")
         var stderrData = Data()
-        errPipe.fileHandleForReading.readabilityHandler = { stderrData.append($0.availableData) }
+        errPipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty { handle.readabilityHandler = nil; return }
+            stderrQueue.async { stderrData.append(chunk) }
+        }
         do { try build.run() } catch { return fail("build launch: \(error)") }
         DispatchQueue.main.async { [weak self] in self?.updateBuild = build }
         DispatchQueue.global().asyncAfter(deadline: .now() + 900) { [weak build] in
@@ -1082,7 +1096,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         errPipe.fileHandleForReading.readabilityHandler = nil
         DispatchQueue.main.async { [weak self] in self?.updateBuild = nil }
         guard build.terminationStatus == 0 else {
-            let tail = String(decoding: stderrData.suffix(2000), as: UTF8.self)
+            let tail = stderrQueue.sync { String(decoding: stderrData.suffix(2000), as: UTF8.self) }
             return fail("build exited \(build.terminationStatus):\n\(tail)")
         }
         // The bundle at `target` is already the new version (build.sh swaps only a verified
@@ -1246,9 +1260,17 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func loadLimits() {
         let path = (root as NSString).appendingPathComponent("limits.json")
+        // A stat per tick, not a parse: this runs from tick() at 2.5 Hz for the app's whole
+        // lifetime, and the file changes every few minutes at most. Writes are atomic renames,
+        // so a changed mtime always means a whole new file. The oauth toggle nils limitsMTime
+        // so its source-drop decision below re-runs without waiting for a rewrite.
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate])
+            as? Date
+        if let stamp, stamp == limitsMTime { return }
         guard let data = FileManager.default.contents(atPath: path),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }
+        limitsMTime = stamp
         // Opting out has to mean the numbers go away, not just that they stop moving. The file
         // survives the switch (the statusLine capture writes the same one), so the source is
         // what decides: figures that came from the API are dropped the moment the API is off,
@@ -1275,7 +1297,13 @@ final class StatusController: NSObject, NSMenuDelegate {
     /// A server falling over is worth interrupting for; a tool count moving is not — that is
     /// usually the user, one click ago, in this very menu.
     func notifyMCPChange() {
-        guard let change = mcp.freshChange(), change.deservesNotification else { return }
+        // Keyed on the change's own timestamp: freshChange() keeps answering with the same
+        // change for its whole 45 s window, and this runs from every runBackend completion AND
+        // the mtime tick — without the key, a toggle seconds after "server went down" posted
+        // the same banner a second time.
+        guard let change = mcp.freshChange(), change.deservesNotification,
+              change.at != lastNotifiedChangeAt else { return }
+        lastNotifiedChangeAt = change.at
         if !change.down.isEmpty {
             notify(title: change.down.count == 1
                     ? "MCP: \(mcpShortName(change.down[0])) went down"
@@ -1469,6 +1497,9 @@ final class StatusController: NSObject, NSMenuDelegate {
         menu.addItem(toggleRow(title: "Limits via Anthropic API", isOn: oauthLimits) { [weak self] on in
             self?.oauthLimits = on
             UserDefaults.standard.set(on, forKey: "oauthLimits")
+            // The parse gate would otherwise keep the pre-toggle figures until the file's next
+            // rewrite: off must drop oauth-sourced numbers on the next tick, on must re-adopt them.
+            self?.limitsMTime = nil
             if on { self?.pollLimits() }
         })
 
@@ -1509,10 +1540,12 @@ final class StatusController: NSObject, NSMenuDelegate {
         menu.addItem(soundParent)
 
         menu.addItem(.separator())
+        // A nil action while a check runs is what actually greys the row out: the menu keeps the
+        // default autoenablesItems, under which an item with a live target/action is re-enabled
+        // at display time and a bare isEnabled=false never sticks (same pattern as the update row).
         let recheck = NSMenuItem(title: mcpBusy ? "Checking MCP…" : "Check MCP now",
-                                 action: #selector(refreshMCP), keyEquivalent: "r")
+                                 action: mcpBusy ? nil : #selector(refreshMCP), keyEquivalent: "r")
         recheck.target = self
-        recheck.isEnabled = !mcpBusy
         menu.addItem(recheck)
         let settings = NSMenuItem(title: "Open settings.json", action: #selector(openSettingsJSON),
                                   keyEquivalent: "")
@@ -1828,8 +1861,12 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     // Keep the bar narrow: over `max` chars, show the first `keep` + an ellipsis (full text stays in the tooltip).
+    // Clamped at zero: `keep` arrives from uiconfig.json (a hand-tuning file), and String.prefix
+    // TRAPS on a negative length — "nameMax": -1 typed there crashed every menu open, straight
+    // into the hooks' relaunch loop. The one file-fed number that reached a trapping stdlib call.
     func truncated(_ s: String, max: Int = 20, keep: Int = 18) -> String {
-        s.count > max ? String(s.prefix(keep)) + "…" : s
+        let keep = Swift.max(0, keep)
+        return s.count > Swift.max(max, keep) ? String(s.prefix(keep)) + "…" : s
     }
 
     // Rank a session's EFFECTIVE state for surfacing (higher = more important), so a session
@@ -2044,7 +2081,15 @@ final class StatusController: NSObject, NSMenuDelegate {
         let present = Set(files)
         for key in Array(fileMTimes.keys) where !present.contains(key) {
             fileMTimes[key] = nil
-            sessions[(key as NSString).deletingPathExtension] = nil
+            let id = (key as NSString).deletingPathExtension
+            // Symmetric with the pid-death reap in evaluate(): a SessionEnd deletes the file,
+            // and the engine's transcript cache plus the per-session bookkeeping must go with
+            // it — or one small entry per session ever seen stays for the app's lifetime.
+            if let gone = sessions[id], !gone.transcript.isEmpty {
+                engine.dropCache(forTranscript: gone.transcript)
+            }
+            sessions[id] = nil
+            prevState[id] = nil; sessionWord[id] = nil; turnStart[id] = nil
         }
         for f in files {
             let full = (stateDir as NSString).appendingPathComponent(f)

@@ -114,6 +114,13 @@ check(model.servers.first { $0.name == "claude.ai Figma" }?.toolPrefix == "b6d68
 check(model.servers.first { $0.name == "wiki" }?.toolPrefix == "wiki",
       "a server without one falls back to its own name")
 
+// A truncated or non-JSON mcp.json (a torn hand edit; the writer itself is atomic) must keep
+// the previous picture on screen, not blank the menu.
+try! "not json {".write(toFile: path, atomically: true, encoding: .utf8)
+_ = model.reloadIfChanged(force: true)
+check(model.servers.count == 2,
+      "a corrupt mcp.json keeps the previous servers instead of blanking the menu")
+
 // The interrupt marker, told apart from a line that merely quotes it. A tool result is itself a
 // "type":"user" record, so reading any file containing the phrase used to stop the animation and
 // the timer in the middle of a turn that was still running.
@@ -201,6 +208,14 @@ check(DesktopSessions.focusURL(sessionID: "local_x")?.absoluteString
 // ten seconds after launch with Claude Code running in a terminal the whole time.
 check(RunningProcesses.exists(named: ProcessInfo.processInfo.processName),
       "a process that is plainly running is found")
+// This process is the NEWEST pid and sits at the head of the newest-first list, so the check
+// above passed even when only a quarter of the table was walked (proc_listallpids returns a
+// pid count, and dividing it by the pid width again cut the loop short). Membership of pid 1
+// — the far end of that list — pins the wholeness. Membership, not exists(named: "launchd"):
+// proc_name answers only for this user's processes, and pid 1 is root's, so the named lookup
+// is blind to it however much of the table is walked.
+check(RunningProcesses.allPids().contains(1),
+      "pid 1, at the far end of the newest-first list, is in the walked table")
 check(!RunningProcesses.exists(named: "ccb-no-such-process"),
       "and one that is not, is not")
 
@@ -215,6 +230,19 @@ check(Double.infinity.clampedInt == Int.max, "infinity clamps to the edge")
 check((-Double.infinity).clampedInt == Int.min, "negative infinity clamps to the other edge")
 check((42.9).clampedInt == 42, "a normal value truncates exactly like Int() always did")
 check((-7.9).clampedInt == -7, "truncation toward zero holds for negatives too")
+
+// The state files Session parses are written by the Node hooks and can be hand-edited or
+// corrupted: every field of the wrong TYPE must degrade to its documented default, never trap —
+// the hooks relaunch the app straight back into the same crash otherwise.
+let mangled = Session(json: ["state": 5, "pid": "x", "ts": [], "pct": "z", "started": "yes",
+                             "tokens": NSNull(), "window": false, "project": 7,
+                             "cwd": [:], "transcript": 1.5], id: "mangled")
+check(mangled.state == "idle" && mangled.pid == 0 && mangled.ts == 0,
+      "wrong-typed state/pid/ts degrade to their defaults instead of trapping")
+check(mangled.pct == nil && mangled.tokens == nil && !mangled.started,
+      "wrong-typed optionals read as absent, not as garbage")
+check(mangled.project.isEmpty && mangled.cwd.isEmpty && mangled.transcript.isEmpty,
+      "wrong-typed strings degrade to empty")
 
 // The session state machine — the logic behind every serious bug of the 0.7.x review, and
 // untestable until it moved out of main.swift into SessionEngine.

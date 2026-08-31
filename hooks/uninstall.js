@@ -31,6 +31,24 @@ const settingsPath = path.join(home, ".claude", "settings.json");
 const hooksOnly = process.argv.includes("--hooks-only");
 
 if (!hooksOnly) {
+  // Undo the statusLine interception first, while the script that knows how still exists: the
+  // limits capture rewires settings.json's statusLine.command to this install's statusline.sh,
+  // and the README's next step is "drag the app to the Trash" — after which every status-line
+  // redraw would exec a dead path and the user's original command would stay stranded in the
+  // sidecars forever. Gated on the install's own sidecars, so python3 is only ever spawned on a
+  // machine where the capture was actually installed (which proves /usr/bin/python3 works — a
+  // bare CLT-less Mac must not get the system's developer-tools dialog from an uninstall).
+  // mcpbar.py refuses politely when the command is no longer ours, so this stays idempotent.
+  // Both layouts: Resources/scripts/ (bundle) and ../scripts/ (repo/plugin).
+  const sidecars = ["statusline-saved.json", "statusline-inner-command", "statusline-installed.json"];
+  if (sidecars.some((f) => fs.existsSync(path.join(sbDir, f)))) {
+    for (const rel of [["scripts", "mcpbar.py"], ["..", "scripts", "mcpbar.py"]]) {
+      const mcpbar = path.join(__dirname, ...rel);
+      if (!fs.existsSync(mcpbar)) continue;
+      try { cp.execFileSync("/usr/bin/python3", [mcpbar, "statusline", "--uninstall"], { stdio: "ignore" }); } catch {}
+      break;
+    }
+  }
   // Tear down the desktop watcher LaunchAgent (best-effort; safe if absent).
   const AGENT_LABEL = "com.local.claudestatusbar.watcher";
   const agentPlist = path.join(home, "Library", "LaunchAgents", AGENT_LABEL + ".plist");

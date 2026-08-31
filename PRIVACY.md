@@ -14,6 +14,9 @@ Claude Control Bar collects no data and has no servers. Everything it does happe
 - **One update check a day**: a request to GitHub's public releases API for the latest tag, and
   one to Homebrew's public formulae API for the current cask version. Both only decide whether
   the menu shows an update line.
+- **The update itself, when you ask for it**: clicking *Update to X* in the menu downloads that
+  release's source archive from GitHub and builds it locally. This request only ever happens on
+  that click — the daily check above never downloads anything.
 
 Nothing is sent to the developer — GitHub, Homebrew and Anthropic see that a request arrived;
 the developer never does. Those are the only requests the app makes for itself. There is no

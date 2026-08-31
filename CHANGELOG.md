@@ -855,12 +855,29 @@ reports on Claude Code — it switches parts of it off.
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[0.7.11]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.11
+[0.7.10]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.10
+[0.7.9]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.9
+[0.7.8]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.8
+[0.7.7]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.7
+[0.7.6]: https://github.com/InfinityScripter/claude-control-bar/commit/5a8e6df52eff51ff843d9c55eb53be4fae44c839
+[0.7.5]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.5
+[0.7.4]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.4
+[0.7.3]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.3
+[0.7.2]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.2
+[0.7.1]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.1
+[0.7.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.0
+[0.6.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.6.0
+[0.5.6]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.5.6
+[0.5.5]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.5.5
+[0.5.4]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.5.4
 [0.5.3]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.5.3
 [0.5.2]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.5.2
 [0.5.1]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.5.1
 [0.5.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.5.0
 [0.4.3]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.4.3
 [0.4.2]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.4.2
+[0.4.1]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.4.1
 [0.4.0]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.4.0
 [0.3.4]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.3.4
 [0.3.3]: https://github.com/m1ckc3s/claude-status-bar/releases/tag/v0.3.3

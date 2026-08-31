@@ -801,6 +801,17 @@ class RefreshProjects(unittest.TestCase):
     def server(name, state, status="✔ Connected"):
         return {"name": name, "target": "", "status": status, "state": state}
 
+    def test_сорванная_проверка_не_затирает_прошлую_карту(self):
+        """Проверка сорвалась целиком (сеть, занятый бинарь): прошлые серверы обязаны остаться
+        на экране с честной пометкой stale_since, а не обнулиться в пустое меню."""
+        self.answers = {"/": ([self.server("wiki", mcpbar.OK)], None)}
+        mcpbar.refresh()
+        self.answers = {"/": ([], "claude mcp list не ответил вовремя")}
+        data = mcpbar.refresh()
+        self.assertEqual([s["name"] for s in data.get("servers", [])], ["wiki"])
+        self.assertIn("stale_since", data)
+        self.assertIn("не ответил", data.get("error") or "")
+
     def test_ошибка_проекта_не_исчезает_от_успеха_соседа(self):
         """Одна переменная на общую проверку и на все проекты: упавший проект уходил в
         continue, а следующий удачный обнулял ошибку — в меню не было ни строки «упал»,
@@ -1243,7 +1254,9 @@ class UsageToken(unittest.TestCase):
 
     def test_редирект_считается_сбоем_а_не_данными(self):
         result = mcpbar.fetch_limits()
-        self.assertIn("не удался", result)
+        # Через t(), не литералом: текст локализован, и на en-машине литерал зелёного
+        # прогона не увидел бы.
+        self.assertEqual(mcpbar.t("lim.failed", e="HTTPError"), result)
         self.assertFalse(os.path.exists(mcpbar.LIMITS))
 
 
@@ -1400,6 +1413,12 @@ class UsagePayloadDrift(unittest.TestCase):
         self.assertNotIn("inf_window", record)
         self.assertEqual(record["seven_day"]["used_percentage"], 50)
 
+    def test_окно_со_служебным_именем_не_затирает_штамп(self):
+        record = mcpbar.usage_record(
+            {"ts": {"utilization": 5}, "five_hour": {"utilization": 7}}, now=1000)
+        self.assertEqual(record["ts"], 1000)
+        self.assertEqual(record["five_hour"]["used_percentage"], 7)
+
     def test_fetch_limits_переживает_массив_от_эндпоинта(self):
         # data:-URL вместо третьего локального HTTP-сервера в файле: build_opener открывает
         # их штатно, тем же путём с NoRedirect — проверено живым запуском.
@@ -1438,6 +1457,205 @@ class UsagePayloadDrift(unittest.TestCase):
         finally:
             mcpbar.DESKTOP_SESSIONS = saved
             tmp.cleanup()
+
+
+class DescribeToolDrift(unittest.TestCase):
+    """Кеш десктопа и ответ чужого сервера — не наши данные: строка на месте словаря
+    на ЛЮБОМ уровне (инструмент, inputSchema, properties, required) — это «поля нет»,
+    а не AttributeError на весь refresh (его stderr смотрит в DEVNULL — падение немое)."""
+
+    def test_инструмент_не_словарём_даёт_пустышку(self):
+        self.assertEqual(mcpbar.describe_tool("get_screenshot"),
+                         {"name": "", "description": "", "params": []})
+
+    def test_схема_не_словарём_даёт_пустые_параметры(self):
+        tool = mcpbar.describe_tool({"name": "t", "inputSchema": "не схема"})
+        self.assertEqual(tool["name"], "t")
+        self.assertEqual(tool["params"], [])
+
+    def test_properties_и_required_не_той_формы_не_роняют(self):
+        tool = mcpbar.describe_tool({"name": "t", "inputSchema": {
+            "properties": ["не", "словарь"], "required": "не список"}})
+        self.assertEqual(tool["params"], [])
+
+    def test_мусор_в_tools_коннектора_отбрасывается_поштучно(self):
+        tmp = tempfile.TemporaryDirectory()
+        saved = mcpbar.DESKTOP_SESSIONS
+        mcpbar.DESKTOP_SESSIONS = tmp.name
+        try:
+            with open(os.path.join(tmp.name, "cache.json"), "w") as fh:
+                json.dump({"remoteMcpServersConfig": [
+                    {"name": "Figma", "uuid": "u1",
+                     "tools": ["строка", {"name": "ok"}, {"без": "имени"}]},
+                    {"name": "Linear", "uuid": "u2", "tools": {"не": "список"}},
+                ]}, fh)
+            connectors = mcpbar.connectors_from_desktop()
+        finally:
+            mcpbar.DESKTOP_SESSIONS = saved
+            tmp.cleanup()
+        self.assertEqual([t["name"] for t in connectors["Figma"]["tools"]], ["", "ok", ""])
+        self.assertEqual(connectors["Linear"]["tools"], [])
+
+
+class DescriptionsNegativeCache(unittest.TestCase):
+    """Неответивший stdio-сервер — тоже результат опроса.
+
+    Без записи каждый refresh (раз в ~10 минут) заново поднимал процесс сломанного сервера
+    и высиживал его 20-секундный таймаут — вечно. Запись со сдвинутым в прошлое штампом
+    возвращает попытку через FAILED_PROBE_RETRY, а не через сутки."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        root = self._dir.name
+        self.saved = {k: getattr(mcpbar, k) for k in ("CONFIG", "SETTINGS", "DESCRIPTIONS")}
+        mcpbar.CONFIG = os.path.join(root, "claude.json")
+        mcpbar.SETTINGS = os.path.join(root, "settings.json")
+        mcpbar.DESCRIPTIONS = os.path.join(root, "descriptions.json")
+        with open(mcpbar.SETTINGS, "w") as fh:
+            json.dump({}, fh)
+        self.asked = []
+        self._ask = mcpbar.ask_server_for_tools
+        mcpbar.ask_server_for_tools = lambda name, config, **kw: self.asked.append(name)
+
+    def tearDown(self):
+        mcpbar.ask_server_for_tools = self._ask
+        for key, value in self.saved.items():
+            setattr(mcpbar, key, value)
+        self._dir.cleanup()
+
+    def config(self, servers):
+        with open(mcpbar.CONFIG, "w") as fh:
+            json.dump({"mcpServers": servers}, fh)
+
+    def test_неответивший_stdio_не_переопрашивается_следующим_refresh(self):
+        self.config({"молчун": {"command": "true"}})
+        mcpbar.refresh_descriptions()
+        mcpbar.refresh_descriptions()
+        self.assertEqual(self.asked, ["молчун"])
+
+    def test_попытка_возвращается_через_retry_а_не_через_сутки(self):
+        self.config({"молчун": {"command": "true"}})
+        mcpbar.refresh_descriptions()
+        with open(mcpbar.DESCRIPTIONS) as fh:
+            entry = json.load(fh)["молчун"]
+        self.assertEqual(entry["tools"], [])
+        expected = time.time() - mcpbar.DESCRIPTIONS_TTL + mcpbar.FAILED_PROBE_RETRY
+        self.assertLess(abs(entry["ts"] - expected), 60)
+
+    def test_remote_сервер_не_получает_негативную_запись(self):
+        """ask_server_for_tools выходит из remote/SSE сразу — «неответивший» о нём не знает
+        ничего, и запись глушила бы кеш коннекторов десктопа."""
+        self.config({"коннектор": {"type": "http", "url": "https://example.com/mcp"}})
+        mcpbar.refresh_descriptions()
+        cached = mcpbar.read_json(mcpbar.DESCRIPTIONS, {})
+        self.assertNotIn("коннектор", cached)
+
+    def test_негативная_запись_отдаёт_слово_кешу_десктопа(self):
+        """attach_tools: пустой список инструментов от опроса — «сервер молчит», и имена
+        берутся из кеша десктопа, а не глушатся пустотой."""
+        patched = {
+            "counts_from_logs": lambda: {},
+            "connectors_from_desktop": lambda: {"Figma": {"uuid": "u1", "tools": [
+                {"name": "t1", "description": "d", "params": []}]}},
+            "refresh_descriptions": lambda force=False: {
+                "Figma": {"ts": 1, "v": mcpbar.DESCRIPTIONS_FORMAT, "tools": []}},
+            "tool_names_from_transcripts": lambda: {},
+        }
+        saved = {k: getattr(mcpbar, k) for k in patched}
+        for k, v in patched.items():
+            setattr(mcpbar, k, v)
+        try:
+            servers = [{"name": "Figma"}]
+            mcpbar.attach_tools(servers)
+        finally:
+            for k, v in saved.items():
+                setattr(mcpbar, k, v)
+        self.assertEqual(servers[0]["toolNames"], ["t1"])
+
+
+class SettingsShapeDrift(unittest.TestCase):
+    """settings.json правят руками: валидный JSON не той формы (список на месте словаря)
+    обязан читаться как «данных нет» и НЕ редактироваться — не AttributeError в refresh
+    и не «починка» чужой структуры своим переключателем."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.settings = os.path.join(self._dir.name, "settings.json")
+        self._saved = (mcpbar.SETTINGS, mcpbar.ROOT)
+        mcpbar.SETTINGS = self.settings
+        mcpbar.ROOT = os.path.join(self._dir.name, "control-bar")
+
+    def tearDown(self):
+        mcpbar.SETTINGS, mcpbar.ROOT = self._saved
+        self._dir.cleanup()
+
+    def write(self, data):
+        with open(self.settings, "w") as fh:
+            json.dump(data, fh)
+        with open(self.settings, "rb") as fh:
+            return fh.read()
+
+    def test_permissions_списком_читается_как_пусто_и_не_редактируется(self):
+        before = self.write({"permissions": ["mcp__x"]})
+        self.assertEqual(mcpbar.denied_tools(), [])
+        self.assertFalse(mcpbar.toggle_tool("mcp__a__b", turn_off=True))
+        with open(self.settings, "rb") as fh:
+            self.assertEqual(fh.read(), before)
+
+    def test_deny_строкой_читается_как_пусто_и_не_редактируется(self):
+        before = self.write({"permissions": {"deny": "mcp__x"}})
+        self.assertEqual(mcpbar.denied_tools(), [])
+        self.assertFalse(mcpbar.toggle_tool("mcp__a__b", turn_off=True))
+        with open(self.settings, "rb") as fh:
+            self.assertEqual(fh.read(), before)
+
+    def test_нестроковые_правила_в_deny_пропускаются(self):
+        self.write({"permissions": {"deny": [42, None, "mcp__wiki__Get"]}})
+        self.assertEqual(mcpbar.denied_tools(), ["mcp__wiki__Get"])
+
+    def test_deniedMcpServers_словарём_не_редактируется(self):
+        before = self.write({"deniedMcpServers": {"wiki": True}})
+        self.assertEqual(mcpbar.denied_servers(), [])
+        self.assertFalse(mcpbar.toggle_server("wiki", turn_off=True))
+        with open(self.settings, "rb") as fh:
+            self.assertEqual(fh.read(), before)
+
+    def test_statusline_строкой_не_роняет_проверку(self):
+        self.write({"statusLine": "echo сегмент"})
+        current, ours = mcpbar.statusline_state()
+        self.assertEqual(current, "")
+        self.assertFalse(ours)
+
+
+class ReportResilience(unittest.TestCase):
+    """Записи сессий пишет Node-хук, лимиты — два разных источника: report() обязан
+    пережить запись с pct без tokens/window и не-словарь на месте окна лимитов."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self._saved = mcpbar.STATE
+        mcpbar.STATE = os.path.join(self._dir.name, "mcp.json")
+        with open(mcpbar.STATE, "w") as fh:
+            json.dump({
+                "checked_at": time.time(),
+                "servers": [],
+                "sessions": [{"id": "abcd1234", "project": "проект", "entrypoint": "cli",
+                              "ts": 1, "pct": 42}],
+                "limits": {"ts": time.time(), "source": "oauth", "five_hour": 3,
+                           "seven_day": {"used_percentage": 55, "resets_at": None}},
+            }, fh)
+
+    def tearDown(self):
+        mcpbar.STATE = self._saved
+        self._dir.cleanup()
+
+    def test_сессия_с_pct_без_tokens_не_роняет_отчёт(self):
+        text = mcpbar.report()
+        self.assertIn("42", text)
+
+    def test_окно_лимитов_не_словарём_пропускается(self):
+        text = mcpbar.report()
+        self.assertIn("55", text)
 
 
 class SeamContract(unittest.TestCase):

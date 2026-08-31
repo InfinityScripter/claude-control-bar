@@ -46,6 +46,17 @@ const reapDeadSessions = () => {
     try { pid = JSON.parse(fs.readFileSync(full, "utf8")).pid || 0; } catch {}
     if (!alive(pid)) forget(f.slice(0, -5));
   }
+  // Strays: statusline.py runs detached, and a capture from the session's last redraw can land
+  // AFTER SessionEnd's forget() — re-creating context.d/<sid>.json with no state file to pair
+  // with. The loop above walks stateDir only, so such a file was never visited again and the
+  // directory grew without bound, the exact leak the header comment promises away.
+  let ctx = [];
+  try { ctx = fs.readdirSync(contextDir); } catch { return; }
+  for (const f of ctx.filter((n) => n.endsWith(".json"))) {
+    if (!fs.existsSync(path.join(stateDir, f))) {
+      try { fs.rmSync(path.join(contextDir, f), { force: true }); } catch {}
+    }
+  }
 };
 
 const writeAtomic = (file, obj) => {
