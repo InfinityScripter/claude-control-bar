@@ -5,14 +5,44 @@ on:
     branches: [main]
   pull_request:
 
+# A superseded push to the same PR cancels the run it obsoletes — macOS runners are the slow,
+# scarce kind. Runs on main are never cancelled: every merge commit keeps its full record.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # Linux mirror of the script halves: not authoritative (the macOS job is — the hooks run on
+  # macOS), but it finishes minutes earlier and doubles as proof the Python/Node suites stay
+  # runnable for contributors and CI off macOS. Shellcheck lives here because ubuntu ships it.
+  scripts-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Python tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Node tests
+        run: node --test tests/*.test.js
+
+      # -x follows the sourced identity.env (declared with a shellcheck source= directive).
+      - name: Shell scripts pass shellcheck
+        run: shellcheck -x build.sh hooks/statusline.sh
+
   check:
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
 
       # The backend deliberately runs on the system python and the standard library alone: it is
       # launched by a GUI process, where neither pyenv nor nvm is on PATH.
+      #
+      # Step order is load-bearing: the Python suite writes build/seam/mcp.json and the Node
+      # suite writes build/seam/session.json, and the Swift model checks below parse BOTH —
+      # that is the only test crossing the language border, so the script suites must run first.
       - name: Python tests
         run: /usr/bin/python3 -m unittest discover -s tests -v
 
