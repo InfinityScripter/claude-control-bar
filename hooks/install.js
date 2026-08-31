@@ -41,13 +41,18 @@ fs.rmSync(path.join(sbDir, "watcher.sh"), { force: true });
 // Retire pre-multi-session artifacts (single global state + empty liveness markers).
 fs.rmSync(path.join(sbDir, "state.json"), { force: true });
 fs.rmSync(path.join(sbDir, "sessions.d"), { recursive: true, force: true });
-fs.copyFileSync(path.join(__dirname, "update.js"), updateDest);
-fs.copyFileSync(path.join(__dirname, "lifecycle.js"), lifecycleDest);
-// copyFileSync carries the repository's 0644 across, and this installer runs on every launch —
-// without the chmod the copies would be re-opened to the whole machine twice an hour, undoing
-// the backend's own pass. These are hook scripts Claude Code runs as this user: owner-only is
-// all they ever need, and PRIVACY.md calls them trusted local code for exactly that reason.
-for (const script of [updateDest, lifecycleDest]) { try { fs.chmodSync(script, 0o600); } catch {} }
+// Write-then-rename, not copyFileSync: these two files are EXECUTED by hooks that fire in
+// parallel with this installer (it runs on every app launch, including the self-heal relaunch
+// mid-session), and copyFileSync truncates the destination in place — node parsing a
+// half-written update.js fails the user's live PreToolUse with a SyntaxError. The rename swaps
+// whole files, and the mode is set at the temp file's creation, which also closes the old
+// copy-then-chmod window. Owner-only because these are hook scripts Claude Code runs as this
+// user; PRIVACY.md calls them trusted local code for exactly that reason.
+for (const [src, dest] of [["update.js", updateDest], ["lifecycle.js", lifecycleDest]]) {
+  const tmp = `${dest}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, fs.readFileSync(path.join(__dirname, src)), { mode: 0o600 });
+  fs.renameSync(tmp, dest);
+}
 
 const shellQuote = (value) => `'${value.replace(/'/g, `'\\''`)}'`;
 // Ownership is the exact scripts a hook command points at — the only two this installer has
@@ -187,7 +192,12 @@ if (next === before) {
   console.log("Hooks already current in", settingsPath);
 } else if (writeSettingsAtomic(next, readAt)) {
   fs.mkdirSync(sbDir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(ownerPath, JSON.stringify({ channel: "app", pluginRoot: "", ts: Date.now() }), { mode: 0o600 });
+  // Atomic like every other state write: another install.js (two app launches racing, or a
+  // launch racing SessionStart) reads this file, and a half-written owner.json parses to null —
+  // which reads as "no lease" and re-creates the duplicate hooks the lease exists to prevent.
+  const ownerTmp = `${ownerPath}.${process.pid}.tmp`;
+  fs.writeFileSync(ownerTmp, JSON.stringify({ channel: "app", pluginRoot: "", ts: Date.now() }), { mode: 0o600 });
+  fs.renameSync(ownerTmp, ownerPath);
   console.log("Installed control-bar hooks into", settingsPath);
   console.log("Scripts:", updateDest, "and", lifecycleDest);
   console.log("Backup (first run only):", settingsPath + ".bak-control-bar");

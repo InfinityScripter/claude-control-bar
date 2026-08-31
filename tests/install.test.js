@@ -165,6 +165,62 @@ test("installs portable, quoted hook commands and replaces stale hooks", (t) => 
   );
 });
 
+test("an unparseable settings.json is left alone — no rewrite, no backup of the garbage", (t) => {
+  // The single most destructive error path there is: a rewrite from {} would take the user's
+  // own settings with it, and a .bak of the garbage would overwrite the last good backup.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "control-bar-corrupt-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+
+  const claudeDir = path.join(home, ".claude");
+  const settingsPath = path.join(claudeDir, "settings.json");
+  fs.mkdirSync(claudeDir, { recursive: true });
+  fs.writeFileSync(settingsPath, "{ definitely not json");
+  const before = fs.readFileSync(settingsPath);
+
+  assert.throws(() => runInstaller(home), (error) => error.status === 1);
+  assert.deepEqual(fs.readFileSync(settingsPath), before, "install rewrote a corrupt file");
+  assert.equal(fs.existsSync(settingsPath + ".bak-control-bar"), false,
+    "install backed up garbage");
+
+  assert.throws(() => runUninstaller(home), (error) => error.status === 1);
+  assert.deepEqual(fs.readFileSync(settingsPath), before, "uninstall rewrote a corrupt file");
+});
+
+test("--hooks-only strips the hooks and leaves the running app and LaunchAgent alone", (t) => {
+  // This is the plugin's lease claim: bootstrap.py runs it DURING SessionStart while the app is
+  // drawing. A regression that puts pkill back on this path kills the user's app on every
+  // session start; one that skips the strip leaves both channels firing forever.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "control-bar-hooks-only-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+
+  runInstaller(home);
+  assert.equal(statusBarCommands(readSettings(home)).length, 8);
+
+  const execLog = path.join(home, "exec-log.txt");
+  fs.writeFileSync(execLog, "");
+  const script = [
+    `require("node:child_process").execSync = (cmd) => {`,
+    `  require("node:fs").appendFileSync(process.env.EXEC_LOG, cmd + "\\n");`,
+    `};`,
+    `process.argv.push("--hooks-only");`,
+    `require(process.env.SCRIPT_PATH);`,
+  ].join("\n");
+  execFileSync(process.execPath, ["-e", script], {
+    env: {
+      ...process.env,
+      HOME: home,
+      SCRIPT_PATH: uninstallerPath,
+      EXEC_LOG: execLog,
+    },
+    stdio: "pipe",
+  });
+
+  assert.equal(statusBarCommands(readSettings(home)).length, 0, "the duplicate hooks remain");
+  const log = fs.readFileSync(execLog, "utf8");
+  assert.ok(!log.includes("pkill"), "--hooks-only killed the running app");
+  assert.ok(!log.includes("launchctl"), "--hooks-only tore down the LaunchAgent");
+});
+
 test("foreign hooks that merely resemble ours survive install and uninstall", (t) => {
   // Ownership used to be a substring check on the directory "~/.claude/control-bar" — which is
   // also a PREFIX of a user's own "~/.claude/control-bar-extra", and a substring of any command

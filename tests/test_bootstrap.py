@@ -130,7 +130,12 @@ class QuitIntent(unittest.TestCase):
         self.assertTrue(bootstrap.may_launch("мусор вместо словаря"))
 
     def _run_main(self, payload, system_version):
-        """main() целиком: заглушки на границах — бандлы, pgrep, Popen, stdin."""
+        """main() целиком: заглушки на границах — бандлы, pgrep, Popen, stdin, платформа.
+
+        sys.platform подменяется на darwin: main() на другой платформе выходит сразу, и на
+        Linux-машине контрибьютора оба теста ниже проверяли бы пустоту (один падал, второй
+        проходил случайно). Все пути и границы уже подменены — darwin-специфики не остаётся.
+        """
         import io
         launches = []
         saved = {
@@ -138,12 +143,14 @@ class QuitIntent(unittest.TestCase):
             "running": bootstrap.running,
         }
         saved_popen, saved_stdin = bootstrap.subprocess.Popen, sys.stdin
+        saved_platform = sys.platform
         bootstrap.bundle_version = (
             lambda app: system_version if app == bootstrap.SYSTEM_APP
             else bootstrap.plugin_version())
         bootstrap.running = lambda: False
         bootstrap.subprocess.Popen = lambda *a, **kw: launches.append(a[0]) or None
         sys.stdin = io.StringIO(json.dumps(payload))
+        sys.platform = "darwin"
         try:
             rc = bootstrap.main()
         finally:
@@ -151,6 +158,7 @@ class QuitIntent(unittest.TestCase):
                 setattr(bootstrap, k, v)
             bootstrap.subprocess.Popen = saved_popen
             sys.stdin = saved_stdin
+            sys.platform = saved_platform
         return rc, launches
 
     def test_main_не_поднимает_приложение_на_резюме_после_quit(self):

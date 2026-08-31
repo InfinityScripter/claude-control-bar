@@ -12,6 +12,7 @@ import os
 import plistlib
 import subprocess
 import sys
+import time
 
 PLUGIN_ROOT = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))
@@ -201,7 +202,13 @@ def clear_app_channel_hooks():
     node, uninstall = find_node(), os.path.join(PLUGIN_ROOT, "hooks", "uninstall.js")
     if not node or not os.path.exists(uninstall):
         return False
-    subprocess.run([node, uninstall, "--hooks-only"], capture_output=True, timeout=20)
+    # TimeoutExpired is caught, not propagated: nothing above catches it, so a slow disk or a
+    # load spike would kill the whole SessionStart hook with a traceback Claude Code surfaces
+    # as a hook error — for a cleanup whose failure the lease logic already tolerates.
+    try:
+        subprocess.run([node, uninstall, "--hooks-only"], capture_output=True, timeout=20)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
     return not app_hooks_present()
 
 
@@ -244,6 +251,46 @@ def log_problem(text):
     os.makedirs(ROOT, exist_ok=True)
     with open(os.path.join(ROOT, "problems.log"), "a") as fh:
         fh.write(text)
+
+
+def log_problem_once(text):
+    """Append only when the file does not already end with this exact text: a condition that
+    holds on EVERY session start (no CLT installed) would otherwise grow the log by a line
+    per terminal opened, forever."""
+    try:
+        with open(os.path.join(ROOT, "problems.log")) as fh:
+            if fh.read().endswith(text):
+                return
+    except OSError:
+        pass
+    log_problem(text)
+
+
+def toolchain_present():
+    """Prompt-free probe for swiftc — mirror of probeToolchain() in main.swift.
+
+    Never `xcrun --find` and never the bare /usr/bin/swiftc shim: on a Mac without the
+    Command Line Tools both pop the system's "install the developer tools?" dialog — from a
+    background SessionStart hook, out of nowhere, and again on every session start, because
+    the failed build leaves the version gap in place. A missing toolchain must read as
+    "cannot build", never as a prompt; the README lists CLT as the plugin channel's
+    requirement, and problems.log gets the reason.
+    """
+    stock = ("/Library/Developer/CommandLineTools/usr/bin/swiftc",
+             "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain"
+             "/usr/bin/swiftc")
+    if any(os.access(path, os.X_OK) for path in stock):
+        return True
+    try:
+        probe = subprocess.run(["/usr/bin/xcode-select", "-p"],
+                               capture_output=True, text=True, timeout=10)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    root = (probe.stdout or "").strip()
+    if probe.returncode != 0 or not root:
+        return False
+    return any(os.access(root + suffix, os.X_OK) for suffix in
+               ("/usr/bin/swiftc", "/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"))
 
 
 def build(target, timeout=240):
@@ -315,24 +362,43 @@ def main():
         return 0
 
     if bundle_version(USER_APP) != plugin_version():
-        # One build at a time. Claude Code runs every matching SessionStart hook in parallel,
-        # so two terminals opened together both notice the version gap and both start a
-        # multi-minute compile of the same plugin directory. The loser of this race skips:
-        # the winner's result is the same bundle it would have produced.
-        import fcntl
-        os.makedirs(ROOT, exist_ok=True)
-        lock = open(os.path.join(ROOT, "build.lock"), "w")
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return 0
-        try:
-            if not build(USER_APP):
+        if not toolchain_present():
+            # No prompt-free swiftc anywhere: running build.sh would pop the system's
+            # developer-tools dialog from a background hook (see toolchain_present). An older
+            # resident build is still a working app — fall through and launch it instead of
+            # leaving the menu bar empty until the tools appear.
+            log_problem_once("cannot build the app: Xcode Command Line Tools are not "
+                             "installed (run `xcode-select --install`); the plugin will "
+                             "retry once they appear\n")
+            if not bundle_version(USER_APP):
                 return 0
-            # The previous version is still resident; a fresh build has to replace it.
-            subprocess.run(["/usr/bin/pkill", "-x", EXEC], capture_output=True)
-        finally:
-            lock.close()
+        else:
+            # One build at a time. Claude Code runs every matching SessionStart hook in
+            # parallel, so two terminals opened together both notice the version gap and both
+            # start a multi-minute compile of the same plugin directory. The loser of this
+            # race skips: the winner's result is the same bundle it would have produced.
+            import fcntl
+            os.makedirs(ROOT, exist_ok=True)
+            lock = open(os.path.join(ROOT, "build.lock"), "w")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return 0
+            try:
+                if not build(USER_APP):
+                    return 0
+                # The previous version is still resident; a fresh build has to replace it.
+                subprocess.run(["/usr/bin/pkill", "-x", EXEC], capture_output=True)
+                # pkill returns on signal DELIVERY, not on exit: the dying process still
+                # matches pgrep for a beat, and `not running()` below then skipped the
+                # relaunch — the user's app was just killed and nothing brought it back
+                # until the next event's self-heal.
+                for _ in range(20):
+                    if not running():
+                        break
+                    time.sleep(0.1)
+            finally:
+                lock.close()
 
     if not running() and may_launch(payload):
         subprocess.Popen(["/usr/bin/open", "-g", "-b", BUNDLE_ID],

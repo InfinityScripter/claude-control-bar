@@ -3,8 +3,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 # Identity lives in one file so a rename can never half-apply (see identity.env).
+# ./ and not "$(dirname "$0")" again: the cd above already happened, and applying a relative
+# dirname twice resolved to <repo>/<repo>/identity.env when invoked from the parent directory.
 # shellcheck source=identity.env
-. "$(dirname "$0")/identity.env"
+. ./identity.env
 
 # Version has exactly one source: the plugin manifest. It used to be typed into the Info.plist
 # heredoc as well, which is how a build ships announcing a version nobody released.
@@ -101,7 +103,10 @@ if [[ -n "$SIGN_ID" ]]; then
 else
   echo "No Developer ID certificate found — ad-hoc signing. The result is NOT notarized:"
   echo "  macOS will block the first launch. See README, section \"Gatekeeper\"."
-  codesign --force --sign - "$STAGE_APP" >/dev/null 2>&1 || true
+  # || warns instead of swallowing: macOS kills an unsigned arm64 binary at launch, so a
+  # silently failed ad-hoc codesign shipped a complete-looking .app that never starts.
+  codesign --force --sign - "$STAGE_APP" >/dev/null 2>&1 \
+    || echo "WARNING: ad-hoc codesign failed — Apple Silicon Macs will refuse to launch this build" >&2
 fi
 # The swap happens only past this line: binary present and executable, plist well-formed.
 test -x "$BIN"
