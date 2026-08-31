@@ -14,9 +14,12 @@ import Foundation
 /// than by spawning `pgrep`: this is called from the timer on the main thread, and a fork+exec
 /// there is a visible hitch for an answer two syscalls can give.
 enum RunningProcesses {
-    static func exists(named name: String) -> Bool {
+    /// Every live pid — the WHOLE table. Split out of exists() so the model checks can pin
+    /// that wholeness directly (pid 1 must be in here), because the naming half below is
+    /// permission-gated and cannot witness it.
+    static func allPids() -> [pid_t] {
         let capacity = proc_listallpids(nil, 0)
-        guard capacity > 0 else { return false }
+        guard capacity > 0 else { return [] }
         // Slack on top of the count: processes start between the two calls, and a buffer that is
         // exactly full silently truncates the list — the missed pid could be the one being
         // looked for.
@@ -29,12 +32,16 @@ enum RunningProcesses {
         // regression this file's header says it exists to prevent. min() guards the paranoid
         // case of the kernel reporting more than the buffer holds.
         let count = proc_listallpids(&pids, Int32(pids.count) * width)
-        guard count > 0 else { return false }
+        guard count > 0 else { return [] }
+        return Array(pids.prefix(min(Int(count), pids.count))).filter { $0 > 0 }
+    }
+
+    static func exists(named name: String) -> Bool {
         var buffer = [CChar](repeating: 0, count: 256)
-        for index in 0..<min(Int(count), pids.count) where pids[index] > 0 {
+        for pid in allPids() {
             // Fails with EPERM for processes belonging to other users; a Claude Code session is
             // always this user's, so there is nothing to recover there.
-            guard proc_name(pids[index], &buffer, UInt32(buffer.count)) > 0 else { continue }
+            guard proc_name(pid, &buffer, UInt32(buffer.count)) > 0 else { continue }
             if String(cString: buffer) == name { return true }
         }
         return false

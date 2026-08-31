@@ -210,10 +210,12 @@ check(RunningProcesses.exists(named: ProcessInfo.processInfo.processName),
       "a process that is plainly running is found")
 // This process is the NEWEST pid and sits at the head of the newest-first list, so the check
 // above passed even when only a quarter of the table was walked (proc_listallpids returns a
-// pid count, and dividing it by the pid width again cut the loop short). launchd is pid 1 —
-// the far end of that list — so finding it proves the whole table is scanned.
-check(RunningProcesses.exists(named: "launchd"),
-      "pid 1, at the far end of the newest-first list, is found — the whole table is scanned")
+// pid count, and dividing it by the pid width again cut the loop short). Membership of pid 1
+// — the far end of that list — pins the wholeness. Membership, not exists(named: "launchd"):
+// proc_name answers only for this user's processes, and pid 1 is root's, so the named lookup
+// is blind to it however much of the table is walked.
+check(RunningProcesses.allPids().contains(1),
+      "pid 1, at the far end of the newest-first list, is in the walked table")
 check(!RunningProcesses.exists(named: "ccb-no-such-process"),
       "and one that is not, is not")
 
