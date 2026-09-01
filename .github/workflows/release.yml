@@ -1,22 +1,29 @@
 name: Release
 
-# Publishes the GitHub release for an EXISTING tag. A bare tag is not enough: the app's daily
-# update check reads the releases API and never sees un-released tags, and the one-click update
-# downloads the tag's source archive only after that check offered it. Dispatched by hand so a
-# tag can be cut and looked at before it is announced to every installed copy.
+# Cuts and publishes a release. A bare tag is not enough: the app's daily update check reads
+# the releases API and never sees un-released tags, and the one-click update downloads the
+# tag's source archive only after that check offered it. Dispatched by hand, with the tag name
+# and the commit (or branch) it should mark, so a release is a deliberate act and not a side
+# effect of a push.
 #
-# The notes are the tag's own CHANGELOG.md section — the same text the in-app "What's new"
-# window shows, extracted with the same boundaries Sources/Changelog.swift uses (from the
-# version's `## [x.y.z] - date` heading to the next `## [`). The DMG asset is NOT built here
-# (signing and notarization need the maintainer's Mac); attach it afterwards with
+# The tag is created here when it does not exist yet — annotated, like every tag this
+# repository has carried so far — and reused as-is when it does. The notes are the tagged
+# commit's own CHANGELOG.md section: the same text the in-app "What's new" window shows,
+# extracted with the same boundaries Sources/Changelog.swift uses (from the version's
+# `## [x.y.z] - date` heading to the next `## [`). The DMG asset is NOT built here (signing
+# and notarization need the maintainer's Mac); attach it afterwards with
 #   gh release upload <tag> build/claude-control-bar.dmg
 # after a local `./build.sh --dmg`.
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to publish (e.g. v0.7.12)"
+        description: "Tag to publish (e.g. v0.7.12); created at `target` if it does not exist"
         required: true
+      target:
+        description: "Commit SHA or branch the tag marks when it has to be created"
+        required: false
+        default: "main"
 
 permissions:
   contents: write
@@ -28,10 +35,25 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.inputs.tag }}
+          ref: ${{ github.event.inputs.target }}
 
-      # The tag goes through env, not ${{ }}-interpolation inside the scripts: an input is
+      # Inputs go through env, not ${{ }}-interpolation inside the scripts: an input is
       # attacker-shaped text as far as the shell is concerned, and env keeps it data.
+      - name: Create the tag if it does not exist, else check it out
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "tag $TAG already exists — releasing the commit it marks"
+            git fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
+            git checkout --quiet "$TAG"
+          else
+            echo "creating annotated tag $TAG at $(git rev-parse HEAD)"
+            git -c user.name=github-actions -c user.email=github-actions@github.com \
+              tag -a "$TAG" -m "$TAG"
+            git push origin "refs/tags/$TAG"
+          fi
+
       - name: Extract this version's CHANGELOG section
         env:
           TAG: ${{ github.event.inputs.tag }}
