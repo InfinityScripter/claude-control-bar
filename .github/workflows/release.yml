@@ -1,0 +1,64 @@
+name: Release
+
+# Publishes the GitHub release for an EXISTING tag. A bare tag is not enough: the app's daily
+# update check reads the releases API and never sees un-released tags, and the one-click update
+# downloads the tag's source archive only after that check offered it. Dispatched by hand so a
+# tag can be cut and looked at before it is announced to every installed copy.
+#
+# The notes are the tag's own CHANGELOG.md section — the same text the in-app "What's new"
+# window shows, extracted with the same boundaries Sources/Changelog.swift uses (from the
+# version's `## [x.y.z] - date` heading to the next `## [`). The DMG asset is NOT built here
+# (signing and notarization need the maintainer's Mac); attach it afterwards with
+#   gh release upload <tag> build/claude-control-bar.dmg
+# after a local `./build.sh --dmg`.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish (e.g. v0.7.12)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag }}
+
+      # The tag goes through env, not ${{ }}-interpolation inside the scripts: an input is
+      # attacker-shaped text as far as the shell is concerned, and env keeps it data.
+      - name: Extract this version's CHANGELOG section
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          python3 - "$TAG" <<'PY'
+          import re
+          import sys
+
+          version = sys.argv[1].lstrip("v")
+          text = open("CHANGELOG.md").read()
+          match = re.search(
+              rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\n(.*?)(?=^## \[|\Z)",
+              text, re.M | re.S)
+          if not match:
+              sys.exit(f"CHANGELOG.md carries no section for {version} — release aborted")
+          with open("release-notes.md", "w") as fh:
+              fh.write(match.group(1).strip() + "\n")
+          print(f"notes for {version}: {len(match.group(1))} characters")
+          PY
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Claude Control Bar ${TAG#v}" \
+            --notes-file release-notes.md \
+            --verify-tag
