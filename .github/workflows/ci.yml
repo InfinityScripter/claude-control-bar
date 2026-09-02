@@ -56,8 +56,12 @@ jobs:
           swiftc -O Sources/MCPModel.swift Sources/Transcript.swift Sources/DesktopSessions.swift Sources/RunningProcesses.swift Sources/SafeInt.swift Sources/Sessions.swift Sources/Changelog.swift Sources/Gauge.swift Sources/CrabFrames.swift Sources/CrabRender.swift Sources/CrabMoodFrames.swift tests/model/main.swift -o "$RUNNER_TEMP/model" -framework Cocoa
           "$RUNNER_TEMP/model"
 
-      - name: Build the app
-        run: CONTROL_BAR_APP="$RUNNER_TEMP/Claude Control Bar.app" bash build.sh
+      # --dmg on every push, not just in the Release workflow: the image is packaged on a runner
+      # nobody sits at (hdiutil, a Finder that may refuse Apple events), and a release is the
+      # wrong place to learn that the runner cannot do it — by then the release already exists
+      # without its asset.
+      - name: Build the app and the DMG
+        run: CONTROL_BAR_APP="$RUNNER_TEMP/Claude Control Bar.app" bash build.sh --dmg
 
       - name: Manifests are valid JSON
         run: |

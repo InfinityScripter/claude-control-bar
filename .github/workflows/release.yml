@@ -10,10 +10,13 @@ name: Release
 # repository has carried so far — and reused as-is when it does. The notes are the tagged
 # commit's own CHANGELOG.md section: the same text the in-app "What's new" window shows,
 # extracted with the same boundaries Sources/Changelog.swift uses (from the version's
-# `## [x.y.z] - date` heading to the next `## [`). The DMG asset is NOT built here (signing
-# and notarization need the maintainer's Mac); attach it afterwards with
-#   gh release upload <tag> build/claude-control-bar.dmg
-# after a local `./build.sh --dmg`.
+# `## [x.y.z] - date` heading to the next `## [`).
+#
+# The DMG is built by a second job on a macOS runner, from the tag's own checkout, with the
+# same `./build.sh --dmg` a maintainer would run by hand. It is ad-hoc signed and not
+# notarized: the runner has no Developer ID certificate, which is also the state every
+# release so far has shipped in (README, "Gatekeeper"). Uploaded with --clobber so re-running
+# the workflow for an existing release replaces the asset instead of failing on it.
 on:
   workflow_dispatch:
     inputs:
@@ -84,3 +87,27 @@ jobs:
             --title "Claude Control Bar ${TAG#v}" \
             --notes-file release-notes.md \
             --verify-tag
+
+  dmg:
+    needs: publish
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      # The tag, not `target`: `target` may be a branch that moved on since the tag was cut.
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ github.event.inputs.tag }}
+
+      # The Finder window layout inside build.sh needs a Finder that accepts Apple events; on a
+      # runner that step reports itself skipped and the image still carries the app and the
+      # Applications shortcut. The job timeout is the guard against it hanging instead.
+      - name: Build the DMG
+        run: ./build.sh --dmg
+
+      - name: Attach the DMG to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          gh release upload "$TAG" build/claude-control-bar.dmg \
+            --repo "$GITHUB_REPOSITORY" --clobber
