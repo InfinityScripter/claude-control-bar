@@ -14,16 +14,26 @@ VERSION=$(/usr/bin/python3 -c "import json;print(json.load(open('.claude-plugin/
 
 APP="${CONTROL_BAR_APP:-build/$APP_NAME.app}"
 
-# Everything is built and signed in a staging bundle beside the target, and the installed app
-# is replaced only once the new one is complete. The old order — rm -rf first, compile after —
-# meant a failed compile (half-installed CLT, full disk, an SDK quirk) destroyed the user's
-# last working copy and left nothing but a log; the plugin channel runs this unattended on
-# session start, where that is the difference between "update failed" and "app gone".
-STAGE_APP="$APP.staging.$$"
+# Everything is built and signed in a staging bundle, and the installed app is replaced only
+# once the new one is complete. The old order — rm -rf first, compile after — meant a failed
+# compile (half-installed CLT, full disk, an SDK quirk) destroyed the user's last working copy
+# and left nothing but a log; the plugin channel runs this unattended on session start, where
+# that is the difference between "update failed" and "app gone".
+#
+# The staging bundle lives in a private temp directory, not beside the target. It used to be
+# "$APP.staging.$$" — a plain folder next to the installed app for the minute the compile
+# takes. The Dock keeps a live model of any folder whose stack has been opened even once, and
+# in that model the staging folder stayed a folder after the rename: clicking the freshly
+# updated app in the Applications stack browsed into "Contents" instead of launching it.
+# Nothing is built inside the target directory any more; what arrives there is a finished
+# bundle under its final name. The rename stays atomic because the temp directory sits on the
+# same volume as /Applications and ~/Applications on a stock install; any other layout gets
+# mv's copy, which is no worse than what a DMG drag does.
+STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/$CASK_TOKEN-build.XXXXXX")"
+STAGE_APP="$STAGE_DIR/$APP_NAME.app"
 BIN="$STAGE_APP/Contents/MacOS/$EXEC"
-trap 'rm -rf "$STAGE_APP"' EXIT
+trap 'rm -rf "$STAGE_DIR"' EXIT
 
-rm -rf "$STAGE_APP"
 mkdir -p "$STAGE_APP/Contents/MacOS"
 
 echo "Compiling universal binary (arm64 + x86_64)…"
@@ -111,13 +121,12 @@ fi
 # The swap happens only past this line: binary present and executable, plist well-formed.
 test -x "$BIN"
 /usr/bin/plutil -lint "$STAGE_APP/Contents/Info.plist" >/dev/null
-# The outgoing bundle survives one generation as .previous: these checks prove the new build
-# exists, not that it runs, and the self-update swaps unattended — a compiled-but-broken app
-# must leave the user something to go back to. Costs one bundle of disk until the next build.
-rm -rf "$APP.previous"
-if [ -d "$APP" ]; then mv "$APP" "$APP.previous"; fi
+# The outgoing bundle is deleted, not kept as "$APP.previous". That rollback copy sat next to
+# the app after every update — a folder in Finder and in the Dock's Applications stack — and
+# nothing in the code ever read it; users just trashed it by hand. Leftovers of older builds
+# go with it.
+rm -rf "$APP" "$APP.previous"
 mv "$STAGE_APP" "$APP"
-trap - EXIT
 echo "Built $APP"
 
 if [[ "${1:-}" == "--dmg" ]]; then
