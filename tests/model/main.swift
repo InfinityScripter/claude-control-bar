@@ -632,8 +632,49 @@ check(crabFrameSet.frames(for: .cigar).count == 8, "cigar has eight production f
 check(crabFrameSet.frames(for: .walking).count == 20, "walking keeps all twenty source frames")
 check(crabFrameSet.frames(for: .overheated).count == 12, "overheating has twelve production frames")
 check(crabFrameSet.frames(for: .onFire).count == 12, "fire has twelve production frames")
-check(crabFrameSet.frames(for: .walking).first === walkingCrabFrames.first,
-      "the ordinary walk reuses the original image rather than redrawing it")
+check(crabFrameSet.frames(for: .walking).first !== walkingCrabFrames.first,
+      "the ordinary walk is a shaded copy of the source, not the flat original")
+check(CrabMood.walking.framesPerSecond(working: 2) < CrabMood.walking.framesPerSecond(working: 3)
+        && CrabMood.walking.framesPerSecond(working: 3) == 12.5,
+      "two sessions walk slower than three; three keep the original tempo")
+check(CrabMood.overheated.framesPerSecond(working: 4) < CrabMood.overheated.framesPerSecond(working: 5),
+      "the sweating crab pants faster with a fifth session")
+check(CrabMood.onFire.framesPerSecond(working: 6) < CrabMood.onFire.framesPerSecond(working: 12)
+        && CrabMood.onFire.framesPerSecond(working: 12) == CrabMood.onFire.framesPerSecond(working: 40),
+      "fire flickers faster with more sessions, up to a cap")
+check(CrabMood.sleeping.framesPerSecond(working: 0) == 2 && CrabMood.cigar.framesPerSecond(working: 1) == 4,
+      "the quiet moods keep their tempo")
+
+// MARK: Crab shading — three tones from one, and the redrawn patches match the shell
+
+func crabLum(_ c: NSColor) -> CGFloat { 0.299 * c.redComponent + 0.587 * c.greenComponent + 0.114 * c.blueComponent }
+func crabIsOrangeFamily(_ c: NSColor) -> Bool { c.redComponent > c.greenComponent + 0.2 && c.greenComponent > c.blueComponent }
+// The shell's top edge is lit and its bottom edge is in shadow, on the first walking frame:
+// the shell top runs along y=3 for x in 10...40, the underside of the body along y=26.
+if let walk0 = crabBitmap(crabFrameSet.frames(for: .walking)[0]),
+   let top = walk0.colorAt(x: 20, y: 3), let mid = walk0.colorAt(x: 20, y: 12),
+   let bottom = walk0.colorAt(x: 24, y: 26) {
+    check(crabLum(top) > crabLum(mid) + 0.04, "the shell's top edge is a lighter tone than its middle")
+    check(crabLum(bottom) < crabLum(mid) - 0.04, "the shell's underside is a darker tone than its middle")
+    check(crabIsOrangeFamily(top) && crabIsOrangeFamily(bottom), "both tones stay in the orange family")
+} else {
+    check(false, "the first walking frame has the pixels the shading contract looks at")
+}
+check(crabFrameSet.frames(for: .walking)[0].isTemplate == false, "shaded frames stay full color")
+// The redrawn eye patches used to be a different orange than the shell; now every non-ink pixel in
+// the eye band of the sleeping frame is the shell's own tone family and no lighter than its top edge.
+if let sleep0 = crabBitmap(crabFrameSet.frames(for: .sleeping)[0]) {   // declared before `sleepingFrames` below
+    // The retired constant was #E28B6A; the source shell is #D97757 plus its own faint noise.
+    var offTone = 0
+    for y in 6...10 { for x in 13...38 {
+        if let c = sleep0.colorAt(x: x, y: y), c.alphaComponent > 0.9,
+           abs(c.redComponent - 226 / 255) < 0.01, abs(c.greenComponent - 139 / 255) < 0.01 { offTone += 1 }
+    } }
+    check(offTone == 0, "the sleeping face carries no patch of the old lighter orange where the eyes were redrawn (\(offTone) px)")
+}
+if let hot = crabBitmap(crabFrameSet.frames(for: .overheated)[0]), let t = hot.colorAt(x: 20, y: 3), let m = hot.colorAt(x: 20, y: 12) {
+    check(crabLum(t) > crabLum(m) + 0.03 && t.redComponent > 0.8, "the red shell is shaded too, and stays red")
+}
 
 func crabBitmap(_ image: NSImage) -> NSBitmapImageRep? {
     image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:))
@@ -822,10 +863,18 @@ for mood in [CrabMood.sleeping, .waitingPermission, .cigar, .overheated, .onFire
 }
 check(crabAlphaDifference(permissionFrames[0], permissionFrames[3],
                           xRange: 0...8, yRange: 9...20) >= 6,
-      "permission visibly raises the watch claw")
+      "permission visibly raises the sign claw")
 check(crabAlphaDifference(permissionFrames[0], permissionFrames[3],
                           xRange: 42...50, yRange: 9...20) == 0,
-      "permission leaves the opposite claw still while checking the watch")
+      "permission leaves the opposite claw still while holding up the sign")
+check(permissionFrames.allSatisfy { frame in
+    crabPixelCount(frame, xRange: 0...9, yRange: 6...20) { $0.alphaComponent > 0.9 && crabLum($0) > 0.8 } >= 30
+}, "every permission frame holds up a light sign plate")
+check(permissionFrames.allSatisfy { frame in
+    crabPixelCount(frame, xRange: 0...9, yRange: 6...20) {
+        $0.alphaComponent > 0.9 && (crabLum($0) < 0.15 || ($0.redComponent > 0.9 && $0.greenComponent < 0.5))
+    } >= 9
+}, "the plate carries a readable question mark, in ink or pulsing ember")
 let cigarFrames = crabFrameSet.frames(for: .cigar)
 check(sleepingFrames.allSatisfy {
     crabMissingBaseAlpha(sleepingFrames[0], $0, xRange: 9...41, yRange: 3...26) == 0

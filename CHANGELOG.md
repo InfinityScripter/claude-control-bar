@@ -10,6 +10,16 @@ from, and are kept so the history reads continuously.
 ## [Unreleased]
 
 ### Added
+- **The crab has volume now.** Every frame of every mood is lit from the top left — a lighter
+  rim on top, a darker one underneath, three tones from the sprite's own colour — so it reads
+  as a shape at menu-bar size instead of a flat sticker; the System color gets a shaded
+  monochrome silhouette out of the same pass. The mood generator's shell colour also matched
+  the source at last (it was a lighter orange, which showed as pale patches around the eyes).
+  Waiting for permission, the crab now holds up a sign with a question mark where the
+  unreadable wristwatch was. And inside each load band the tempo follows the exact session
+  count: two sessions stroll, three walk at full tempo, a fifth session makes the sweating crab
+  pant faster, and the fire flickers faster the more sessions burn. The README previews are
+  regenerated from the runtime frames by `tools/crab-previews`.
 - **A sound when Claude needs you.** The *Completion Sound* submenu is now *Sounds*, with a
   second event: the moment a session starts waiting for your permission, a short macOS alert
   sound plays — Tink by default, or Purr, Ping, Glass, Hero, Submarine, picked from the same

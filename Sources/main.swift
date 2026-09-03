@@ -208,11 +208,12 @@ final class StatusController: NSObject, NSMenuDelegate {
             (mood, crabFrameSet.frames(for: mood).map(adaptiveCrabFrame))
         })
     var crabMood: CrabMood = .sleeping
+    var crabWorking = 0   // sessions working right now; sets the tempo inside a mood
     var fps: Double {
         switch animStyle {
         case .web: return spriteFPS
         case .code: return Double(codeGlyphs.count * codeSub) / codeCycle
-        case .crab: return crabMood.framesPerSecond
+        case .crab: return crabMood.framesPerSecond(working: crabWorking)
         }
     }
     var frameCount: Int {
@@ -943,8 +944,8 @@ final class StatusController: NSObject, NSMenuDelegate {
             let pa = priority(of: a.eff), pb = priority(of: b.eff)
             return pa == pb ? a.ts < b.ts : pa < pb
         }
-        setCrabMood(CrabMood.display(forEffectiveStates: sessions.values.map(\.eff),
-                                     leadState: lead?.eff))
+        setCrabMood(CrabMood.display(forEffectiveStates: sessions.values.map(\.eff), leadState: lead?.eff),
+                    working: sessions.values.filter { isWorkingState($0.eff) }.count)
         statusItem.button?.toolTip = lead.map(sessionMenuLine)  // repo · branch [· elapsed] on hover
 
         guard let lead = lead else { renderResting(); return }
@@ -963,11 +964,15 @@ final class StatusController: NSObject, NSMenuDelegate {
         animStyle == .crab && crabMood.keepsColorInSystem ? brand : iconColor
     }
 
-    func setCrabMood(_ mood: CrabMood) {
-        guard mood != crabMood else { return }
+    func setCrabMood(_ mood: CrabMood, working: Int) {
+        let tempoChanged = mood.framesPerSecond(working: working) != crabMood.framesPerSecond(working: crabWorking)
+        crabWorking = working
+        guard mood != crabMood || tempoChanged else { return }
+        let moodChanged = mood != crabMood
         crabMood = mood
         guard animStyle == .crab else { return }
-        animTimer?.invalidate(); animTimer = nil
+        animTimer?.invalidate(); animTimer = nil   // recreated at the new tempo by render()
+        guard moodChanged else { return }
         frameIdx = 0
         iconCacheKey = ""
         iconCache.removeAll()

@@ -64,7 +64,7 @@ Sessions, limits, MCP switches and Options all live in the menu bar icon; the ap
 | ---: | --- |
 | 0 | Sleeps |
 | 1 | Relaxes with a cigar |
-| 2–3 | Uses the original walking animation |
+| 2–3 | Walks — at an easy pace with two sessions, at full tempo with three |
 | 4–5 | Turns red, sways and sweats |
 | 6+ | Its head catches fire |
 
@@ -76,7 +76,9 @@ These previews use the same runtime frames and timing as the menu-bar app:
 | 4–5 · Overheated | 6+ · On fire | Permission needed |
 | ![Overheated Crab animation](assets/crab-moods/overheated.gif) | ![Crab on fire animation](assets/crab-moods/on-fire.gif) | ![Crab waiting for permission animation](assets/crab-moods/permission.gif) |
 
-When a session needs permission, the Crab switches to a separate waiting scene: it checks its watch, then looks at the screen. A yellow warning dot stays beside it, and the status text reads `Needs you`. Once permission is handled, it returns to the state for the current number of working sessions.
+When a session needs permission, the Crab switches to a separate waiting scene: it holds up a sign with a question mark, then looks at the screen. A yellow warning dot stays beside it, and the status text reads `Needs you`. Once permission is handled, it returns to the state for the current number of working sessions.
+
+The sprite is lit from the top left — a lighter rim on top, a darker one underneath — so it reads as a shape rather than a sticker at menu-bar size; in the System color it becomes a shaded monochrome silhouette. Inside a band the tempo follows the exact count: the sweating crab pants faster with a fifth session, and the fire flickers faster the more sessions burn.
 
 Server and tool switches apply to new sessions: Claude Code assembles the tool list at session start, so sessions that are already open keep their old set.
 

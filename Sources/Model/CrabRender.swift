@@ -50,3 +50,48 @@ func adaptiveCrabFrame(_ src: NSImage) -> NSImage {
     img.isTemplate = true
     return img
 }
+
+// Three tones from one. The sprite is flat: one orange, black eyes, and it reads as a sticker at
+// 18 pt. A light from the top-left gives it volume without a second palette to maintain: every
+// solid pixel whose neighbour above or to the left is empty takes a lighter tone of ITS OWN
+// colour, one whose neighbour below or to the right is empty takes a darker one, everything else
+// stays. Own colour, so the same pass shades the orange shell, the red overheated one, the smoke
+// and the flames alike, and the mood generator keeps drawing in flat colour and never learns
+// about tones. Ink (eyes, mouths) is left alone: it is negative space, not a surface. Runs once
+// per frame at load; the caller caches the result.
+func shadedCrabFrame(_ image: NSImage) -> NSImage {
+    guard let src = image.representations.compactMap({ $0 as? NSBitmapImageRep }).first
+            ?? image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)) else { return image }
+    let w = src.pixelsWide, h = src.pixelsHigh
+    guard let out = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
+                                     bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                     isPlanar: false, colorSpaceName: .deviceRGB,
+                                     bytesPerRow: 0, bitsPerPixel: 0) else { return image }
+    // Anti-aliased edge pixels (the walk's leg edges sit at 20–50% alpha) count as empty: the
+    // solid pixel beside them is the edge, and they keep their own softness.
+    func solid(_ x: Int, _ y: Int) -> Bool {
+        guard x >= 0, y >= 0, x < w, y < h, let c = src.colorAt(x: x, y: y) else { return false }
+        return c.alphaComponent >= 0.5
+    }
+    let highlight: CGFloat = 1.14, shadow: CGFloat = 0.72
+    for y in 0..<h {
+        for x in 0..<w {
+            guard let c = src.colorAt(x: x, y: y) else { continue }
+            var tone = c
+            let lum = 0.299 * c.redComponent + 0.587 * c.greenComponent + 0.114 * c.blueComponent
+            if c.alphaComponent >= 0.9, lum >= 0.15 {
+                var k: CGFloat = 1
+                if !solid(x, y + 1) || !solid(x + 1, y) { k = shadow }        // underside, right edge
+                else if !solid(x, y - 1) || !solid(x - 1, y) { k = highlight } // crown, left edge
+                if k != 1 {
+                    tone = NSColor(deviceRed: min(1, c.redComponent * k), green: min(1, c.greenComponent * k),
+                                   blue: min(1, c.blueComponent * k), alpha: c.alphaComponent)
+                }
+            }
+            out.setColor(tone, atX: x, y: y)
+        }
+    }
+    let result = NSImage(size: image.size)
+    result.addRepresentation(out)
+    return result
+}

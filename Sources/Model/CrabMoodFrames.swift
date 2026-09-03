@@ -18,14 +18,27 @@ enum CrabMood: String, CaseIterable {
         leadState == "permission" ? .waitingPermission : forEffectiveStates(states)
     }
 
+    /// The tempo the frames were drawn for: each band at the session count its art was tuned to.
     var framesPerSecond: Double {
+        switch self {
+        case .walking: return framesPerSecond(working: 3)
+        case .overheated: return framesPerSecond(working: 4)
+        case .onFire: return framesPerSecond(working: 6)
+        default: return framesPerSecond(working: 0)
+        }
+    }
+
+    /// The mood says how many sessions are working in bands; inside a band the tempo says it
+    /// exactly, the way RunCat's runner speeds up with CPU. The band's top keeps the tempo the
+    /// frames were drawn for, so the busiest case in each band looks as it always did.
+    func framesPerSecond(working: Int) -> Double {
         switch self {
         case .sleeping: return 2
         case .waitingPermission: return 3
         case .cigar: return 4
-        case .walking: return 12.5
-        case .overheated: return 8
-        case .onFire: return 10
+        case .walking: return working <= 2 ? 8 : 12.5
+        case .overheated: return working <= 4 ? 8 : 10
+        case .onFire: return min(14, 10 + Double(max(0, working - 6)))
         }
     }
 
@@ -55,7 +68,10 @@ func attentionBadgeIcon(_ icon: NSImage, color: NSColor) -> NSImage {
 
 struct CrabFrameSet {
     private static let width = 51, height = 36
-    private static let body = NSColor(deviceRed: 226 / 255, green: 139 / 255, blue: 106 / 255, alpha: 1)
+    // The source frames' own shell colour — Anthropic's #D97757 — measured from the pixels. The
+    // constant used to sit at a lighter #E28B6A, so every rectangle the moods repaint (the eye
+    // bands, the stretched crown) showed as a paler patch on the shell.
+    private static let body = NSColor(deviceRed: 217 / 255, green: 119 / 255, blue: 87 / 255, alpha: 1)
     private static let hotBody = NSColor(deviceRed: 232 / 255, green: 47 / 255, blue: 39 / 255, alpha: 1)
     private static let ink = NSColor(deviceRed: 0, green: 0, blue: 0, alpha: 1)
     private static let smoke = NSColor(deviceRed: 0.76, green: 0.78, blue: 0.80, alpha: 1)
@@ -75,16 +91,18 @@ struct CrabFrameSet {
     private let onFire: [NSImage]
 
     init(walking: [NSImage]) {
-        self.walking = walking
+        // Moods are drawn flat from the flat source, then every frame — the walk included —
+        // goes through the same shading pass, so the tones are one rule and not per-mood art.
+        self.walking = walking.map(shadedCrabFrame)
         guard let base = walking.first, let bitmap = Self.bitmap(base) else {
             sleeping = []; waitingPermission = []; cigar = []; overheated = []; onFire = []
             return
         }
-        sleeping = Self.sleepingFrames(bitmap)
-        waitingPermission = Self.waitingPermissionFrames(bitmap)
-        cigar = Self.cigarFrames(bitmap)
-        overheated = Self.overheatedFrames(bitmap)
-        onFire = Self.fireFrames(bitmap)
+        sleeping = Self.sleepingFrames(bitmap).map(shadedCrabFrame)
+        waitingPermission = Self.waitingPermissionFrames(bitmap).map(shadedCrabFrame)
+        cigar = Self.cigarFrames(bitmap).map(shadedCrabFrame)
+        overheated = Self.overheatedFrames(bitmap).map(shadedCrabFrame)
+        onFire = Self.fireFrames(bitmap).map(shadedCrabFrame)
     }
 
     func frames(for mood: CrabMood) -> [NSImage] {
@@ -287,18 +305,26 @@ struct CrabFrameSet {
         }
     }
 
-    private static func drawWatch(_ rep: NSBitmapImageRep, xOffset: Int,
-                                  yOffset: Int, handPhase: Int) {
-        fill(rep, x: 2 + xOffset, y: 12 + yOffset, width: 6, height: 6, color: smoke)
-        fill(rep, x: 3 + xOffset, y: 13 + yOffset, width: 4, height: 4, color: watchFace)
-        let centerX = 5 + xOffset, centerY = 15 + yOffset
-        fill(rep, x: centerX, y: centerY, width: 1, height: 1, color: ink)
-        if handPhase == 0 {
-            fill(rep, x: centerX, y: centerY - 2, width: 1, height: 2, color: ink)
-            fill(rep, x: centerX + 1, y: centerY, width: 2, height: 1, color: ink)
-        } else {
-            fill(rep, x: centerX - 2, y: centerY, width: 2, height: 1, color: ink)
-            fill(rep, x: centerX, y: centerY + 1, width: 1, height: 2, color: ink)
+    // A held-up sign with a question mark, where a wristwatch used to be. At 18 pt the watch's
+    // 4×4 face was a grey blob; a 7×9 light plate with a 5-px glyph is the largest readable
+    // mark the raised claw can carry, and "?" says "needs you" without a legend.
+    private static func drawQuestionSign(_ rep: NSBitmapImageRep, xOffset: Int, yOffset: Int, phase: Int) {
+        let plateX = 1 + xOffset, plateY = 8 + yOffset
+        fill(rep, x: plateX, y: plateY, width: 7, height: 9, color: watchFace)
+        let glyph = [
+            ".###.",
+            "#...#",
+            "....#",
+            "...#.",
+            "..#..",
+            ".....",
+            "..#..",
+        ]
+        let color = phase == 0 ? ink : ember   // the mark pulses so a still menu bar still moves
+        for (row, line) in glyph.enumerated() {
+            for (col, ch) in line.enumerated() where ch == "#" {
+                fill(rep, x: plateX + 1 + col, y: plateY + 1 + row, width: 1, height: 1, color: color)
+            }
         }
     }
 
@@ -315,7 +341,7 @@ struct CrabFrameSet {
                        xOffset: claw.0, yOffset: claw.1)
             drawWaitingEyes(rep, left: 13, right: 34, top: 7,
                             xOffset: 0, yOffset: 0, direction: eyeDirections[index])
-            drawWatch(rep, xOffset: claw.0, yOffset: claw.1, handPhase: handPhases[index])
+            drawQuestionSign(rep, xOffset: claw.0, yOffset: claw.1, phase: handPhases[index])
             return image(rep)
         }
     }
