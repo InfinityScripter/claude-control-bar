@@ -345,6 +345,7 @@ extension StatusController {
         row.addSubview(toggle)
 
         let item = NSMenuItem()
+        item.title = title   // the accessible name: VoiceOver and CONTROL_BAR_DUMP_MENU read it, the view hides it
         item.view = row
         return item
     }
