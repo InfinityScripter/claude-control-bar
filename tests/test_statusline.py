@@ -151,6 +151,20 @@ class Capture(unittest.TestCase):
         # Остальные шаги после упавшего всё равно отработали.
         self.assertEqual(self.limits()["five_hour"]["used_percentage"], 1)
 
+    def test_файлы_и_каталог_закрыты_от_группы_staff(self):
+        """Домашний каталог на macOS читаем группой staff — каждым локальным пользователем.
+        Здесь лежат проценты лимитов аккаунта; права ставятся при открытии дескриптора, а не
+        chmod'ом после записи. Проверялось до сих пор только для JS-записей."""
+        import stat
+
+        sub = os.path.join(self.tmp, "sub")
+        self.statusline.ROOT = sub
+        self.statusline.LIMITS = os.path.join(sub, "limits.json")
+        self.statusline.capture_limits({"rate_limits": {"five_hour": {"used_percentage": 1}}})
+        self.assertEqual(stat.S_IMODE(os.stat(self.statusline.LIMITS).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(sub).st_mode), 0o700)
+        self.assertFalse([f for f in os.listdir(sub) if f.endswith(".tmp")])
+
 
 class Context(unittest.TestCase):
     """Процент занятого контекста, снятый с самого Claude Code.

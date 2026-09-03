@@ -577,3 +577,17 @@ test("stop and permreq events map to their states, an unknown event writes nothi
   run(updatePath, home, ["bogus"], JSON.stringify({ session_id: "s2", cwd: home }));
   assert.ok(!fs.existsSync(path.join(stateDir(home), "s2.json")));
 });
+
+test("the app channel records its lease in owner.json", () => {
+  // The lease is what keeps the two install channels from stacking hooks; every other test
+  // seeds it by hand, so nothing had pinned that install.js actually writes it.
+  const home = sandbox();
+  fs.writeFileSync(settingsPath(home), JSON.stringify({ hooks: {} }));
+  run(installerPath, home);
+  const ownerPath = path.join(home, ".claude", "control-bar", "owner.json");
+  const owner = JSON.parse(fs.readFileSync(ownerPath, "utf8"));
+  assert.equal(owner.channel, "app");
+  assert.equal(typeof owner.ts, "number");
+  assert.equal(fs.statSync(ownerPath).mode & 0o777, 0o600, "the lease is owner-only like every state file");
+  assert.ok(!fs.readdirSync(path.dirname(ownerPath)).some((f) => f.endsWith(".tmp")), "no temp file left behind");
+});
