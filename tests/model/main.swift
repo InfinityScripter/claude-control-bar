@@ -4,6 +4,9 @@ import Cocoa
 //   swiftc -O Sources/Model/*.swift tests/model/main.swift -o /tmp/t -framework Cocoa && /tmp/t
 // There is no test target in this project (it builds with a bare swiftc, no Xcode project), so
 // this is a plain executable that exits non-zero on the first failure.
+//
+// Top-level code runs in order: a check that names a global declared further down reads memory
+// that is not initialised yet and dies with a bare segfault, no message. Declare before use.
 
 var failures = 0
 func check(_ passed: Bool, _ what: String) {
