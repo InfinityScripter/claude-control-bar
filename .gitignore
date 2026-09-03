@@ -13,10 +13,11 @@ node_modules/
 __pycache__/
 *.pyc
 
-# Private maintainer notes (kept out of the public repo)
-CLAUDE.md
-ROADMAP.md
-ARCHITECTURE.md
+# Private maintainer notes (kept out of the public repo). Anchored to the root: git matches
+# ignore patterns case-insensitively on APFS, so a bare ARCHITECTURE.md silently swallowed
+# .claude/rules/architecture.md too — half the project's rules never reached the repo.
+/ROADMAP.md
+/ARCHITECTURE.md
 
 # Claude Code writes per-developer local settings here when working in this repo;
 # .claude/rules/ is tracked, the local overrides must not be.
