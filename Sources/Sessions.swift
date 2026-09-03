@@ -63,7 +63,7 @@ final class SessionEngine {
     // "interrupted by user" marker (Esc / denied permission fire no hook, freezing the file). "done"
     // collapses to rest.
     func effectiveState(_ s: Session, now: Double) -> String {
-        if s.state == "thinking" || s.state == "tool" || s.state == "permission" {
+        if isActiveState(s.state) {
             // The ts is stamped by the last hook event and untouched while a tool runs — there
             // is no "still running" hook — so every cap here is a last resort, not a measurement.
             // tool gets an hour: builds and test suites legitimately run for tens of minutes,
@@ -156,3 +156,11 @@ final class SessionEngine {
         return nil
     }
 }
+
+// The state vocabulary is strings written by the Node hooks (see code-conventions.md), so the
+// two questions every layer asks of a state live here, once. Eleven hand-written copies of
+// `== "thinking" || == "tool"` is how a fifth state would silently miss the icon or the menu.
+/// A turn is in progress: the model is thinking or a tool is running.
+func isWorkingState(_ state: String) -> Bool { state == "thinking" || state == "tool" }
+/// The session needs the icon: working, or waiting for the user's permission.
+func isActiveState(_ state: String) -> Bool { isWorkingState(state) || state == "permission" }

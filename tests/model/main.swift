@@ -565,7 +565,7 @@ if let mainSource = try? String(contentsOfFile: repoRoot + "/Sources/main.swift"
           "Crab is the default animation when no preference was saved")
     check(mainSource.contains("d.string(forKey: \"animStyle\")"),
           "a saved animation preference still overrides the Crab default")
-    check(mainSource.contains("return \"Needs you\"") && !mainSource.contains("Awaiting permission"),
+    check(mainSource.contains("\"Needs you\"") && !mainSource.contains("Awaiting permission"),
           "permission uses the short Needs you status-bar label")
     check(mainSource.contains("badge: true") && !mainSource.contains("dot: true"),
           "permission renders a badge over the mascot instead of replacing it with a dot")

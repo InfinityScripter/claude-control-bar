@@ -190,15 +190,11 @@ final class MCPRowView: NSView {
         needsLayout = true
     }
 
-    func setTrailing(_ text: String) {
-        trailing.stringValue = text
-        needsLayout = true
-    }
 }
 
 extension StatusController {
 
-    var mcpRowWidth: CGFloat { CGFloat(uiConfig()["boxWidth"] ?? 300) }
+    var mcpRowWidth: CGFloat { boxWidth }
 
     /// The detail behind the bars in the menu bar: the same two percentages spelled out, with
     /// when each window resets and how old the reading is.
@@ -304,7 +300,7 @@ extension StatusController {
                     + (Bundle.main.bundleIdentifier ?? "io.github.infinityscripter.claude-control-bar")
                 let row = NSMenuItem(title: "Ask again", action: nil, keyEquivalent: "")
                 row.view = CopyRowView(title: "Ask again", command: reset,
-                                       width: CGFloat(uiConfig()["boxWidth"] ?? 300))
+                                       width: boxWidth)
                 menu.addItem(row)
             }
         }
@@ -464,13 +460,6 @@ extension StatusController {
         NSAttributedString(string: text, attributes: [
             .foregroundColor: NSColor.secondaryLabelColor,
             .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-        ])
-    }
-
-    static func dimmed(_ text: String) -> NSAttributedString {
-        NSAttributedString(string: text, attributes: [
-            .foregroundColor: NSColor.secondaryLabelColor,
-            .font: NSFont.systemFont(ofSize: 12),
         ])
     }
 }

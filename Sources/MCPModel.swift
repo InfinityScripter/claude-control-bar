@@ -51,7 +51,6 @@ struct MCPServer {
 
     var disabled: Bool { state == "off" }
     var enabledTools: Int { tools.filter(\.enabled).count }
-    var mutedTools: Int { tools.count - enabledTools }
     /// Tools actually reaching Claude. Falls back to the reported count when names are unknown,
     /// because "12" beats "—" for a server that plainly has tools.
     var liveTools: Int { tools.isEmpty ? (reportedTools ?? 0) : enabledTools }
@@ -116,7 +115,6 @@ final class MCPModel {
 
     var visible: [MCPServer] { servers.filter { !$0.disabled } }
     var live: Int { visible.filter { $0.state == "ok" }.count }
-    var broken: Int { visible.count - live }
     var toolsOn: Int { visible.reduce(0) { $0 + $1.liveTools } }
     /// Everything the enabled servers offer, including what the user muted — the denominator the
     /// "N of M tools" line needs.

@@ -4,9 +4,7 @@ enum CrabMood: String, CaseIterable {
     case sleeping, waitingPermission, cigar, walking, overheated, onFire
 
     static func forEffectiveStates(_ states: [String]) -> CrabMood {
-        let working = states.reduce(0) { count, state in
-            count + ((state == "thinking" || state == "tool") ? 1 : 0)
-        }
+        let working = states.filter(isWorkingState).count
         switch working {
         case 0: return .sleeping
         case 1: return .cigar

@@ -371,7 +371,6 @@ final class StatusController: NSObject, NSMenuDelegate {
     /// Opening the menu rebuilds the picture if it is older than this. Short enough that what is
     /// on screen is worth trusting, long enough that opening the menu repeatedly is free.
     static let mcpOpenStaleAfter: TimeInterval = 120
-    var lastGauge: (Gauge, Bool)?
     /// Everything the MCP half needs to run: the interpreter and the script. Written by the
     /// plugin's bootstrap hook so the app survives the plugin moving between versions; falls
     /// back to the copy inside the app bundle, which is what the brew/DMG channel has.
@@ -412,6 +411,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     var sessions: [String: Session] = [:]  // id -> latest parsed per-session state
     var fileMTimes: [String: Date] = [:]   // "<id>.json" -> last-parsed mtime (re-parse only on change)
     var gitHeadCache: [String: String] = [:]  // cwd -> resolved HEAD path ("" = confirmed non-git)
+    var uiConfigCache: (mtime: Date?, values: [String: Double])?
     var prevState: [String: String] = [:]  // id -> previous raw state per session
     var menuIsOpen = false                  // refresh the dropdown's per-session timers only while open
     var sessionMenuItems: [(item: NSMenuItem, id: String)] = []
@@ -825,7 +825,6 @@ final class StatusController: NSObject, NSMenuDelegate {
                   let tag = obj["tag_name"] as? String else { return }
             let ver = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
             UserDefaults.standard.set(ver, forKey: "latestVersion")
-            UserDefaults.standard.set(now, forKey: "lastUpdateSuccess")
             // The release body rides in the same response — the "What's new in X" row shows
             // it before the user decides to update, at no extra request. Written together
             // with latestVersion so the two always describe the same release.
@@ -998,8 +997,14 @@ final class StatusController: NSObject, NSMenuDelegate {
         let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar")
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let log = dir + "/problems.log"
-        let prev = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
-        try? (prev + text + "\n").write(toFile: log, atomically: true, encoding: .utf8)
+        // Appended, not read-and-rewritten: the app runs for days, and a self-update stuck in a
+        // retry loop once rewrote the whole file on every failure.
+        if !FileManager.default.fileExists(atPath: log) {
+            FileManager.default.createFile(atPath: log, contents: nil, attributes: [.posixPermissions: 0o600])
+        }
+        if let h = FileHandle(forWritingAtPath: log), let data = (text + "\n").data(using: .utf8) {
+            h.seekToEndOfFile(); h.write(data); h.closeFile()
+        }
     }
 
     /// The DMG channel's automatic update: download the release source, build it with the same
@@ -1397,8 +1402,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         let now = Date().timeIntervalSince1970
         for (item, id) in sessionMenuItems {
             guard let s = sessions[id], let v = item.view as? SessionRowView else { continue }
-            let eff = s.eff.isEmpty ? engine.effectiveState(s, now: now) : s.eff
-            configureSessionRow(v, s, eff: eff)
+            configureSessionRow(v, s, eff: effState(s, now: now))
         }
     }
 
@@ -1434,17 +1438,14 @@ final class StatusController: NSObject, NSMenuDelegate {
         // pre-upgrade files with no flag).
         let allOrdered = sessions.values.sorted { $0.ts > $1.ts }   // most-recent first
         let ordered = allOrdered.filter { s in
-                let eff = s.eff.isEmpty ? engine.effectiveState(s, now: now) : s.eff
-                let resting = !(eff == "permission" || eff == "thinking" || eff == "tool")
                 let gated = s.entrypoint == "claude-desktop"   // only the desktop app is gated
-                return !gated || s.started || !resting
+                return !gated || s.started || isActiveState(effState(s, now: now))
             }
         // Hide rows idle past the threshold, but ALWAYS keep the most-recent started session (floor at
         // one) so the dropdown never goes empty while a session is alive. Hiding is render-only; the file
         // (and thus liveness) is untouched — see stalePruneAge and the pid-driven reap in evaluate().
         var visible = ordered.filter { s in
-            let eff = s.eff.isEmpty ? engine.effectiveState(s, now: now) : s.eff
-            let resting = !(eff == "permission" || eff == "thinking" || eff == "tool")
+            let resting = !isActiveState(effState(s, now: now))
             return !(stalePruneAge > 0 && resting && now - s.ts > stalePruneAge)
         }
         if visible.isEmpty, let lead = ordered.first { visible = [lead] }   // floor: never empty while alive
@@ -1452,14 +1453,16 @@ final class StatusController: NSObject, NSMenuDelegate {
         if !visible.isEmpty {
             menu.addItem(header("Sessions"))
             for s in visible {
-                let eff = s.eff.isEmpty ? engine.effectiveState(s, now: now) : s.eff
-                let view = SessionRowView(id: s.id, width: CGFloat(uiConfig()["boxWidth"] ?? 300))
+                let eff = effState(s, now: now)
+                let view = SessionRowView(id: s.id, width: boxWidth)
                 let sid = s.id, ep = s.entrypoint, tp = s.termProgram, tb = s.termBundle
                 view.onClick = { [weak self] in menu.cancelTracking(); self?.openSession(sid, entrypoint: ep, termProgram: tp, termBundle: tb) }
                 configureSessionRow(view, s, eff: eff)
                 let it = NSMenuItem()
                 let tag = surfaceTag(s)
-                it.title = sessionMenuLine(s) + (s.pct.map { "  ctx \($0)%" } ?? "")
+                // The title is what VoiceOver and CONTROL_BAR_DUMP_MENU read; same name length and
+                // the same "~" inferred-window marker as the drawn row, or the two drift apart.
+                it.title = sessionMenuLine(s) + (s.pct.map { "  ctx \(s.assumed ? "~" : "")\($0)%" } ?? "")
                     + (tag.isEmpty ? "" : "  " + tag)
                 it.view = view
                 menu.addItem(it)
@@ -1480,7 +1483,9 @@ final class StatusController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
         menu.addItem(header("Options"))
-        menu.addItem(toggleRow(title: "Show timer", isOn: showTimer) { [weak self] on in
+        // "in menu bar", because the dropdown rows keep their own timers regardless: a switch
+        // that reads "Show timer" and leaves timers visible reads as broken.
+        menu.addItem(toggleRow(title: "Timer in menu bar", isOn: showTimer) { [weak self] on in
             self?.showTimer = on
             UserDefaults.standard.set(on, forKey: "showTimer")
             self?.applyTitle()
@@ -1543,8 +1548,10 @@ final class StatusController: NSObject, NSMenuDelegate {
         // A nil action while a check runs is what actually greys the row out: the menu keeps the
         // default autoenablesItems, under which an item with a live target/action is re-enabled
         // at display time and a bare isEnabled=false never sticks (same pattern as the update row).
-        let recheck = NSMenuItem(title: mcpBusy ? "Checking MCP…" : "Check MCP now",
-                                 action: mcpBusy ? nil : #selector(refreshMCP), keyEquivalent: "r")
+        // mcpChecking, not mcpBusy: the 2.5 s window after a toggle already spins the server rows,
+        // and offering "Check MCP now" inside it queued a redundant ~34 s full check.
+        let recheck = NSMenuItem(title: mcpChecking ? "Checking MCP…" : "Check MCP now",
+                                 action: mcpChecking ? nil : #selector(refreshMCP), keyEquivalent: "r")
         recheck.target = self
         menu.addItem(recheck)
         let settings = NSMenuItem(title: "Open settings.json", action: #selector(openSettingsJSON),
@@ -1573,7 +1580,7 @@ final class StatusController: NSObject, NSMenuDelegate {
                 + " when it was replaced, so this one is still \(currentVersion) until it restarts."
             menu.addItem(it)
         } else if let latest = latestVersion, updateAvailable {
-            let width = CGFloat(uiConfig()["boxWidth"] ?? 300)
+            let width = boxWidth
             let brewVer = UserDefaults.standard.string(forKey: "brewCaskVersion")
             if brewManaged {
                 // Silent until the cask catches up (autobump lag): never offer a command that
@@ -1681,8 +1688,8 @@ final class StatusController: NSObject, NSMenuDelegate {
         return it
     }
 
-    func toggleRow(title: String, qualifier: String? = nil, isOn: Bool, onToggle: @escaping (Bool) -> Void) -> NSMenuItem {
-        let width = CGFloat(uiConfig()["boxWidth"] ?? 300), height: CGFloat = 24, leftInset: CGFloat = 14, rightInset: CGFloat = 12
+    func toggleRow(title: String, isOn: Bool, onToggle: @escaping (Bool) -> Void) -> NSMenuItem {
+        let width = boxWidth, height: CGFloat = 24, leftInset: CGFloat = 14, rightInset: CGFloat = 12
         let row = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         row.autoresizingMask = [.width]
 
@@ -1702,45 +1709,49 @@ final class StatusController: NSObject, NSMenuDelegate {
         toggle.autoresizingMask = [.minXMargin]
         row.addSubview(toggle)
 
-        // Optional trailing qualifier ("5 min+") pinned just left of the toggle, in the SAME font/size/color
-        // and right-alignment as the session-row timer, so the two read as the same kind of trailing note.
-        if let qualifier = qualifier {
-            let qW: CGFloat = 74, gap: CGFloat = 8
-            let q = NSTextField(labelWithString: qualifier)
-            q.font = NSFont.monospacedSystemFont(ofSize: labelFont.pointSize - 2, weight: .regular)
-            q.textColor = .secondaryLabelColor
-            q.alignment = .right
-            q.frame = NSRect(x: toggleX - gap - qW, y: (height - 16) / 2, width: qW, height: 16)
-            q.autoresizingMask = [.minXMargin]
-            row.addSubview(q)
-        }
-
         let item = NSMenuItem()
         item.view = row
         return item
     }
 
+    /// evaluate() caches the effective state on the session once per tick; anything that runs
+    /// before that tick (a menu opened on a freshly read file) computes it on the spot.
+    func effState(_ s: Session, now: Double) -> String {
+        s.eff.isEmpty ? engine.effectiveState(s, now: now) : s.eff
+    }
+
     func sessionMenuLine(_ s: Session) -> String {
         let now = Date().timeIntervalSince1970
-        let eff = s.eff.isEmpty ? engine.effectiveState(s, now: now) : s.eff  // cached by evaluate() each tick
+        let eff = effState(s, now: now)
         // The icon carries the state (spinner / amber dot / caret); the row text is just the project,
-        // plus a live timer while working since the spinner can't convey elapsed.
-        var line = truncated(sessionName(s))
+        // plus a live timer while working since the spinner can't convey elapsed. Same name length
+        // as the drawn row (nameMax) so the accessible title and the pixels agree.
+        var line = truncated(sessionName(s), max: 30, keep: 30)
         if !s.branch.isEmpty { line += " · " + truncated(s.branch, max: 22, keep: 20) }
-        if eff == "thinking" || eff == "tool", s.startedAt > 0 {
+        if isWorkingState(eff), s.startedAt > 0 {
             line += "  " + elapsed(max(0, (now - s.startedAt).clampedInt))
         }
         return line
     }
 
-    // Live layout knobs read fresh from ~/.claude/control-bar/uiconfig.json each render, so numeric
-    // tweaks (timer column, pill offset, gap) take effect on the next menu open with NO rebuild.
+    // Live layout knobs from ~/.claude/control-bar/uiconfig.json (nameMax, pillInset, timerGap,
+    // boxWidth), so numeric tweaks take effect on the next menu open with NO rebuild. Re-read only
+    // when the file's mtime moves: this runs for every row on every tick while the menu is open,
+    // and parsing the same file three times per row at 2.5 Hz was the one uncached I/O on that path.
     func uiConfig() -> [String: Double] {
         let p = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/uiconfig.json")
-        guard let d = FileManager.default.contents(atPath: p),
-              let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [:] }
-        return j.compactMapValues { ($0 as? NSNumber)?.doubleValue }
+        let m = (try? FileManager.default.attributesOfItem(atPath: p))?[.modificationDate] as? Date
+        if let cached = uiConfigCache, cached.mtime == m { return cached.values }
+        var values: [String: Double] = [:]
+        if let d = FileManager.default.contents(atPath: p),
+           let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+            values = j.compactMapValues { ($0 as? NSNumber)?.doubleValue }
+        }
+        uiConfigCache = (m, values)
+        return values
     }
+
+    var boxWidth: CGFloat { CGFloat(uiConfig()["boxWidth"] ?? 300) }
 
     func configureSessionRow(_ v: SessionRowView, _ s: Session, eff: String) {
         let cfg = uiConfig()
@@ -1748,12 +1759,12 @@ final class StatusController: NSObject, NSMenuDelegate {
         // Generous cap: the row's pixel truncation does the real limiting now that the name field
         // sizes to the free space; this only guards against pathological strings.
         let nameMax = (cfg["nameMax"] ?? 30).clampedInt
-        let working = (eff == "thinking" || eff == "tool") && s.startedAt > 0
-        let resting = !(eff == "permission" || eff == "thinking" || eff == "tool")  // the dim caret
+        let working = isWorkingState(eff) && s.startedAt > 0
+        let resting = !isActiveState(eff)  // the dim caret
         let tag = surfaceTag(s)
         v.configure(icon: sessionSymbol(s, eff: eff),
                     iconTint: resting ? .tertiaryLabelColor : .labelColor,  // caret dim; spinner matches the name font; amber image ignores tint
-                    spinning: (eff == "thinking" || eff == "tool"),
+                    spinning: isWorkingState(eff),
                     name: truncated(sessionName(s), max: nameMax, keep: nameMax),
                     branch: truncated(s.branch, max: 22, keep: 20),
                     timer: working ? elapsed(max(0, (now - s.startedAt).clampedInt)) : nil,
@@ -1774,12 +1785,9 @@ final class StatusController: NSObject, NSMenuDelegate {
         v.toolTip = tip
     }
 
+    // Only ever asked for an active state: a resting lead renders the bare icon, no text.
     func statusText(_ s: Session, eff: String) -> String {
-        switch eff {
-        case "permission":       return "Needs you"
-        case "thinking", "tool": return workingLabel(s)
-        default:                 return s.state == "done" ? "Done" : "Idle"
-        }
+        eff == "permission" ? "Needs you" : workingLabel(s)
     }
 
     // Just the repo/cwd (parent-qualified on a name collision); the surface (CLI/APP) renders as a
@@ -1873,11 +1881,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     // awaiting YOUR permission is never hidden behind one merely thinking. `eff` only ever yields
     // permission / thinking / tool / idle (done collapses to idle; waiting is never emitted).
     func priority(of eff: String) -> Int {
-        switch eff {
-        case "permission":       return 2
-        case "thinking", "tool": return 1
-        default:                 return 0   // idle / unknown
-        }
+        eff == "permission" ? 2 : (isWorkingState(eff) ? 1 : 0)   // idle / unknown = 0
     }
 
     func workingLabel(_ s: Session) -> String {
@@ -2038,11 +2042,11 @@ final class StatusController: NSObject, NSMenuDelegate {
         // debounced by idleQuitDelay anyway, so checking at this rate only bought the app a
         // steady CPU cost for an answer that cannot change meaningfully between looks.
         let now = Date().timeIntervalSince1970
+        reloadSessions()
         if now - lastLifecycleCheck >= 2 {
             lastLifecycleCheck = now
-            checkLifecycle()
+            checkLifecycle()   // after the reload: sessionCount() reads the listing it just made
         }
-        reloadSessions()
         // Both are mtime checks against a file another process rewrites atomically, so this is
         // a stat() per tick, not a parse — the parse happens only when something actually moved.
         if mcp.reloadIfChanged() {
@@ -2164,7 +2168,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     // Reads prevState, which the evaluate() loop writes only AFTER this runs, so it must be called
     // there before that write. Tracks the turn's start while the session is working.
     func completionEdge(_ s: Session, now: Double) -> Bool {
-        if s.state == "thinking" || s.state == "tool", s.startedAt > 0 { turnStart[s.id] = s.startedAt }
+        if isWorkingState(s.state), s.startedAt > 0 { turnStart[s.id] = s.startedAt }
         let prev = prevState[s.id] ?? ""
         var edge = false
         if soundThreshold > 0, s.state == "done", prev != "done", let st = turnStart[s.id], st > 0, now - st >= soundThreshold { edge = true }
@@ -2197,6 +2201,10 @@ final class StatusController: NSObject, NSMenuDelegate {
             prevState[s.id] = s.state
         }
         for id in Array(prevState.keys) where sessions[id] == nil { prevState[id] = nil; sessionWord[id] = nil; turnStart[id] = nil }
+        // Keyed by cwd, so it outlived the sessions above: an entry per directory ever seen, for
+        // the app's lifetime. Kept only for directories a live session still points at.
+        let liveCwds = Set(sessions.values.map(\.cwd))
+        gitHeadCache = gitHeadCache.filter { liveCwds.contains($0.key) }
         if chime { completionSound?.play() }
 
         // Same-named projects (two clones/worktrees of one repo) get a parent-folder qualifier
@@ -2226,7 +2234,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
         setCrabMood(CrabMood.display(forEffectiveStates: sessions.values.map(\.eff),
                                      leadState: lead?.eff))
-        statusItem.button?.toolTip = lead.map(sessionMenuLine)  // names repo + surface + state on hover
+        statusItem.button?.toolTip = lead.map(sessionMenuLine)  // repo · branch [· elapsed] on hover
 
         guard let lead = lead else { renderResting(); return }
         switch lead.eff {
@@ -2287,7 +2295,8 @@ final class StatusController: NSObject, NSMenuDelegate {
         }
     }
 
-    func sessionCount() -> Int { stateFileNames().count }
+    // The listing reloadSessions() just made, not a second contentsOfDirectory for the same answer.
+    func sessionCount() -> Int { fileMTimes.count }
 
     var claudeProbedAt: Double = 0
     var claudeWasRunning = false
@@ -2365,10 +2374,9 @@ final class StatusController: NSObject, NSMenuDelegate {
             button.image = decorate(badge ? attentionBadgeIcon(icon, color: amber) : icon)
         }
         applyTitle()
-        if button.image == nil {
-            button.image = animate ? cachedIcon(frame: frameIdx)
-                                   : decorate(restingIcon(color: color))
-        }
+        // Only the animated path can arrive here imageless (the badge flip above cleared it and
+        // the first animStep is a frame away); the resting path assigned its image just above.
+        if animate, button.image == nil { button.image = cachedIcon(frame: frameIdx) }
     }
 
     func animStep() {
