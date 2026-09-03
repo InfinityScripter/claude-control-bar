@@ -58,6 +58,22 @@ def atomic_write(path, data):
     os.replace(tmp, path)
 
 
+def parse_reset(value):
+    """resets_at -> epoch int, or None. Mirrors parse_reset() in mcpbar.py: the app reads the
+    field with `as? Double`, so an ISO string passed through unchanged blanked the reset time
+    while the other writer of the same file produced a number."""
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        from datetime import datetime
+
+        try:
+            return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            return None
+    return None
+
+
 def capture_limits(payload):
     """rate_limits -> limits.json, in the shape mcpbar.py and the app already read."""
     limits = payload.get("rate_limits")
@@ -72,12 +88,17 @@ def capture_limits(payload):
     for name, block in limits.items():
         if not isinstance(block, dict) or block.get("used_percentage") is None:
             continue
+        # A window named after a reserved key would overwrite the timestamp, and mcpbar.py's
+        # report() then dies on `time.time() - limits["ts"]`. Same skip as usage_record() there:
+        # two writers, one file, one rule.
+        if name in ("ts", "source"):
+            continue
         record[name] = {
             # int(round(...)) is load-bearing. The payload reports fractional percentages, and
             # the app reads this with `as? Int` — which returns nil for 4.2, so the limits
             # silently disappear from the menu bar while the file looks perfectly healthy.
             "used_percentage": int(round(float(block["used_percentage"]))),
-            "resets_at": block.get("resets_at"),
+            "resets_at": parse_reset(block.get("resets_at")),
         }
     if len(record) <= 2:
         return
@@ -160,6 +181,28 @@ def capture_context(payload):
     atomic_write(path, record)
 
 
+def log_problem(text):
+    # Same file mcpbar.py and the app write to: a background script with stdout and stderr
+    # closed has no other place to leave a trace.
+    try:
+        os.makedirs(ROOT, mode=0o700, exist_ok=True)
+        with open(os.path.join(ROOT, "problems.log"), "a") as fh:
+            fh.write(text + "\n")
+    except OSError:
+        pass
+
+
+def capture(payload, steps=(capture_limits, learn_window, capture_context)):
+    """One step failing must not cost the others their write, and must not cost the user
+    their status line — but it must leave a trace. Before this, a genuine bug in a step
+    looked exactly like "no subscription": limits forever `not measured yet`, no signal."""
+    for step in steps:
+        try:
+            step(payload)
+        except Exception as exc:
+            log_problem("statusline.py: %s failed: %r" % (step.__name__, exc))
+
+
 def main():
     try:
         payload = json.loads(sys.stdin.read() or "{}")
@@ -167,11 +210,7 @@ def main():
         return 0
     if not isinstance(payload, dict):
         return 0
-    for step in (capture_limits, learn_window, capture_context):
-        try:
-            step(payload)
-        except Exception:
-            pass
+    capture(payload)
     return 0
 
 

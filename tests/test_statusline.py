@@ -111,6 +111,46 @@ class Capture(unittest.TestCase):
             {"rate_limits": {"five_hour": {"used_percentage": 13, "resets_at": 1}}})
         self.assertEqual(self.limits()["five_hour"]["used_percentage"], 13)
 
+    def test_окно_с_служебным_именем_не_затирает_штамп_времени(self):
+        """mcpbar.py пропускает окна ts/source — иначе report() падает на
+        `time.time() - limits["ts"]`. Тот же файл пишет и этот скрипт, а защиты у него не было."""
+        self.statusline.capture_limits({"rate_limits": {
+            "ts": {"used_percentage": 5},
+            "source": {"used_percentage": 6},
+            "five_hour": {"used_percentage": 1},
+        }})
+        got = self.limits()
+        self.assertIsInstance(got["ts"], int)
+        self.assertEqual(got["source"], "statusline")
+
+    def test_время_сброса_приводится_к_epoch(self):
+        """mcpbar.py пишет resets_at как epoch int, приложение читает `as? Double`.
+        ISO-строка от statusLine через этот скрипт молча оставляла время сброса пустым."""
+        self.statusline.capture_limits({"rate_limits": {
+            "five_hour": {"used_percentage": 1, "resets_at": "2026-09-03T10:00:00Z"},
+            "seven_day": {"used_percentage": 2, "resets_at": 1_800_000_000},
+            "seven_day_opus": {"used_percentage": 3, "resets_at": "garbage"},
+        }})
+        got = self.limits()
+        self.assertEqual(got["five_hour"]["resets_at"], 1_788_429_600)
+        self.assertEqual(got["seven_day"]["resets_at"], 1_800_000_000)
+        self.assertIsNone(got["seven_day_opus"]["resets_at"])
+
+    def test_упавший_шаг_оставляет_след_в_problems_log(self):
+        """Скрипт живёт в фоне с закрытым выводом: настоящий баг в захвате выглядел бы
+        ровно как «лимиты не измерены», без единого следа. problems.log — тот же канал,
+        которым пользуется mcpbar.py."""
+        def broken(_payload):
+            raise RuntimeError("boom")
+        self.statusline.capture({"rate_limits": {"five_hour": {"used_percentage": 1}}},
+                                steps=(broken, self.statusline.capture_limits))
+        with open(os.path.join(self.tmp, "problems.log")) as fh:
+            log = fh.read()
+        self.assertIn("broken", log)
+        self.assertIn("boom", log)
+        # Остальные шаги после упавшего всё равно отработали.
+        self.assertEqual(self.limits()["five_hour"]["used_percentage"], 1)
+
 
 class Context(unittest.TestCase):
     """Процент занятого контекста, снятый с самого Claude Code.
