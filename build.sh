@@ -128,6 +128,10 @@ test -x "$BIN"
 # nothing in the code ever read it; users just trashed it by hand. Leftovers of older builds
 # go with it.
 rm -rf "$APP" "$APP.previous"
+# build/ is gitignored, so on a fresh checkout — the Release workflow's DMG job — the default
+# destination's parent does not exist and mv fails after a full compile. The CI check job never
+# saw it: it points CONTROL_BAR_APP at RUNNER_TEMP, which exists.
+mkdir -p "$(dirname "$APP")"
 mv "$STAGE_APP" "$APP"
 echo "Built $APP"
 
