@@ -154,13 +154,26 @@ extension StatusController {
         colorParent.submenu = colorSub
         menu.addItem(colorParent)
 
-        let soundParent = NSMenuItem(title: "Completion Sound", action: nil, keyEquivalent: "")
+        // Two events, one submenu. The needs-you list doubles as the picker: choosing a sound
+        // plays it once, so there is no separate preview control to build.
+        let soundParent = NSMenuItem(title: "Sounds", action: nil, keyEquivalent: "")
         let soundSub = NSMenu()
+        soundSub.addItem(header("When a turn finishes"))
         for (secs, name) in [(0.0, "Off"), (0.1, "Every turn"), (60.0, "1 min+"), (300.0, "5 min+"), (900.0, "15 min+")] {
             let it = NSMenuItem(title: name, action: #selector(chooseSound(_:)), keyEquivalent: "")
             it.target = self
             it.representedObject = NSNumber(value: secs)
             it.state = soundThreshold == secs ? .on : .off
+            soundSub.addItem(it)
+        }
+        soundSub.addItem(.separator())
+        soundSub.addItem(header("When Claude needs you"))
+        for name in [""] + NeedsYouSound.choices {
+            let it = NSMenuItem(title: name.isEmpty ? "Off" : name,
+                                action: #selector(chooseNeedsYouSound(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = name
+            it.state = needsYouSound == name ? .on : .off
             soundSub.addItem(it)
         }
         soundParent.submenu = soundSub
@@ -429,6 +442,13 @@ extension StatusController {
         guard let n = sender.representedObject as? NSNumber else { return }
         soundThreshold = n.doubleValue
         UserDefaults.standard.set(soundThreshold, forKey: "soundThreshold")
+    }
+
+    @objc func chooseNeedsYouSound(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        needsYouSound = name
+        UserDefaults.standard.set(name, forKey: "needsYouSound")
+        playNeedsYou()   // the pick is its own preview
     }
 
     @objc func chooseStyle(_ sender: NSMenuItem) {

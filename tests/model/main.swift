@@ -935,6 +935,34 @@ check(crabFrameSet.frames(for: .onFire).allSatisfy { frame in
     } >= 12
 }, "the flames join the shell instead of floating above a dark seam")
 
+// MARK: Needs-you sound — one cue per prompt, and none when the prompt is already on screen
+
+check(NeedsYouSound.shouldCue(prevState: "tool", state: "permission", effective: "permission",
+                              hostBundle: "com.apple.Terminal", frontmost: "com.apple.Safari"),
+      "a session entering permission behind another app cues")
+check(!NeedsYouSound.shouldCue(prevState: "permission", state: "permission", effective: "permission",
+                               hostBundle: "com.apple.Terminal", frontmost: "com.apple.Safari"),
+      "a session still waiting does not cue again on the next tick")
+check(!NeedsYouSound.shouldCue(prevState: "tool", state: "permission", effective: "permission",
+                               hostBundle: "com.apple.Terminal", frontmost: "com.apple.Terminal"),
+      "no cue when the hosting terminal is the frontmost app — the prompt is already on screen")
+check(NeedsYouSound.shouldCue(prevState: "tool", state: "permission", effective: "permission",
+                              hostBundle: "", frontmost: "com.apple.Terminal"),
+      "an unknown host (ssh, pre-upgrade file) always cues rather than guessing")
+check(!NeedsYouSound.shouldCue(prevState: nil, state: "permission", effective: "idle",
+                               hostBundle: "", frontmost: nil),
+      "a stale permission file read at launch is silent: its effective state is idle")
+check(NeedsYouSound.shouldCue(prevState: nil, state: "permission", effective: "permission",
+                              hostBundle: "", frontmost: nil),
+      "a session first seen already waiting cues once")
+check(!NeedsYouSound.shouldCue(prevState: "tool", state: "thinking", effective: "thinking",
+                               hostBundle: "", frontmost: nil),
+      "only the permission state cues")
+check(NeedsYouSound.choices.contains(NeedsYouSound.defaultChoice), "the default is one of the choices")
+check(NeedsYouSound.choices.allSatisfy {
+    FileManager.default.fileExists(atPath: "/System/Library/Sounds/\($0).aiff")
+}, "every offered sound exists on this macOS")
+
 try? FileManager.default.removeItem(atPath: dir)
 try? FileManager.default.removeItem(atPath: sessionsRoot)
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")

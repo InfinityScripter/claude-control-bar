@@ -156,6 +156,8 @@ final class StatusController: NSObject, NSMenuDelegate {
     var oauthLimits = true          // poll Anthropic's usage endpoint for the 5h/7d limits
     var sessionWord: [String: String] = [:] // id -> current thinking word; re-picked on each entry into "thinking"
     var soundThreshold: Double = 0  // 0 = off; else the min turn length (seconds) that chimes on completion
+    var needsYouSound = NeedsYouSound.defaultChoice  // system sound name; "" = off
+    var needsYouPlayer: NSSound?  // the loaded pick, replaced when the pick changes
     var turnStart: [String: Double] = [:]  // id -> active turn start, for the completion-sound length gate
     lazy var completionSound: NSSound? = {
         guard let p = Bundle.main.path(forResource: "completion", ofType: "mp3"),
@@ -229,6 +231,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         if d.object(forKey: "thinkingWords") != nil { useThinkingWords = d.bool(forKey: "thinkingWords") }
         if d.object(forKey: "oauthLimits") != nil { oauthLimits = d.bool(forKey: "oauthLimits") }
         if d.object(forKey: "soundThreshold") != nil { soundThreshold = d.double(forKey: "soundThreshold") }
+        if let s = d.string(forKey: "needsYouSound") { needsYouSound = s }
         if let s = d.string(forKey: "animStyle"), let st = AnimStyle(rawValue: s) { animStyle = st }
         let menu = NSMenu()
         menu.delegate = self
@@ -854,6 +857,16 @@ final class StatusController: NSObject, NSMenuDelegate {
         return ""
     }
 
+    func playNeedsYou() {
+        guard !needsYouSound.isEmpty else { return }
+        if needsYouPlayer?.name != needsYouSound {
+            needsYouPlayer = NSSound(named: NSSound.Name(needsYouSound))
+            needsYouPlayer?.volume = NeedsYouSound.volume
+        }
+        needsYouPlayer?.stop()   // a second cue restarts the clip instead of being dropped
+        needsYouPlayer?.play()
+    }
+
     // Working->done edge for the completion chime, gated on turn length >= soundThreshold (0 = off).
     // Reads prevState, which the evaluate() loop writes only AFTER this runs, so it must be called
     // there before that write. Tracks the turn's start while the session is working.
@@ -868,7 +881,7 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     func evaluate() {
         let now = Date().timeIntervalSince1970
-        var chime = false
+        var chime = false, needsYou = false
 
         for id in Array(sessions.keys) {
             guard var s = sessions[id] else { continue }
@@ -888,6 +901,13 @@ final class StatusController: NSObject, NSMenuDelegate {
             sessions[id] = s
             updateThinkingWord(s)
             if completionEdge(s, now: now) { chime = true }
+            // The frontmost-app lookup is a workspace query, so it runs only on the raw edge.
+            if !needsYouSound.isEmpty, s.state == "permission", prevState[s.id] != "permission",
+               NeedsYouSound.shouldCue(prevState: prevState[s.id], state: s.state, effective: s.eff,
+                                       hostBundle: s.termBundle,
+                                       frontmost: NSWorkspace.shared.frontmostApplication?.bundleIdentifier) {
+                needsYou = true
+            }
             prevState[s.id] = s.state
         }
         for id in Array(prevState.keys) where sessions[id] == nil { prevState[id] = nil; sessionWord[id] = nil; turnStart[id] = nil }
@@ -896,6 +916,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         let liveCwds = Set(sessions.values.map(\.cwd))
         gitHeadCache = gitHeadCache.filter { liveCwds.contains($0.key) }
         if chime { completionSound?.play() }
+        if needsYou { playNeedsYou() }   // one cue per tick however many sessions asked at once
 
         // Same-named projects (two clones/worktrees of one repo) get a parent-folder qualifier
         // ("work/myrepo" vs "tmp/myrepo") so their rows stay tellable apart. Runs after the reap so
