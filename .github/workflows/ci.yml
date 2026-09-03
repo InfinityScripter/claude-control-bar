@@ -127,5 +127,14 @@ jobs:
           for path in ('Sources/main.swift', 'Sources/Updates.swift', 'hooks/lifecycle.js', 'hooks/update.js'):
               if '"com.local.claudestatusbar"' in open(path).read():
                   sys.exit(path + " uses upstream's bundle id as a literal")
+          # The rename's last straggler was an environment variable, which none of the checks
+          # above look at: every knob is CONTROL_BAR_*, and the old prefix must not come back.
+          import subprocess
+          tracked = subprocess.run(['git', 'ls-files'], capture_output=True, text=True).stdout.split()
+          for path in tracked:
+              if path == 'CHANGELOG.md' or not path.endswith(('.py', '.js', '.sh', '.swift', '.md', '.json')):
+                  continue
+              if 'CLAUDE_STATUSBAR' in open(path, errors='replace').read():
+                  sys.exit(path + ' still uses the CLAUDE_STATUSBAR_ prefix; the knobs are CONTROL_BAR_*')
           print('identity consistent:', bundle, exe)
           PY

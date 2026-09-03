@@ -80,6 +80,29 @@ When a session needs permission, the Crab switches to a separate waiting scene: 
 
 Server and tool switches apply to new sessions: Claude Code assembles the tool list at session start, so sessions that are already open keep their old set.
 
+### Options
+
+Everything under **Options** in the menu:
+
+- **Timer in menu bar** — the running turn's elapsed time next to the icon. The session rows always show theirs.
+- **Thinking words** — one of Claude Code's own spinner verbs ("Manifesting…") in place of "Thinking…".
+- **Limits via Anthropic API** — the usage poll behind the 5h/7d bars; off means the request never happens (see [PRIVACY.md](PRIVACY.md)).
+- **Animation** — Crab Walking (default), Claude Spark, or Claude Code, the terminal glyph spinner.
+- **Color** — Orange, or System for an adaptive black/white icon.
+- **Sounds** — two events. *When a turn finishes*: off (default), every turn, or only turns longer than 1, 5 or 15 minutes. *When Claude needs you*: a short macOS alert sound the moment a session starts waiting for your permission — Tink by default, or Purr, Ping, Glass, Hero, Submarine; picking one plays it. It stays quiet when the terminal or app hosting that session is already in front: the prompt is on your screen and you don't need to hear about it.
+- **Check MCP now** (⌘R) and **Open settings.json** — run the MCP check on demand; every server and tool switch is written to `~/.claude/settings.json`.
+
+The app also posts a macOS notification when an MCP server goes down or comes back. If you declined notifications, a *Notifications are off* row in the menu opens the right System Settings pane.
+
+### Slash commands
+
+The plugin adds two commands inside Claude Code:
+
+- `/mcp-health` — the MCP map as text: which servers answered, tool counts, what is switched off, plus the context window of every open session and the limits.
+- `/limits-capture install|uninstall|status` — the optional second source for the limit bars. It wraps your `statusLine` command so the figures refresh from the payload Claude Code hands it, fresher than the API poll while a terminal session is active; `uninstall` restores the previous command exactly.
+
+Layout knobs, `defaults write` switches and the diagnostic modes are listed in [TROUBLESHOOTING.md](TROUBLESHOOTING.md#knobs-and-diagnostics).
+
 The limit figures come from the same Anthropic usage endpoint that the `/usage` command asks. The app polls it with the OAuth token Claude Code keeps in your Keychain and sends it to `api.anthropic.com` only. The poll has an off switch in Options. [PRIVACY.md](PRIVACY.md) lists every file the app writes and every request it makes.
 
 ## Requirements

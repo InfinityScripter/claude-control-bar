@@ -48,7 +48,7 @@ Mac, and all of it is listed here rather than left to be discovered.
 - **The `statusLine` payload**, if you installed the limits capture. The wrapper receives the JSON
   Claude Code hands your status line command — which includes your usage limits and the model
   name — takes the two percentages and the context window size, and passes the bytes on unchanged.
-  The rest is not stored. Undo with `mcpbar.py statusline --uninstall`.
+  The rest is not stored. Undo with `/limits-capture uninstall`.
 - **`~/.claude/settings.json`**, to read and write which MCP servers and tools are switched off.
   A backup is taken the first time, at `settings.json.bak-control-bar`, and a dated one before
   every switch — see "Where it writes".
@@ -72,9 +72,26 @@ Mac, and all of it is listed here rather than left to be discovered.
 
 ## Where it writes
 
-Everything of its own lives under `~/.claude/control-bar/`: one small JSON file per session in
-`state.d/`, the context percentage each session's status line reported in `context.d/` (deleted
-with the session), the MCP picture in `mcp.json`, the limits in `limits.json`.
+Everything of its own lives under `~/.claude/control-bar/`. The complete list:
+
+- **Per session:** one small JSON file in `state.d/` (state, working directory, transcript path,
+  pid, context figures), and the context percentage the session's status line reported in
+  `context.d/`. Both are deleted with the session.
+- **The MCP picture:** `mcp.json`, the per-server descriptions cache `descriptions.json`, and
+  the model-to-context-window table `model-windows.json`.
+- **The limits:** `limits.json`.
+- **Install bookkeeping:** `owner.json` (which channel owns the hooks), `paths.json` (where the
+  backend script and interpreter are), a copy of the hook scripts and the build script, and
+  `releases/` with the source archives a self-update downloaded.
+- **Markers and locks:** `quit-intent` (a menu Quit, so the hooks do not relaunch the app),
+  `self-heal-probed` (an empty file whose date throttles the hooks' "is the app running" check),
+  and `refresh.lock`, `settings.lock`, `build.lock` while the matching operation runs.
+- **The statusLine capture, if installed:** `statusline-saved.json` (your previous `statusLine`
+  object, whole, so `/limits-capture uninstall` can restore it), `statusline-inner-command` and
+  `statusline-installed.json`.
+- **Logs:** `problems.log`, a breadcrumb per failure the app has nowhere else to show (the
+  README sends you there when the icon never appears); and `hooks.log`, only with the debug
+  switch described below.
 
 The one exception is next door: every switch takes a dated backup of your settings beside the
 original, at `~/.claude/settings.json.bak-control-bar-<date>-<microseconds>`. The name carries
@@ -89,7 +106,7 @@ group `staff`, which is every local account on the machine, so files left at the
 would have handed your working directories, transcript paths and account limits to any other user
 of the same Mac.
 
-With `CLAUDE_STATUSBAR_DEBUG=1` set — off by default — the hook also appends a line per event to
+With `CONTROL_BAR_DEBUG=1` set — off by default — the hook also appends a line per event to
 `control-bar/hooks.log`, including the first 160 characters of the event's `message` field. That
 can contain fragments of what you typed, so the file is capped and rotated rather than grown
 forever, and it is worth deleting when you are done debugging.

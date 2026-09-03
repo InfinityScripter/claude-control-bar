@@ -959,9 +959,8 @@ check(!NeedsYouSound.shouldCue(prevState: "tool", state: "thinking", effective: 
                                hostBundle: "", frontmost: nil),
       "only the permission state cues")
 check(NeedsYouSound.choices.contains(NeedsYouSound.defaultChoice), "the default is one of the choices")
-check(NeedsYouSound.choices.allSatisfy {
-    FileManager.default.fileExists(atPath: "/System/Library/Sounds/\($0).aiff")
-}, "every offered sound exists on this macOS")
+check(NeedsYouSound.choices.allSatisfy { NSSound(named: NSSound.Name($0)) != nil },
+      "every offered sound loads by name — the way the app plays it")
 
 try? FileManager.default.removeItem(atPath: dir)
 try? FileManager.default.removeItem(atPath: sessionsRoot)

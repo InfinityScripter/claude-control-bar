@@ -51,6 +51,17 @@ under the failed check and offers both ways out:
 
 ---
 
+## Knobs and diagnostics
+
+None of these have a UI; they exist for someone who wants a different number.
+
+- `~/.claude/control-bar/uiconfig.json` — menu layout, read on every open, no rebuild needed. All keys are numbers: `boxWidth` (row width, default 300), `nameMax` (longest session name before truncation, 30), `pillInset` (12) and `timerGap` (10), the spacing around the CLI/APP pill and the timer column. Example: `{"boxWidth": 340, "nameMax": 40}`.
+- `defaults write io.github.infinityscripter.claude-control-bar hideIdleAfter -int 1800` — how long, in seconds, a resting session stays in the dropdown (default 900; 0 keeps every row). Render-only: the session itself is tracked by its process, and the most recent one is always shown.
+- Environment variables for the hooks and the backend: `CONTROL_BAR_DEBUG=1` logs every hook event to `control-bar/hooks.log` (capped and rotated, see [PRIVACY.md](PRIVACY.md)); `CONTROL_BAR_TTL` (seconds, default 600) is how old the MCP picture may be before `/mcp-health` re-checks; `CONTROL_BAR_LANG=en` or `ru` picks the language of that report.
+- Diagnostic modes of the binary: `CONTROL_BAR_DIAGNOSE=1` (above), `CONTROL_BAR_DIAGNOSE=menu` opens the dropdown by itself so it can be screenshotted, and `CONTROL_BAR_DUMP_MENU=1` prints the menu as text and quits — what VoiceOver would read.
+
+---
+
 ## Known issues
 
 **Interrupting during the reasoning phase (CLI only) can freeze the icon on "thinking".** If you hit Ctrl+C while a turn is still in the extended-thinking phase, before any answer text has streamed, Claude Code writes nothing to the transcript and fires no hook, so there's no signal for the app to react to. The session sits on "thinking" until the 15-minute cap.
@@ -58,7 +69,7 @@ under the failed check and offers both ways out:
 - Interrupting *after* answer text starts streaming recovers normally, within a poll.
 - The desktop app is unaffected. Root cause is upstream in Claude Code, not fixable from here.
 
-**Clicking a session brings the app forward, not the exact session.** Desktop sessions raise the Claude app rather than that specific conversation; terminal sessions raise your terminal app rather than that window or tab. Exact terminal focus needs a one-time Automation permission grant and lives in a test build ([#19](https://github.com/m1ckc3s/claude-status-bar/issues/19)).
+**Clicking a session brings the app forward, not the exact session.** Desktop sessions raise the Claude app rather than that specific conversation; terminal sessions raise your terminal app rather than that window or tab. Exact terminal focus needs a one-time Automation permission grant; the original project has it in a test build, this fork does not yet.
 
 **The app launches and tracks sessions inside Cursor.** Cursor's Third-party skills feature reads the same `~/.claude/settings.json` and runs your hooks against its own agent, so Cursor sessions show up here too. Most things work (spark, timer, rows); the amber permission dot, the CLI/APP pill and click-to-focus don't, because Cursor doesn't pass those events. To turn it off, disable **Third-party skills** in Cursor's Settings → Features. Your Claude Code usage is unaffected.
 

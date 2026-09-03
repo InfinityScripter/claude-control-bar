@@ -7,6 +7,48 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [Unreleased]
+
+### Added
+- **A sound when Claude needs you.** The *Completion Sound* submenu is now *Sounds*, with a
+  second event: the moment a session starts waiting for your permission, a short macOS alert
+  sound plays — Tink by default, or Purr, Ping, Glass, Hero, Submarine, picked from the same
+  submenu (choosing one plays it). One cue per prompt however many sessions ask at once, and
+  none at all when the terminal or app hosting that session is already in front, since the
+  prompt is on your screen. *Off* is in the list for anyone who would rather not.
+- The README now documents every Option, the two slash commands (`/mcp-health`,
+  `/limits-capture`), and — in TROUBLESHOOTING — the `uiconfig.json` keys, the `hideIdleAfter`
+  default and the diagnostic modes. PRIVACY lists every file the app writes, not four of them.
+
+### Fixed
+- **The two writers of `limits.json` agree again.** The statusLine capture normalizes the reset
+  time to a number the way the API poll does — an ISO string passed through unchanged left the
+  reset time blank in the menu — and skips a window named `ts`, which would have overwritten
+  the timestamp and crashed `/mcp-health`.
+- **A failed limits capture leaves a trace.** The capture runs detached with its output closed,
+  so a genuine bug in it looked exactly like "no subscription": limits forever *not measured
+  yet*. Each failing step now writes a line to `problems.log`, as does a state-file write the
+  hooks could not complete (a full disk used to look like a frozen menu bar).
+- **A refused switch says why.** `toggle-server`/`toggle-tool` printed `unchanged` for four
+  different outcomes; a refusal (unreadable `settings.json`, a hand-edited key of the wrong
+  shape, a write race) now reports the reason on stderr with exit code 2.
+- The DMG uninstaller no longer swallows a failed statusLine restore; it prints the command to
+  run before trashing the app.
+- `.claude/rules/architecture.md` was never in the repository: an unanchored `ARCHITECTURE.md`
+  in `.gitignore` matched it case-insensitively on APFS.
+
+### Changed
+- **Less work per hook event.** The context recomputation read and split 2 MB of transcript on
+  every tool call, twice; it now reads 128 KB first and the full 2 MB only when that finds no
+  usage record. The self-heal `pgrep` — a fork per event — runs at most once every 30 seconds.
+- `main.swift` is split by concern (menu rows, updates, menu, session rows, icon rendering),
+  and the UI-free model files live in `Sources/Model/`, which CI compiles as a whole instead of
+  from a hand-kept list. The debug switch for the hooks is `CONTROL_BAR_DEBUG` (was
+  `CLAUDE_STATUSBAR_DEBUG`). The *Show timer* option is named *Timer in menu bar*, which is
+  what it does.
+- Dead code removed: the backend's unused `line` subcommand and its refresh spawner, and a
+  handful of unused properties and branches in the app.
+
 ## [0.7.12] - 2026-08-31
 
 ### Fixed
@@ -909,6 +951,7 @@ reports on Claude Code — it switches parts of it off.
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[Unreleased]: https://github.com/InfinityScripter/claude-control-bar/compare/v0.7.12...HEAD
 [0.7.12]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.12
 [0.7.11]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.11
 [0.7.10]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.10
