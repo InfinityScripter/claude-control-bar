@@ -50,10 +50,12 @@ jobs:
         run: node --test tests/*.test.js
 
       # No Xcode project here (the app builds with a bare swiftc), so the model checks are a
-      # plain executable that exits non-zero on the first failure.
+      # plain executable that exits non-zero on the first failure. Sources/Model/ is the whole
+      # UI-free half by construction — a new model file is picked up without touching this list,
+      # and a model file that reaches into the app fails to link here, which is the point.
       - name: Swift model checks
         run: |
-          swiftc -O Sources/MCPModel.swift Sources/Transcript.swift Sources/DesktopSessions.swift Sources/RunningProcesses.swift Sources/SafeInt.swift Sources/Sessions.swift Sources/Changelog.swift Sources/Gauge.swift Sources/CrabFrames.swift Sources/CrabRender.swift Sources/CrabMoodFrames.swift tests/model/main.swift -o "$RUNNER_TEMP/model" -framework Cocoa
+          swiftc -O Sources/Model/*.swift tests/model/main.swift -o "$RUNNER_TEMP/model" -framework Cocoa
           "$RUNNER_TEMP/model"
 
       # --dmg on every push, not just in the Release workflow: the image is packaged on a runner
@@ -122,7 +124,7 @@ jobs:
           # Upstream is a separate product someone may have installed on purpose, and the
           # cleanup routine that came with this code deletes bundles BY ID. Quoted, so the
           # comments explaining why the id is absent do not trip the check.
-          for path in ('Sources/main.swift', 'hooks/lifecycle.js', 'hooks/update.js'):
+          for path in ('Sources/main.swift', 'Sources/Updates.swift', 'hooks/lifecycle.js', 'hooks/update.js'):
               if '"com.local.claudestatusbar"' in open(path).read():
                   sys.exit(path + " uses upstream's bundle id as a literal")
           print('identity consistent:', bundle, exe)

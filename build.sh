@@ -41,8 +41,10 @@ echo "Compiling universal binary (arm64 + x86_64)…"
 # slice, so Rosetta is never involved). swiftc emits one arch per -target, so this is two
 # compiles joined by lipo. Keep the deployment target pinned, else swiftc stamps the binary
 # with the build machine's OS and it refuses to launch on older systems despite LSMinimumSystemVersion.
-swiftc -O -target arm64-apple-macos12.0  Sources/*.swift -o "$BIN.arm64"  -framework Cocoa
-swiftc -O -target x86_64-apple-macos12.0 Sources/*.swift -o "$BIN.x86_64" -framework Cocoa
+# Sources/Model/ is the UI-free half (parsers, state machines, frame data) that CI also compiles
+# on its own against tests/model/main.swift; Sources/ proper is the app.
+swiftc -O -target arm64-apple-macos12.0  Sources/*.swift Sources/Model/*.swift -o "$BIN.arm64"  -framework Cocoa
+swiftc -O -target x86_64-apple-macos12.0 Sources/*.swift Sources/Model/*.swift -o "$BIN.x86_64" -framework Cocoa
 lipo -create "$BIN.arm64" "$BIN.x86_64" -output "$BIN"
 rm -f "$BIN.arm64" "$BIN.x86_64"
 

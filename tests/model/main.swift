@@ -1,9 +1,7 @@
 import Cocoa
 
 // Checks on the MCP model, the transcript reader and the desktop-session lookup:
-//   swiftc -O Sources/MCPModel.swift Sources/Transcript.swift Sources/DesktopSessions.swift Sources/Gauge.swift \
-//     Sources/RunningProcesses.swift Sources/CrabFrames.swift Sources/CrabRender.swift \
-//     Sources/CrabMoodFrames.swift tests/model/main.swift -o /tmp/t -framework Cocoa && /tmp/t
+//   swiftc -O Sources/Model/*.swift tests/model/main.swift -o /tmp/t -framework Cocoa && /tmp/t
 // There is no test target in this project (it builds with a bare swiftc, no Xcode project), so
 // this is a plain executable that exits non-zero on the first failure.
 
@@ -560,7 +558,12 @@ check((templateMascotPixel?.alphaComponent ?? 0) > 0.5,
 
 // MARK: Crab load — the mascot reflects work happening now, not merely open sessions
 
-if let mainSource = try? String(contentsOfFile: repoRoot + "/Sources/main.swift", encoding: .utf8) {
+// The app half is several files now; the contract below is about the app as a whole.
+let appSources = ((try? FileManager.default.contentsOfDirectory(atPath: repoRoot + "/Sources")) ?? [])
+    .filter { $0.hasSuffix(".swift") }.sorted()
+    .compactMap { try? String(contentsOfFile: repoRoot + "/Sources/" + $0, encoding: .utf8) }
+if !appSources.isEmpty {
+    let mainSource = appSources.joined(separator: "\n")
     check(mainSource.contains("var animStyle: AnimStyle = .crab"),
           "Crab is the default animation when no preference was saved")
     check(mainSource.contains("d.string(forKey: \"animStyle\")"),
@@ -572,7 +575,7 @@ if let mainSource = try? String(contentsOfFile: repoRoot + "/Sources/main.swift"
     check(mainSource.contains("CrabMood.display("),
           "the status-bar mood is selected with the permission-aware display model")
 } else {
-    check(false, "Sources/main.swift is readable for the presentation defaults contract")
+    check(false, "Sources/*.swift are readable for the presentation defaults contract")
 }
 
 check(CrabMood.forEffectiveStates([]) == .sleeping,
