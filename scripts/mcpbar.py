@@ -10,7 +10,6 @@ MCP-картину ведёт этот скрипт (mcp.json), рисует в�
 Команды:
     refresh          проверить всё заново и переписать mcp.json (медленно, ~7 сек)
     report           человекочитаемая карта
-    line             компактный сегмент для statusLine
     toggle-server    выключить/включить сервер целиком
     toggle-tool      выключить/включить отдельный инструмент
     statusline       перехват лимитов: --install / --uninstall / без флага — статус
@@ -50,10 +49,6 @@ DESKTOP_SESSIONS = os.path.join(
 TRANSCRIPTS = os.path.join(CLAUDE, "projects", "*", "*.jsonl")
 
 TTL = int(os.environ.get("CONTROL_BAR_TTL", "600"))
-# Не меньше, чем сама проверка в худшем случае: `claude mcp list` ждёт ответа до 120 секунд и
-# зовётся ещё раз на каждый проект живой сессии. При прежних 120 секундах лок протухал посреди
-# работы, и следующий запуск statusLine поднимал вторую такую же проверку поверх первой.
-LOCK_TTL = 600
 
 OK, FAILED, PENDING, AUTH, OFF = "ok", "failed", "pending", "auth", "off"
 UNKNOWN = "unknown"
@@ -185,7 +180,7 @@ def secure_root(path=None):
 
     Домашний каталог на macOS открыт группе staff, а в ней состоят все локальные
     пользователи машины. Внутри лежат рабочие каталоги сессий и пути к их транскриптам,
-    проценты лимитов аккаунта и — при CLAUDE_STATUSBAR_DEBUG=1 — обрывки набранного.
+    проценты лимитов аккаунта и — при CONTROL_BAR_DEBUG=1 — обрывки набранного.
     Рождалось это всё с umask, то есть 0644.
 
     Проход делается на каждый refresh, а не только при создании: обновление версии само по
@@ -1015,6 +1010,15 @@ def settings_lock():
     return held()
 
 
+class Refused(Exception):
+    """Переключатель, который скрипт делать не станет, и почему.
+
+    Раньше все четыре исхода — нечитаемый settings.json, чужая форма ключа, «уже так» и
+    гонка с чужой записью — печатались одним словом unchanged. «Я не тронул твой битый
+    файл» и «уже выключено» — разные ответы, и человек в /mcp-health должен их различать.
+    """
+
+
 def toggle_server(name, turn_off):
     with settings_lock():
         return _toggle_server_locked(name, turn_off)
@@ -1023,14 +1027,14 @@ def toggle_server(name, turn_off):
 def _toggle_server_locked(name, turn_off):
     settings, seen = read_settings_for_edit()
     if settings is None:
-        return False
+        raise Refused("settings.json is unreadable or not valid JSON; nothing written")
     current = settings.get("deniedMcpServers")
     if current is None:
         current = []
     elif not isinstance(current, list):
         # Ключ есть, но не список — файл правили руками. Отказ, как на нечитаемом файле:
         # чинить чужую форму своим переключателем значит молча снести то, что там лежало.
-        return False
+        raise Refused("deniedMcpServers in settings.json is not a list; nothing written")
     kept = [
         d for d in current
         if not (isinstance(d, dict) and d.get("serverName") == name)
@@ -1044,7 +1048,9 @@ def _toggle_server_locked(name, turn_off):
         settings["deniedMcpServers"] = kept
     else:
         settings.pop("deniedMcpServers", None)
-    return write_settings(settings, expect=seen)
+    if not write_settings(settings, expect=seen):
+        raise Refused("settings.json changed underneath the switch; nothing written")
+    return True
 
 
 def rule_for_tool(server, tool):
@@ -1069,15 +1075,15 @@ def toggle_tool(rule, turn_off, stale=()):
 def _toggle_tool_locked(rule, turn_off, stale=()):
     settings, seen = read_settings_for_edit()
     if settings is None:
-        return False
+        raise Refused("settings.json is unreadable or not valid JSON; nothing written")
     perms = settings.setdefault("permissions", {})
     if not isinstance(perms, dict):
         # setdefault вернул существующее значение не той формы (руками вписанный список).
         # Отказ, как на нечитаемом файле: crash внутри замка хуже честного «не вышло».
-        return False
+        raise Refused("permissions in settings.json is not an object; nothing written")
     deny = perms.get("deny")
     if deny is not None and not isinstance(deny, list):
-        return False
+        raise Refused("permissions.deny in settings.json is not a list; nothing written")
     current = list(deny or [])
     drop = {rule, *stale}
     kept = [r for r in current if r not in drop]
@@ -1094,7 +1100,9 @@ def _toggle_tool_locked(rule, turn_off, stale=()):
         perms.pop("deny", None)
         if not perms:
             settings.pop("permissions", None)
-    return write_settings(settings, expect=seen)
+    if not write_settings(settings, expect=seen):
+        raise Refused("settings.json changed underneath the switch; nothing written")
+    return True
 
 
 # ──────────────────────────────────────────────────────── перехват statusLine
@@ -1624,10 +1632,9 @@ def live_sessions():
 def refresh():
     """Полная проверка — под межпроцессным замком, потому что путей к ней несколько.
 
-    spawn_refresh() прикрывает только statusLine-путь, и его mtime-эвристика — фильтр, а не
-    гарантия: приложение зовёт `mcpbar.py refresh` напрямую, есть `report --force` и
-    `toggle --refresh`. Две проверки разом — это дважды поднятые пользовательские серверы и
-    две записи mcp.json наперегонки, где побеждает последняя, а не самая свежая.
+    Приложение зовёт `mcpbar.py refresh` напрямую, есть `report --force` и `toggle --refresh`.
+    Две проверки разом — это дважды поднятые пользовательские серверы и две записи mcp.json
+    наперегонки, где побеждает последняя, а не самая свежая.
 
     Замок неблокирующий: раз проверка уже идёт, вторая ничего не добавит — честнее сразу
     вернуть последнюю картину, идущая проверка перепишет её через считанные секунды.
@@ -1637,9 +1644,8 @@ def refresh():
     import fcntl
 
     secure_root()
-    # Дескриптор нужен только под flock, содержимое файла не пишется вовсе: mtime — язык
-    # дебаунса spawn_refresh(), и штампует его только он. Взаимное исключение — flock,
-    # не байты; выход из with отпускает замок в любом исходе.
+    # Дескриптор нужен только под flock, содержимое файла не пишется вовсе. Взаимное
+    # исключение — flock, не байты; выход из with отпускает замок в любом исходе.
     with os.fdopen(os.open(LOCK, os.O_WRONLY | os.O_CREAT, SECURE_FILE), "w") as fh:
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1770,53 +1776,7 @@ def load_state():
     return read_json(STATE, {})
 
 
-def spawn_refresh():
-    import subprocess
-
-    try:
-        if os.path.exists(LOCK) and time.time() - os.path.getmtime(LOCK) < LOCK_TTL:
-            return
-        os.makedirs(ROOT, mode=SECURE_DIR, exist_ok=True)
-        # Пустой touch: файл — маркер времени последнего спауна, читается только getmtime'ом
-        # выше. Кто прямо сейчас ДЕРЖИТ проверку, знает flock внутри refresh(); pid сюда не
-        # пишется, чтобы файл не притворялся pid-локом, которым не является.
-        with open(LOCK, "w"):
-            pass
-        subprocess.Popen(
-            [sys.executable, os.path.abspath(__file__), "refresh"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-        )
-    except Exception:
-        pass
-
-
 # ──────────────────────────────────────────────────────────── вывод
-
-def statusline_segment():
-    """Сегмент для statusLine. Никогда не блокирует и никогда не бросает."""
-    try:
-        data = load_state()
-        if not data or time.time() - data.get("checked_at", 0) > TTL:
-            spawn_refresh()
-        if not data:
-            return ""
-        servers = [s for s in data.get("servers", []) if not s.get("disabled")]
-        live = sum(1 for s in servers if s["state"] == OK)
-        broken = [s["name"].replace("claude.ai ", "") for s in servers if s["state"] != OK]
-        pending = len(data.get("auth", []))
-        if data.get("error") and not servers:
-            return "\x1b[31m🔌 MCP ?\x1b[0m"
-        color = "\x1b[31m" if broken else "\x1b[32m"
-        text = f"{color}🔌 MCP {live}/{len(servers)}"
-        if broken:
-            text += " ✗ " + ",".join(broken[:2])
-        text += "\x1b[0m"
-        if pending:
-            text += f" \x1b[33m⚠{pending}\x1b[0m"
-        return text
-    except Exception:
-        return ""
-
 
 GLYPH = {OK: "●", FAILED: "✗", PENDING: "⏸", AUTH: "◌", OFF: "○", UNKNOWN: "·"}
 COLOR = {OK: "32", FAILED: "31", PENDING: "33", AUTH: "33", OFF: "2", UNKNOWN: "2"}
@@ -1946,14 +1906,21 @@ def flag_value(argv, flag):
         return ""
 
 
+def refused(exc, rest):
+    # mcp.json пересчитывается и при отказе: меню уже показало оптимистичную догадку, и
+    # именно перечитанный файл её отменяет. Причина — в stderr и код 2: приложение выводит
+    # stderr бэкенда в лог только при ненулевом выходе.
+    refresh() if "--refresh" in rest else patch_state_after_toggle()
+    print("refused: %s" % exc, file=sys.stderr)
+    return 2
+
+
 def main(argv):
     command = argv[0] if argv else "report"
     rest = argv[1:]
 
     if command == "refresh":
         refresh()
-    elif command == "line":
-        sys.stdout.write(statusline_segment())
     elif command == "report":
         print(report(force="--force" in rest))
     elif command == "doctor":
@@ -1978,7 +1945,10 @@ def main(argv):
             if not target:
                 print(__doc__)
                 return 1
-            changed = toggle_server(target, turn_off)
+            try:
+                changed = toggle_server(target, turn_off)
+            except Refused as exc:
+                return refused(exc, rest)
         else:
             # Приложение присылает и готовое правило (первым словом), и сервер с инструментом
             # по отдельности. Правило нужно старым сборкам скрипта, пара — этой: только здесь
@@ -1992,7 +1962,10 @@ def main(argv):
             else:
                 print(__doc__)
                 return 1
-            changed = toggle_tool(rule, turn_off, stale)
+            try:
+                changed = toggle_tool(rule, turn_off, stale)
+            except Refused as exc:
+                return refused(exc, rest)
         # Меню ждёт мгновенного отклика, поэтому по умолчанию только пересчёт признаков.
         # Полная проверка — по явному --refresh.
         refresh() if "--refresh" in rest else patch_state_after_toggle()

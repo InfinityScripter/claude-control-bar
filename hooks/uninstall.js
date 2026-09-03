@@ -45,7 +45,15 @@ if (!hooksOnly) {
     for (const rel of [["scripts", "mcpbar.py"], ["..", "scripts", "mcpbar.py"]]) {
       const mcpbar = path.join(__dirname, ...rel);
       if (!fs.existsSync(mcpbar)) continue;
-      try { cp.execFileSync("/usr/bin/python3", [mcpbar, "statusline", "--uninstall"], { stdio: "ignore" }); } catch {}
+      try {
+        cp.execFileSync("/usr/bin/python3", [mcpbar, "statusline", "--uninstall"], { stdio: "ignore" });
+      } catch (e) {
+        // Said out loud, not swallowed: this is exactly the case the block exists for. The
+        // app is about to be trashed, and a status line still pointing at its wrapper would
+        // exec a dead path on every redraw with the user's own command stranded in the sidecars.
+        console.error(`Could not restore the statusLine command (${e.message}). Run before trashing the app:`);
+        console.error(`  /usr/bin/python3 "${mcpbar}" statusline --uninstall`);
+      }
       break;
     }
   }

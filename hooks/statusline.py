@@ -26,6 +26,8 @@ import os
 import sys
 import time
 
+# CONTROL_BAR_ROOT is a test seam for this script and its wrapper only: the app and the other
+# hooks use the fixed path. Setting it for real would split the state directory.
 ROOT = os.environ.get("CONTROL_BAR_ROOT") or os.path.expanduser("~/.claude/control-bar")
 LIMITS = os.path.join(ROOT, "limits.json")
 WINDOWS = os.path.join(ROOT, "model-windows.json")

@@ -1087,13 +1087,28 @@ class SettingsSafety(unittest.TestCase):
         """
         broken = '{ "permissions": { "deny": ["Bash(rm:*)"] }, "apiKeyHelper": "x"\n'
         self.write(broken)
-        self.assertFalse(mcpbar.toggle_server("wiki", turn_off=True))
+        with self.assertRaises(mcpbar.Refused):
+            mcpbar.toggle_server("wiki", turn_off=True)
         self.assertEqual(self.read(), broken)
+
+    def test_отказ_из_командной_строки_отличим_от_unchanged(self):
+        """Четыре исхода печатались одним словом unchanged; «я не тронул твой битый файл»
+        и «уже выключено» — разные ответы, и /mcp-health должен их различать."""
+        import contextlib
+        import io
+
+        self.write('{ oops\n')
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = mcpbar.main(["toggle-server", "wiki", "--off"])
+        self.assertEqual(code, 2)
+        self.assertIn("refused: settings.json is unreadable", err.getvalue())
 
     def test_битый_json_не_затирается_переключателем_инструмента(self):
         broken = '{ oops\n'
         self.write(broken)
-        self.assertFalse(mcpbar.toggle_tool("mcp__wiki__DeletePage", turn_off=True))
+        with self.assertRaises(mcpbar.Refused):
+            mcpbar.toggle_tool("mcp__wiki__DeletePage", turn_off=True)
         self.assertEqual(self.read(), broken)
 
     def test_чужая_запись_между_чтением_и_заменой_не_теряется(self):
@@ -1113,7 +1128,8 @@ class SettingsSafety(unittest.TestCase):
 
         mcpbar.backup_settings = someone_else_writes_first
         try:
-            self.assertFalse(mcpbar.toggle_server("wiki", turn_off=True))
+            with self.assertRaises(mcpbar.Refused):
+                mcpbar.toggle_server("wiki", turn_off=True)
         finally:
             mcpbar.backup_settings = original
         with open(self.settings) as fh:
@@ -1598,14 +1614,16 @@ class SettingsShapeDrift(unittest.TestCase):
     def test_permissions_списком_читается_как_пусто_и_не_редактируется(self):
         before = self.write({"permissions": ["mcp__x"]})
         self.assertEqual(mcpbar.denied_tools(), [])
-        self.assertFalse(mcpbar.toggle_tool("mcp__a__b", turn_off=True))
+        with self.assertRaises(mcpbar.Refused):
+            mcpbar.toggle_tool("mcp__a__b", turn_off=True)
         with open(self.settings, "rb") as fh:
             self.assertEqual(fh.read(), before)
 
     def test_deny_строкой_читается_как_пусто_и_не_редактируется(self):
         before = self.write({"permissions": {"deny": "mcp__x"}})
         self.assertEqual(mcpbar.denied_tools(), [])
-        self.assertFalse(mcpbar.toggle_tool("mcp__a__b", turn_off=True))
+        with self.assertRaises(mcpbar.Refused):
+            mcpbar.toggle_tool("mcp__a__b", turn_off=True)
         with open(self.settings, "rb") as fh:
             self.assertEqual(fh.read(), before)
 
@@ -1616,7 +1634,8 @@ class SettingsShapeDrift(unittest.TestCase):
     def test_deniedMcpServers_словарём_не_редактируется(self):
         before = self.write({"deniedMcpServers": {"wiki": True}})
         self.assertEqual(mcpbar.denied_servers(), [])
-        self.assertFalse(mcpbar.toggle_server("wiki", turn_off=True))
+        with self.assertRaises(mcpbar.Refused):
+            mcpbar.toggle_server("wiki", turn_off=True)
         with open(self.settings, "rb") as fh:
             self.assertEqual(fh.read(), before)
 

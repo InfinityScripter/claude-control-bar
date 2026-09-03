@@ -9,6 +9,7 @@
 # Install and uninstall: scripts/mcpbar.py statusline --install | --uninstall
 set -u
 
+# CONTROL_BAR_ROOT: test seam shared with statusline.py; the app itself uses the fixed path.
 ROOT="${CONTROL_BAR_ROOT:-$HOME/.claude/control-bar}"
 
 # Self-wrapping guard. The installer refuses to wrap itself, but the sidecar file is plain text
