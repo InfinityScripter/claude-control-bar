@@ -91,46 +91,15 @@ function contextOf(transcript) {
     fd = fs.openSync(transcript, "r");
     const size = fs.fstatSync(fd).size;
     if (!size) return null;
-    // Tail only: a long session's transcript runs to tens of megabytes, and the newest usage
-    // record is always at the end. 2 MB is generous — one turn plus a large tool result.
-    const span = Math.min(size, 2_000_000);
-    const buf = Buffer.alloc(span);
-    fs.readSync(fd, buf, 0, span, size - span);
-    let text = buf.toString("utf8");
-    // The read starts mid-line, and possibly mid-UTF-8-character; dropping the first partial
-    // line discards both problems at once.
-    if (size > span) text = text.slice(text.indexOf("\n") + 1);
-
     const models = (readJSON(windowCache) || {}).models || {};
-    const lines = text.split("\n");
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (!lines[i].includes('"usage"')) continue;
-      let rec;
-      try { rec = JSON.parse(lines[i]); } catch { continue; }
-      if (!rec || rec.type !== "assistant" || rec.isSidechain) continue;
-      const msg = rec.message || {};
-      if (msg.model === "<synthetic>") continue;
-      const blocks = msg.content;
-      if (Array.isArray(blocks) && blocks[0] && SKIP_TEXTS.has(blocks[0].text)) continue;
-      const usage = msg.usage || {};
-      if (typeof usage.input_tokens !== "number") continue;
-
-      const tokens = usage.input_tokens
-        + (usage.cache_creation_input_tokens || 0)
-        + (usage.cache_read_input_tokens || 0);
-      let [window, exact] = windowFor(msg.model, models);
-      let assumed = !exact;
-      if (tokens > window) {
-        // Observation beats the table: this many tokens could not physically fit a 200k window,
-        // so the session runs in the million one and the scraped table is behind. Showing the
-        // recomputed figure is more honest than pinning a fake 100%.
-        window = 1000000;
-        assumed = true;
-      }
-      return {
-        pct: Math.max(0, Math.min(100, Math.round((tokens / window) * 100))),
-        tokens, window, model: msg.model || "", assumed,
-      };
+    // Tail only: a long session's transcript runs to tens of megabytes, and the newest usage
+    // record is always at the end. Two steps, because this runs twice per tool call: the
+    // record is nearly always within the last few lines, so 128 KB finds it; only a turn that
+    // ends in a very large tool result needs the 2 MB read (one turn plus such a result).
+    for (const span of [Math.min(size, 131_072), Math.min(size, 2_000_000)]) {
+      const found = usageInTail(fd, size, span, models);
+      if (found) return found;
+      if (span === size) break;
     }
     return null;
   } catch {
@@ -140,14 +109,55 @@ function contextOf(transcript) {
   }
 }
 
+function usageInTail(fd, size, span, models) {
+  const buf = Buffer.alloc(span);
+  fs.readSync(fd, buf, 0, span, size - span);
+  let text = buf.toString("utf8");
+  // The read starts mid-line, and possibly mid-UTF-8-character; dropping the first partial
+  // line discards both problems at once.
+  if (size > span) text = text.slice(text.indexOf("\n") + 1);
+
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"usage"')) continue;
+    let rec;
+    try { rec = JSON.parse(lines[i]); } catch { continue; }
+    if (!rec || rec.type !== "assistant" || rec.isSidechain) continue;
+    const msg = rec.message || {};
+    if (msg.model === "<synthetic>") continue;
+    const blocks = msg.content;
+    if (Array.isArray(blocks) && blocks[0] && SKIP_TEXTS.has(blocks[0].text)) continue;
+    const usage = msg.usage || {};
+    if (typeof usage.input_tokens !== "number") continue;
+
+    const tokens = usage.input_tokens
+      + (usage.cache_creation_input_tokens || 0)
+      + (usage.cache_read_input_tokens || 0);
+    let [window, exact] = windowFor(msg.model, models);
+    let assumed = !exact;
+    if (tokens > window) {
+      // Observation beats the table: this many tokens could not physically fit a 200k window,
+      // so the session runs in the million one and the scraped table is behind. Showing the
+      // recomputed figure is more honest than pinning a fake 100%.
+      window = 1000000;
+      assumed = true;
+    }
+    return {
+      pct: Math.max(0, Math.min(100, Math.round((tokens / window) * 100))),
+      tokens, window, model: msg.model || "", assumed,
+    };
+  }
+  return null;
+}
+
 let raw = "";
 process.stdin.on("data", (d) => (raw += d));
 process.stdin.on("end", () => {
   let p = {};
   try { p = JSON.parse(raw || "{}"); } catch {}
 
-  // Off by default; CLAUDE_STATUSBAR_DEBUG=1 logs every hook invocation to hooks.log.
-  if (process.env.CLAUDE_STATUSBAR_DEBUG === "1") {
+  // Off by default; CONTROL_BAR_DEBUG=1 logs every hook invocation to hooks.log.
+  if (process.env.CONTROL_BAR_DEBUG === "1") {
     try {
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       // Rotated at 1 MB, keeping one previous file. The line below carries an excerpt of the
@@ -252,15 +262,26 @@ process.stdin.on("end", () => {
     // local account (the home folder is group-readable by staff on macOS).
     fs.writeFileSync(tmp, JSON.stringify(out), { mode: 0o600 });
     fs.renameSync(tmp, statePath);
-  } catch {}
+  } catch (e) {
+    // This write IS the hook's output; a persistently failing one (full disk, a chmod gone
+    // wrong) made the menu bar look frozen forever. problems.log is the app's own breadcrumb
+    // file, so the failure lands where the README already sends people to look.
+    try { fs.appendFileSync(path.join(dir, "problems.log"), `update.js: could not write ${statePath}: ${e.message}\n`); } catch {}
+  }
 
   // Self-heal: a session with live state but no app to show it relaunches the app. Covers
   // install-while-a-session-is-already-open (that session never fires SessionStart, the only
   // other opener) and an app killed/crashed mid-session. Skipped after an explicit menu Quit.
+  // pgrep is a fork, and this ran on every PreToolUse and PostToolUse — two forks per tool
+  // call for an answer that does not change between them. A probe that just ran answers for
+  // the next half minute; a crash still heals within that window. The marker's mtime is the
+  // clock, so the throttle costs one stat instead of a process.
+  const probeMarker = path.join(dir, "self-heal-probed");
   try {
-    if (!fs.existsSync(quitMarker)) {
-      cp.execSync("pgrep -x ClaudeControlBar", { stdio: "ignore" });
-    }
+    if (fs.existsSync(quitMarker)) return;
+    try { if (Date.now() - fs.statSync(probeMarker).mtimeMs < 30_000) return; } catch {}
+    try { fs.writeFileSync(probeMarker, "", { mode: 0o600 }); } catch {}
+    cp.execSync("pgrep -x ClaudeControlBar", { stdio: "ignore" });
   } catch {
     try { cp.spawn("open", ["-g", "-b", "io.github.infinityscripter.claude-control-bar"], { stdio: "ignore", detached: true }).unref(); } catch {}
   }

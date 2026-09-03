@@ -510,3 +510,70 @@ test("the seeded session file carries exactly the keys the swift reader parses",
   assert.equal(state.started, false, "a merely-opened session stays out of the dropdown");
   assert.equal(state.state, "idle");
 });
+
+test("a usage record buried deeper than the first tail read is still found", () => {
+  // The tail is read in two steps — a small one that covers almost every turn, and the full
+  // 2 MB only when the small one finds no usage record. This is the fallback's proof.
+  const home = sandbox();
+  const transcript = path.join(home, "t.jsonl");
+  const filler = JSON.stringify({ type: "progress", data: "x".repeat(1000) });
+  fs.writeFileSync(transcript, [
+    JSON.stringify({ type: "assistant", message: { model: "claude-opus-4-8", content: [{ text: "hi" }],
+      usage: { input_tokens: 50000 } } }),
+    ...Array(400).fill(filler),   // ~400 KB past the record, well beyond the first read
+  ].join("\n"));
+  fs.writeFileSync(path.join(home, ".claude", "control-bar", "model-windows.json"),
+    JSON.stringify({ models: { "claude-opus-4-8": 200000 } }));
+
+  run(updatePath, home, ["post"],
+      JSON.stringify({ session_id: "deep", cwd: home, transcript_path: transcript }));
+
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "deep.json"), "utf8"));
+  assert.equal(state.pct, 25);
+});
+
+test("the self-heal probe runs at most once every 30 seconds", () => {
+  // pgrep is a fork — two of them per tool call, before this. A probe that just ran answers
+  // for the next half minute; a crash still heals within that window.
+  const home = sandbox();
+  run(updatePath, home, ["pre"], JSON.stringify({ session_id: "s1", cwd: home, tool_name: "Bash" }));
+  run(updatePath, home, ["post"], JSON.stringify({ session_id: "s1", cwd: home }));
+  const launches = fs.readFileSync(spawnLog(home), "utf8").trim().split("\n");
+  assert.equal(launches.length, 1, "the second event within the window did not probe again");
+});
+
+test("a state write that fails is logged rather than swallowed", () => {
+  // The write IS the hook's output. A persistently failing one made the menu bar look frozen
+  // forever with no diagnostic anywhere.
+  const home = sandbox();
+  fs.rmSync(stateDir(home), { recursive: true });
+  fs.writeFileSync(stateDir(home), "not a directory");
+  run(updatePath, home, ["prompt"], JSON.stringify({ session_id: "s1", cwd: home }));
+  const log = fs.readFileSync(path.join(home, ".claude", "control-bar", "problems.log"), "utf8");
+  assert.match(log, /update\.js: could not write .*s1\.json/);
+});
+
+test("a session id cannot escape state.d", () => {
+  const home = sandbox();
+  run(updatePath, home, ["prompt"], JSON.stringify({ session_id: "../../evil", cwd: home }));
+  assert.ok(!fs.existsSync(path.join(home, ".claude", "evil.json")));
+  assert.ok(!fs.existsSync(path.join(home, "evil.json")));
+  assert.ok(fs.existsSync(path.join(stateDir(home), "....evil.json")));
+});
+
+test("stop and permreq events map to their states, an unknown event writes nothing", () => {
+  const home = sandbox();
+  run(updatePath, home, ["pre"], JSON.stringify({ session_id: "s1", cwd: home, tool_name: "Bash" }));
+  run(updatePath, home, ["permreq"], JSON.stringify({ session_id: "s1", cwd: home }));
+  let state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "s1.json"), "utf8"));
+  assert.equal(state.state, "permission");
+  assert.equal(state.startedAt, 0);
+
+  run(updatePath, home, ["stop"], JSON.stringify({ session_id: "s1", cwd: home }));
+  state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "s1.json"), "utf8"));
+  assert.equal(state.state, "done");
+  assert.equal(state.label, "Done");
+
+  run(updatePath, home, ["bogus"], JSON.stringify({ session_id: "s2", cwd: home }));
+  assert.ok(!fs.existsSync(path.join(stateDir(home), "s2.json")));
+});
