@@ -7,7 +7,7 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
-## [Unreleased]
+## [0.9.0] - 2026-09-07
 
 ### Added
 - **Updating is one click, with no toolchain.** When a newer release is out the menu opens with
@@ -20,6 +20,12 @@ from, and are kept so the history reads continuously.
   check for fixes, sliders for changes — and renders a *Summary* paragraph when the notes carry
   one.
 - `CONTROL_BAR_UPDATE_NOW=1` runs the update at launch, for rehearsing the path without the menu.
+
+### Changed
+- **A version bump is a release.** Pushing a commit that changes the version in
+  `.claude-plugin/plugin.json` to `main` tags it, publishes the release with this file's
+  section as the notes and attaches the DMG — no manual workflow run. A bump without its
+  CHANGELOG section fails before anything is tagged.
 
 ## [0.8.0] - 2026-09-03
 
@@ -975,6 +981,7 @@ reports on Claude Code — it switches parts of it off.
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[0.9.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.9.0
 [0.8.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.8.0
 [0.7.12]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.12
 [0.7.11]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.11

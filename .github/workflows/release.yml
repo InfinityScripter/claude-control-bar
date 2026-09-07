@@ -2,22 +2,31 @@ name: Release
 
 # Cuts and publishes a release. A bare tag is not enough: the app's daily update check reads
 # the releases API and never sees un-released tags, and the one-click update downloads the
-# tag's source archive only after that check offered it. Dispatched by hand, with the tag name
-# and the commit (or branch) it should mark, so a release is a deliberate act and not a side
-# effect of a push.
+# tag's DMG only after that check offered it.
+#
+# Two ways in. A push to main that changes the plugin manifest's version releases that version
+# by itself: the tag is `v<version>`, and when it already exists the push is not a release (a
+# manifest edit that left the number alone, or a re-run of history) and the workflow stops. A
+# manual dispatch names the tag and the commit explicitly, for re-cutting a release by hand.
 #
 # The tag is created here when it does not exist yet — annotated, like every tag this
 # repository has carried so far — and reused as-is when it does. The notes are the tagged
 # commit's own CHANGELOG.md section: the same text the in-app "What's new" window shows,
 # extracted with the same boundaries Sources/Changelog.swift uses (from the version's
-# `## [x.y.z] - date` heading to the next `## [`).
+# `## [x.y.z] - date` heading to the next `## [`). A version bump without its CHANGELOG
+# section fails here, before anything is tagged.
 #
 # The DMG is built by a second job on a macOS runner, from the tag's own checkout, with the
 # same `./build.sh --dmg` a maintainer would run by hand. It is ad-hoc signed and not
 # notarized: the runner has no Developer ID certificate, which is also the state every
 # release so far has shipped in (README, "Gatekeeper"). Uploaded with --clobber so re-running
-# the workflow for an existing release replaces the asset instead of failing on it.
+# the workflow for an existing release replaces the asset instead of failing on it. The app's
+# one-click update installs exactly this file, checked against the size and sha256 the
+# releases API reports for it.
 on:
+  push:
+    branches: [main]
+    paths: [".claude-plugin/plugin.json"]
   workflow_dispatch:
     inputs:
       tag:
@@ -35,16 +44,38 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      released: ${{ steps.tag.outputs.released }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.inputs.target }}
+          ref: ${{ github.event.inputs.target || github.sha }}
 
       # Inputs go through env, not ${{ }}-interpolation inside the scripts: an input is
       # attacker-shaped text as far as the shell is concerned, and env keeps it data.
-      - name: Create the tag if it does not exist, else check it out
+      - name: Resolve the tag — from the input, or from the manifest on a push
+        id: tag
         env:
-          TAG: ${{ github.event.inputs.tag }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="v$(python3 -c "import json;print(json.load(open('.claude-plugin/plugin.json'))['version'])")"
+            if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+              echo "tag $TAG already exists — this push is not a release"
+              echo "released=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "released=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create the tag if it does not exist, else check it out
+        if: steps.tag.outputs.released == 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
             echo "tag $TAG already exists — releasing the commit it marks"
@@ -58,8 +89,9 @@ jobs:
           fi
 
       - name: Extract this version's CHANGELOG section
+        if: steps.tag.outputs.released == 'true'
         env:
-          TAG: ${{ github.event.inputs.tag }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           python3 - "$TAG" <<'PY'
           import re
@@ -78,9 +110,10 @@ jobs:
           PY
 
       - name: Publish the release
+        if: steps.tag.outputs.released == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.tag }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
@@ -90,13 +123,14 @@ jobs:
 
   dmg:
     needs: publish
+    if: needs.publish.outputs.released == 'true'
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
       # The tag, not `target`: `target` may be a branch that moved on since the tag was cut.
       - uses: actions/checkout@v5
         with:
-          ref: refs/tags/${{ github.event.inputs.tag }}
+          ref: refs/tags/${{ needs.publish.outputs.tag }}
 
       # The Finder window layout inside build.sh needs a Finder that accepts Apple events; on a
       # runner that step reports itself skipped and the image still carries the app and the
@@ -107,7 +141,7 @@ jobs:
       - name: Attach the DMG to the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.tag }}
+          TAG: ${{ needs.publish.outputs.tag }}
         run: |
           gh release upload "$TAG" build/claude-control-bar.dmg \
             --repo "$GITHUB_REPOSITORY" --clobber
