@@ -21,6 +21,19 @@ enum WhatsNewPanel {
         }
     }
 
+    /// The glyph a section's bullets carry, the way the section color already speaks for them:
+    /// a plus for additions, a check for fixes, sliders for changes. Unknown sections keep a dot.
+    static func sectionSymbol(_ name: String) -> String {
+        switch name.lowercased() {
+        case "added": return "plus.circle.fill"
+        case "fixed": return "checkmark.circle.fill"
+        case "changed": return "slider.horizontal.3"
+        case "removed", "deprecated": return "minus.circle.fill"
+        case "security": return "lock.fill"
+        default: return "circle.fill"
+        }
+    }
+
     static func body(_ markdown: String) -> NSAttributedString {
         let text = NSMutableAttributedString()
         let bodyFont = NSFont.systemFont(ofSize: 13)
@@ -59,16 +72,34 @@ enum WhatsNewPanel {
             }
             text.append(NSAttributedString(string: "\n", attributes: [.paragraphStyle: para]))
         }
+        // The section's glyph in its color, built once per heading and reused by its bullets.
+        // Hierarchical, not a flat palette: a flat color paints the disc and the glyph inside
+        // it alike, and every two-layer symbol came out a plain disc.
+        var glyph: NSImage?
         for block in Changelog.blocks(from: markdown) {
             switch block {
             case .heading(let s):
+                glyph = NSImage(systemSymbolName: sectionSymbol(s), accessibilityDescription: nil)?
+                    .withSymbolConfiguration(NSImage.SymbolConfiguration(hierarchicalColor: sectionColor(s)))
                 text.append(NSAttributedString(string: s.uppercased() + "\n", attributes: [
                     .font: headFont, .foregroundColor: sectionColor(s),
                     .kern: 1.2, .paragraphStyle: headPara]))
             case .bullet(let s):
-                text.append(NSAttributedString(string: "\u{2022}  ", attributes: [
-                    .font: bodyFont, .foregroundColor: NSColor.tertiaryLabelColor,
-                    .paragraphStyle: bulletPara]))
+                // The paragraph style rides on the first run: the marker, not the text after
+                // it. A plain dot when the symbol is missing (an older macOS), never a blank.
+                if let glyph {
+                    let attachment = NSTextAttachment()
+                    attachment.image = glyph
+                    attachment.bounds = CGRect(x: 0, y: -3, width: 15, height: 15)
+                    let marker = NSMutableAttributedString(attachment: attachment)
+                    marker.addAttribute(.paragraphStyle, value: bulletPara, range: NSRange(location: 0, length: 1))
+                    text.append(marker)
+                } else {
+                    text.append(NSAttributedString(string: "\u{2022}", attributes: [
+                        .font: bodyFont, .foregroundColor: NSColor.tertiaryLabelColor,
+                        .paragraphStyle: bulletPara]))
+                }
+                text.append(NSAttributedString(string: "  ", attributes: [.font: bodyFont, .paragraphStyle: bulletPara]))
                 appendSpans(s, para: bulletPara)
             case .paragraph(let s):
                 appendSpans(s, para: plainPara)
@@ -96,10 +127,42 @@ enum WhatsNewPanel {
         return sub
     }
 
+    /// `install` adds the bottom bar — "Later" and the default "Download and install" button
+    /// wired to the given target/action — when the notes belong to a release newer than the
+    /// running one. The button is returned so its title can follow the download's progress.
     static func contentView(version: String, markdown: String, date: String?,
-                            icon iconImage: NSImage?) -> NSView {
+                            icon iconImage: NSImage?,
+                            install: (target: AnyObject, action: Selector)? = nil)
+        -> (view: NSView, installButton: NSButton?) {
         let width: CGFloat = 560, height: CGFloat = 540, headerH: CGFloat = 76
+        let barH: CGFloat = install == nil ? 0 : 60
         let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        var installButton: NSButton?
+        if let install {
+            let bar = NSView(frame: NSRect(x: 0, y: 0, width: width, height: barH))
+            bar.autoresizingMask = [.width, .maxYMargin]
+            let rule = NSBox(frame: NSRect(x: 0, y: barH - 1, width: width, height: 1))
+            rule.boxType = .separator
+            rule.autoresizingMask = [.width, .minYMargin]
+            bar.addSubview(rule)
+            // No target: performClose walks the responder chain to the window, which closes.
+            let later = NSButton(title: "Later", target: nil, action: #selector(NSWindow.performClose(_:)))
+            later.bezelStyle = .rounded
+            later.keyEquivalent = "\u{1B}"
+            later.sizeToFit()
+            later.setFrameOrigin(NSPoint(x: 20, y: (barH - later.frame.height) / 2))
+            bar.addSubview(later)
+            let go = NSButton(title: "Download and install", target: install.target, action: install.action)
+            go.bezelStyle = .rounded
+            go.keyEquivalent = "\r"
+            go.sizeToFit()
+            go.frame.size.width = max(go.frame.width, 190)
+            go.setFrameOrigin(NSPoint(x: width - 20 - go.frame.width, y: (barH - go.frame.height) / 2))
+            go.autoresizingMask = [.minXMargin]
+            bar.addSubview(go)
+            container.addSubview(bar)
+            installButton = go
+        }
 
         // Header: the app's own face, a large title, and the version pinned under it. This is
         // the identity the plain text canvas lacked — the window reads as the app speaking.
@@ -125,7 +188,7 @@ enum WhatsNewPanel {
         rule.autoresizingMask = [.width, .minYMargin]
         container.addSubview(rule)
 
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: width, height: height - headerH))
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: barH, width: width, height: height - headerH - barH))
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
         scroll.autoresizingMask = [.width, .height]
@@ -143,6 +206,6 @@ enum WhatsNewPanel {
         tv.textStorage?.setAttributedString(body(markdown))
         scroll.documentView = tv
         container.addSubview(scroll)
-        return container
+        return (container, installButton)
     }
 }

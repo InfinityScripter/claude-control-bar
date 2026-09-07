@@ -100,8 +100,12 @@ final class StatusController: NSObject, NSMenuDelegate {
     var notificationsDenied = false     // the one macOS permission this app has; see notify()
     var lastNotifiedChangeAt: Date?     // dedupe: notifyMCPChange runs on every reload, the change lives 45 s
     var limitsMTime: Date?              // limits.json parse gate; nil forces a re-read (see loadLimits)
-    var selfUpdating = false            // one build-from-source update at a time; also the menu text
-    var updateBuild: Process?           // the in-flight update's build; Quit terminates it (see quit())
+    var selfUpdating = false            // one update at a time (DMG install or source build)
+    var updateBuild: Process?           // the in-flight source build; Quit terminates it (see quit())
+    var updateDownload: URLSessionDownloadTask?  // the in-flight DMG download; Quit cancels it
+    var updateStage: String?            // "Downloading… 43%" / "Installing…" while selfUpdating; nil otherwise
+    weak var updateBanner: UpdateBannerView?      // the open menu's banner, so progress lands without a reopen
+    weak var whatsNewInstallButton: NSButton?     // the open "What's new" window's button, same reason
     // Never `xcrun --find`: querying xcrun with no developer tools installed pops the system's
     // "install the command line developer tools?" dialog — from a menu bar app, out of nowhere.
     // A missing toolchain must read as "not available", never as a prompt. The fixed paths cover
@@ -299,6 +303,15 @@ final class StatusController: NSObject, NSMenuDelegate {
                     print("button has no window yet")
                 }
                 NSApp.terminate(nil)
+            }
+        }
+        // CONTROL_BAR_UPDATE_NOW=1 runs the one-click update at launch, without the menu: the
+        // menu of a parked status item cannot be clicked — by a person or by Accessibility —
+        // so this is how the download-verify-swap-restart path is exercised end to end
+        // (against a local HTTP server and a seeded latestAsset, see TROUBLESHOOTING).
+        if ProcessInfo.processInfo.environment["CONTROL_BAR_UPDATE_NOW"] != nil {
+            Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
+                self?.installLatestUpdate()
             }
         }
         if ProcessInfo.processInfo.environment["CONTROL_BAR_DUMP_MENU"] != nil {

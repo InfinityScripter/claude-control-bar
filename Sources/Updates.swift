@@ -17,8 +17,9 @@ extension StatusController {
     /// whose bundle was replaced could no longer write its own preferences at all, so the update
     /// check had nowhere to keep the latest tag and the "Update to X" line could never appear
     /// again either. The one thing that fixes it is a restart, so that is what gets offered.
-    var installedVersion: String? {
-        let plist = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
+    var installedVersion: String? { Self.bundleVersion(at: Bundle.main.bundleURL) }
+    static func bundleVersion(at bundle: URL) -> String? {
+        let plist = bundle.appendingPathComponent("Contents/Info.plist")
         return NSDictionary(contentsOf: plist)?["CFBundleShortVersionString"] as? String
     }
     // Homebrew: the cask lags a GitHub release by up to ~a day (autobump), so brew-managed
@@ -54,6 +55,14 @@ extension StatusController {
             // it before the user decides to update, at no extra request. Written together
             // with latestVersion so the two always describe the same release.
             UserDefaults.standard.set((obj["body"] as? String) ?? "", forKey: "latestReleaseNotes")
+            // The DMG the one-click update installs, with the size and digest that prove a
+            // download is that file. Removed, not left stale, when the release has none, so
+            // the menu falls back to the source build instead of fetching an older DMG.
+            if let asset = UpdateFeed.dmgAsset(in: obj) {
+                UserDefaults.standard.set(asset.dictionary, forKey: "latestAsset")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "latestAsset")
+            }
             // Once per version, ever: the point is "an update exists, the menu explains it",
             // not a daily drumbeat. The plugin channel gets this too — it will update itself
             // on its own schedule, but a heads-up with readable notes beats a silent swap.
@@ -154,16 +163,22 @@ extension StatusController {
         let d = UserDefaults.standard
         if let latest = d.string(forKey: "latestVersion"),
            let notes = d.string(forKey: "latestReleaseNotes"), !notes.isEmpty {
-            showWhatsNewWindow(version: latest, markdown: notes, date: nil)
+            // The button belongs to the DMG and source channels only: a brew-managed bundle is
+            // brew's to replace, and the menu's copyable command is the way there.
+            showWhatsNewWindow(version: latest, markdown: notes, date: nil,
+                               install: brewManaged ? nil : (self, #selector(installLatestUpdate)))
         } else {
             openLatestRelease()
         }
     }
 
-
-    func showWhatsNewWindow(version: String, markdown: String, date: String?) {
-        let container = WhatsNewPanel.contentView(version: version, markdown: markdown,
-                                                  date: date, icon: NSApp.applicationIconImage)
+    func showWhatsNewWindow(version: String, markdown: String, date: String?,
+                            install: (target: AnyObject, action: Selector)? = nil) {
+        let (container, button) = WhatsNewPanel.contentView(version: version, markdown: markdown,
+                                                            date: date, icon: NSApp.applicationIconImage,
+                                                            install: install)
+        whatsNewInstallButton = button
+        setUpdateStage(updateStage)
         // One window, reused: a second click brings the same panel forward instead of
         // stacking copies. Closing releases the content, not the app (isReleasedWhenClosed
         // stays false because the controller keeps the reference).
@@ -208,9 +223,157 @@ extension StatusController {
             // "Restart to finish updating" row appears on the next open and offers this again.
             logProblem("relaunch spawn failed: \(error)")
             selfUpdating = false
+            setUpdateStage(nil)
             return
         }
         NSApp.terminate(nil)
+    }
+
+    // MARK: the update itself
+
+    /// The DMG of the release the daily check last saw, if it shipped one.
+    var latestAsset: UpdateFeed.ReleaseAsset? {
+        (UserDefaults.standard.dictionary(forKey: "latestAsset")).flatMap(UpdateFeed.ReleaseAsset.init)
+    }
+
+    /// What one click on "Update" does, whichever channel this copy has. The prebuilt DMG is the
+    /// normal path; the source build covers a release that shipped without one; and with neither
+    /// on offer the release page is where the file is.
+    ///
+    /// Strictly newer, checked here and not only where the menu decides to offer it: a
+    /// restarted copy inherits this process's environment, and in the CONTROL_BAR_UPDATE_NOW
+    /// mode it reinstalled the version it had just become and restarted once more.
+    @objc func installLatestUpdate() {
+        guard !selfUpdating, let latest = UserDefaults.standard.string(forKey: "latestVersion"),
+              Self.versionIsNewer(latest, than: currentVersion) else { return }
+        if let asset = latestAsset { installLatestDMG(latest: latest, asset: asset) }
+        else if canBuildFromSource { selfUpdate(latest: latest) }
+        else { openLatestRelease() }
+    }
+
+    /// Both channels end a failed attempt the same way: a line in problems.log, the banner back
+    /// to "Update available", and a notification — the menu is closed by then, so nothing else
+    /// would tell the user the click came to nothing.
+    func updateFailed(latest: String, reason: String, body: String) {
+        logProblem("update to \(latest) failed: \(reason)")
+        setUpdateStage(nil)
+        DispatchQueue.main.async { [weak self] in
+            self?.selfUpdating = false
+            self?.updateDownload = nil
+            self?.notify(title: "Update to \(latest) failed",
+                         body: body + " Details are in ~/.claude/control-bar/problems.log.")
+        }
+    }
+
+    /// The progress text the banner and the "What's new" button show while an update runs.
+    /// Set from any thread; the views are touched on main only.
+    func setUpdateStage(_ stage: String?) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.updateStage = stage
+            self.updateBanner?.stage = stage
+            if let b = self.whatsNewInstallButton {
+                b.title = stage ?? "Download and install"
+                b.isEnabled = stage == nil
+            }
+        }
+    }
+
+    /// Download the release's DMG, verify it, mount it, stage its bundle beside the temp files,
+    /// swap it into this bundle's place and restart. The same bundle swap build.sh does, minus
+    /// the minute of compiling and the toolchain it needs.
+    ///
+    /// No signature is involved: releases are ad-hoc signed, so there is no identity to require.
+    /// What stands in are the size and sha256 the releases API advertises (UpdateFeed.verify)
+    /// and the bundle's own version, which must be the one the menu offered. The download
+    /// carries no quarantine — URLSession only sets it for apps that opt in — and the staged
+    /// bundle is cleared of attributes anyway, so Gatekeeper never sees a "downloaded" app.
+    func installLatestDMG(latest: String, asset: UpdateFeed.ReleaseAsset) {
+        selfUpdating = true
+        setUpdateStage("Downloading…")
+        let target = Bundle.main.bundlePath
+        let fail: (String) -> Void = { [weak self] reason in
+            self?.updateFailed(latest: latest, reason: reason, body: "Nothing was changed.")
+        }
+        let dmg = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("ccb-update-\(latest).dmg")
+        let progress = DownloadProgress()
+        progress.onProgress = { [weak self] percent in self?.setUpdateStage("Downloading… \(percent)%") }
+        progress.onFinish = { [weak self] file, error in
+            // Quit cancels the task; the app is on its way out, and that is not a failed update.
+            if (error as? URLError)?.code == .cancelled { return }
+            // URLSession's file dies with this callback: move it out before anything slow.
+            guard let file else { return fail(error.map(String.init(describing:)) ?? "empty download") }
+            try? FileManager.default.removeItem(at: dmg)
+            do { try FileManager.default.moveItem(at: file, to: dmg) } catch { return fail("move: \(error)") }
+            DispatchQueue.global(qos: .utility).async {
+                self?.mountAndSwap(dmg: dmg, asset: asset, target: target, latest: latest, fail: fail)
+            }
+        }
+        let session = URLSession(configuration: .ephemeral, delegate: progress, delegateQueue: nil)
+        let task = session.downloadTask(with: asset.url)
+        updateDownload = task
+        task.resume()
+        session.finishTasksAndInvalidate()
+    }
+
+    private func mountAndSwap(dmg: URL, asset: UpdateFeed.ReleaseAsset, target: String,
+                              latest: String, fail: (String) -> Void) {
+        setUpdateStage("Installing…")
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ccb-update-\(ProcessInfo.processInfo.processIdentifier)")
+        let mount = tmp.appendingPathComponent("dmg")
+        let stage = tmp.appendingPathComponent((target as NSString).lastPathComponent)
+        var mounted = false
+        defer {
+            if mounted { _ = run("/usr/bin/hdiutil", ["detach", mount.path, "-quiet", "-force"]) }
+            try? FileManager.default.removeItem(at: tmp)
+            try? FileManager.default.removeItem(at: dmg)
+        }
+        if let why = UpdateFeed.verify(file: dmg, against: asset) { return fail(why) }
+        do { try FileManager.default.createDirectory(at: mount, withIntermediateDirectories: true) }
+        catch { return fail("mkdir: \(error)") }
+        if let why = run("/usr/bin/hdiutil", ["attach", dmg.path, "-nobrowse", "-noautoopen", "-readonly",
+                                              "-quiet", "-mountpoint", mount.path]) { return fail("attach: \(why)") }
+        mounted = true
+        // Located by its shape, not its name: the image carries the app and an Applications
+        // symlink, and a renamed product must still be found.
+        guard let app = (try? FileManager.default.contentsOfDirectory(atPath: mount.path))?
+                .first(where: { $0.hasSuffix(".app") }).map({ mount.appendingPathComponent($0) })
+        else { return fail("no .app in the image") }
+        if let why = run("/usr/bin/ditto", [app.path, stage.path]) { return fail("ditto: \(why)") }
+        if let why = run("/usr/bin/xattr", ["-cr", stage.path]) { return fail("xattr: \(why)") }
+        let staged = Self.bundleVersion(at: stage)
+        guard staged == latest else { return fail("the image carries \(staged ?? "no version"), not \(latest)") }
+        // Rename aside, move in, then delete — not build.sh's rm-then-mv. That runs at a
+        // developer's desk with the checkout intact; this runs unattended on a user's machine,
+        // where a move that fails after the delete (full disk, a scanner holding the bundle)
+        // would leave no app on disk and a notification claiming nothing changed. The running
+        // process keeps its executable image either way; restartIntoInstalledCopy brings up
+        // whatever sits at the path.
+        let aside = target + ".replaced-\(ProcessInfo.processInfo.processIdentifier)"
+        do { try FileManager.default.moveItem(atPath: target, toPath: aside) }
+        catch { return fail("move aside: \(error)") }
+        do { try FileManager.default.moveItem(atPath: stage.path, toPath: target) } catch {
+            try? FileManager.default.moveItem(atPath: aside, toPath: target)
+            return fail("swap: \(error)")
+        }
+        try? FileManager.default.removeItem(atPath: aside)
+        DispatchQueue.main.async { [weak self] in self?.restartIntoInstalledCopy() }
+    }
+
+    /// nil on success; otherwise the exit status and the tail of stderr.
+    private func run(_ tool: String, _ args: [String]) -> String? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: tool)
+        p.arguments = args
+        p.standardOutput = FileHandle.nullDevice
+        let err = Pipe()
+        p.standardError = err
+        do { try p.run() } catch { return "launch: \(error)" }
+        let tail = err.fileHandleForReading.readDataToEndOfFile().suffix(500)
+        p.waitUntilExit()
+        if p.terminationStatus == 0 { return nil }
+        return "exit \(p.terminationStatus): \(String(decoding: tail, as: UTF8.self))"
     }
 
     // MARK: self-update (build from source)
@@ -235,21 +398,18 @@ extension StatusController {
     /// script every channel uses, let its staging swap replace this bundle, restart into it.
     ///
     /// No signature is involved anywhere — the binary is compiled on this machine, and
-    /// Gatekeeper's quarantine applies to downloaded executables, not locally built ones. This is
-    /// the plugin channel's own mechanism offered to the bundle install; the alternative —
-    /// shipping a prebuilt update and stripping its quarantine — works exactly until it doesn't,
-    /// and each ad-hoc re-sign would read to macOS as a different app, dropping notification
-    /// permission along the way.
-    @objc func selfUpdate() {
-        guard !selfUpdating, let latest = UserDefaults.standard.string(forKey: "latestVersion"),
-              let url = URL(string:
+    /// Gatekeeper's quarantine applies to downloaded executables, not locally built ones. This
+    /// is the plugin channel's own mechanism; since releases ship a DMG it is the fallback for a
+    /// release that has none, and it needs a Swift toolchain on the machine.
+    func selfUpdate(latest: String) {
+        guard let url = URL(string:
                 "https://github.com/InfinityScripter/claude-control-bar/archive/refs/tags/v\(latest).tar.gz")
         else { return }
         selfUpdating = true
+        setUpdateStage("Downloading source…")
         let target = Bundle.main.bundlePath
         let fail: (String) -> Void = { [weak self] reason in
-            self?.logProblem("self-update to \(latest) failed: \(reason)")
-            DispatchQueue.main.async { self?.selfUpdating = false }
+            self?.updateFailed(latest: latest, reason: reason, body: "The build did not finish.")
         }
         URLSession.shared.downloadTask(with: url) { [weak self] file, _, error in
             // The download lands in URLSession's temporary file, which dies with this callback —
@@ -273,12 +433,7 @@ extension StatusController {
         do { try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true) }
         catch { return fail("mkdir: \(error)") }
 
-        let untar = Process()
-        untar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-        untar.arguments = ["-xzf", tar.path, "-C", tmp.path]
-        do { try untar.run() } catch { return fail("tar: \(error)") }
-        untar.waitUntilExit()
-        guard untar.terminationStatus == 0 else { return fail("tar exited \(untar.terminationStatus)") }
+        if let why = run("/usr/bin/tar", ["-xzf", tar.path, "-C", tmp.path]) { return fail("tar: \(why)") }
 
         // GitHub archives unpack into <repo>-<version>/ — located by its build.sh, not by name,
         // so a fork or a renamed tag cannot break the path.
@@ -298,7 +453,7 @@ extension StatusController {
         // readDataToEndOfFile — that read returns only when every holder of the write end closes
         // it, so a compiler child outliving bash would pin this thread forever. The watchdog
         // bounds the build for the same reason: a hang here would otherwise leave
-        // selfUpdating=true (a greyed menu row, no retry) for the process's whole lifetime.
+        // selfUpdating=true (a banner stuck on "Building…", no retry) for the process's lifetime.
         build.standardOutput = FileHandle.nullDevice
         let errPipe = Pipe()
         build.standardError = errPipe
@@ -316,6 +471,7 @@ extension StatusController {
             if chunk.isEmpty { handle.readabilityHandler = nil; return }
             stderrQueue.async { stderrData.append(chunk) }
         }
+        setUpdateStage("Building… (about a minute)")
         do { try build.run() } catch { return fail("build launch: \(error)") }
         DispatchQueue.main.async { [weak self] in self?.updateBuild = build }
         DispatchQueue.global().asyncAfter(deadline: .now() + 900) { [weak build] in
@@ -331,5 +487,38 @@ extension StatusController {
         // The bundle at `target` is already the new version (build.sh swaps only a verified
         // staging copy). restartIntoInstalledCopy quits us and opens whatever is on disk.
         DispatchQueue.main.async { [weak self] in self?.restartIntoInstalledCopy() }
+    }
+}
+
+/// Progress and completion of one DMG download. A delegate rather than a completion handler
+/// because only the delegate form reports bytes as they arrive, and a download the menu shows
+/// no movement on reads as a hang.
+final class DownloadProgress: NSObject, URLSessionDownloadDelegate {
+    /// Whole percents only: every received chunk reports, and the banner would be redrawn
+    /// dozens of times with the same text otherwise.
+    var onProgress: ((Int) -> Void)?
+    var onFinish: ((URL?, Error?) -> Void)?
+    private var lastPercent = -1
+
+    private func finish(_ file: URL?, _ error: Error?) {
+        onFinish?(file, error)
+        onFinish = nil
+    }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData: Int64,
+                    totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        guard totalBytesExpectedToWrite > 0 else { return }
+        let percent = Int(totalBytesWritten * 100 / totalBytesExpectedToWrite)
+        if percent != lastPercent { lastPercent = percent; onProgress?(percent) }
+    }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        // A server error page downloads just fine; only a 200 is the asset.
+        let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else {
+            return finish(nil, URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "HTTP \(status)"]))
+        }
+        finish(location, nil)
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error { finish(nil, error) }
     }
 }

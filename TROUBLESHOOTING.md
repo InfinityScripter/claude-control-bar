@@ -58,7 +58,7 @@ None of these have a UI; they exist for someone who wants a different number.
 - `~/.claude/control-bar/uiconfig.json` — menu layout, read on every open, no rebuild needed. All keys are numbers: `boxWidth` (row width, default 300), `nameMax` (longest session name before truncation, 30), `pillInset` (12) and `timerGap` (10), the spacing around the CLI/APP pill and the timer column. Example: `{"boxWidth": 340, "nameMax": 40}`.
 - `defaults write io.github.infinityscripter.claude-control-bar hideIdleAfter -int 1800` — how long, in seconds, a resting session stays in the dropdown (default 900; 0 keeps every row). Render-only: the session itself is tracked by its process, and the most recent one is always shown.
 - Environment variables for the hooks and the backend: `CONTROL_BAR_DEBUG=1` logs every hook event to `control-bar/hooks.log` (capped and rotated, see [PRIVACY.md](PRIVACY.md)); `CONTROL_BAR_TTL` (seconds, default 600) is how old the MCP picture may be before `/mcp-health` re-checks; `CONTROL_BAR_LANG=en` or `ru` picks the language of that report.
-- Diagnostic modes of the binary: `CONTROL_BAR_DIAGNOSE=1` (above), `CONTROL_BAR_DIAGNOSE=menu` opens the dropdown by itself so it can be screenshotted, and `CONTROL_BAR_DUMP_MENU=1` prints the menu as text and quits — what VoiceOver would read.
+- Diagnostic modes of the binary: `CONTROL_BAR_DIAGNOSE=1` (above), `CONTROL_BAR_DIAGNOSE=menu` opens the dropdown by itself so it can be screenshotted, and `CONTROL_BAR_DUMP_MENU=1` prints the menu as text and quits — what VoiceOver would read. `CONTROL_BAR_UPDATE_NOW=1` runs the one-click update at launch without the menu (the update path can be rehearsed against a local HTTP server by seeding `latestVersion` and `latestAsset` in the app's defaults).
 
 ---
 

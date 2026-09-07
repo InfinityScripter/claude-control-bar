@@ -14,9 +14,10 @@ Claude Control Bar collects no data and has no servers. Everything it does happe
 - **One update check a day**: a request to GitHub's public releases API for the latest tag, and
   one to Homebrew's public formulae API for the current cask version. Both only decide whether
   the menu shows an update line.
-- **The update itself, when you ask for it**: clicking *Update to X* in the menu downloads that
-  release's source archive from GitHub and builds it locally. This request only ever happens on
-  that click — the daily check above never downloads anything.
+- **The update itself, when you ask for it**: clicking *Download and install* in the menu's
+  "What's new" window downloads that release's DMG from GitHub (or its source archive, built
+  locally, for a release that shipped without a DMG). This request only ever happens on that
+  click — the daily check above never downloads anything.
 
 Nothing is sent to the developer — GitHub, Homebrew and Anthropic see that a request arrived;
 the developer never does. Those are the only requests the app makes for itself. There is no
@@ -82,7 +83,7 @@ Everything of its own lives under `~/.claude/control-bar/`. The complete list:
 - **The limits:** `limits.json`.
 - **Install bookkeeping:** `owner.json` (which channel owns the hooks), `paths.json` (where the
   backend script and interpreter are), a copy of the hook scripts and the build script, and
-  `releases/` with the source archives a self-update downloaded.
+  `releases/` with the source archives a plugin-channel update downloaded.
 - **Markers and locks:** `quit-intent` (a menu Quit, so the hooks do not relaunch the app),
   `self-heal-probed` (an empty file whose date throttles the hooks' "is the app running" check),
   and `refresh.lock`, `settings.lock`, `build.lock` while the matching operation runs.

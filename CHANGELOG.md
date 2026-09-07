@@ -7,6 +7,20 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [Unreleased]
+
+### Added
+- **Updating is one click, with no toolchain.** When a newer release is out the menu opens with
+  an *Update available* card. Clicking it shows what changed with a *Download and install*
+  button; the app downloads the release DMG, checks its size and SHA-256 against what GitHub
+  advertises, verifies the bundle's version, swaps itself in place and restarts. Progress shows
+  on the card and on the button. Building from source remains the fallback for a release that
+  shipped without a DMG; Homebrew installs keep their copyable `brew upgrade` line.
+- The *What's new* window marks each entry with its section's glyph — a plus for additions, a
+  check for fixes, sliders for changes — and renders a *Summary* paragraph when the notes carry
+  one.
+- `CONTROL_BAR_UPDATE_NOW=1` runs the update at launch, for rehearsing the path without the menu.
+
 ## [0.8.0] - 2026-09-03
 
 ### Added

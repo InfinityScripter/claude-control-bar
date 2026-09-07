@@ -344,3 +344,84 @@ final class CopyRowView: NSView {
         }
     }
 }
+
+/// The "Update available" banner at the top of the menu: an accent-filled card with the version
+/// and an Update pill, in place of a plain menu row that read like any other line. While an
+/// update runs the pill gives way to the stage text ("Downloading… 43%"), updated in place —
+/// the menu is not rebuilt while it is open, so the banner is told directly (StatusController
+/// keeps a weak reference to the one currently showing).
+final class UpdateBannerView: NSView {
+    private let title = NSTextField(labelWithString: "Update available")
+    private let subtitle = NSTextField(labelWithString: "")
+    private let pill = NSTextField(labelWithString: "Update")
+    private let card = NSView()
+    private let version: String
+    private let pad: CGFloat = 14
+
+    var stage: String? {
+        didSet {
+            subtitle.stringValue = stage ?? "Version \(version)"
+            pill.isHidden = stage != nil
+        }
+    }
+
+    init(version: String, width: CGFloat, target: AnyObject?, action: Selector) {
+        self.version = version
+        self.target = target
+        self.action = action
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 60))
+        autoresizingMask = [.width]
+        card.wantsLayer = true
+        card.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        card.layer?.cornerRadius = 10
+        card.frame = bounds.insetBy(dx: 8, dy: 4)
+        card.autoresizingMask = [.width, .height]
+        addSubview(card)
+
+        let icon = NSImageView(frame: NSRect(x: pad, y: (card.frame.height - 22) / 2, width: 22, height: 22))
+        icon.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 20, weight: .regular))
+        icon.contentTintColor = .white
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        card.addSubview(icon)
+
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.textColor = .white
+        title.frame = NSRect(x: pad + 32, y: card.frame.height / 2 + 1, width: 200, height: 17)
+        card.addSubview(title)
+        subtitle.font = .systemFont(ofSize: 11)
+        subtitle.textColor = NSColor.white.withAlphaComponent(0.85)
+        subtitle.frame = NSRect(x: pad + 32, y: card.frame.height / 2 - 16, width: 220, height: 15)
+        card.addSubview(subtitle)
+
+        pill.font = .systemFont(ofSize: 12, weight: .semibold)
+        pill.textColor = .controlAccentColor
+        pill.alignment = .center
+        pill.wantsLayer = true
+        pill.layer?.backgroundColor = NSColor.white.cgColor
+        pill.layer?.cornerRadius = 12
+        pill.frame = NSRect(x: card.frame.width - pad - 72, y: (card.frame.height - 24) / 2, width: 72, height: 24)
+        pill.autoresizingMask = [.minXMargin]
+        card.addSubview(pill)
+        subtitle.stringValue = "Version \(version)"
+        // VoiceOver reads the card as one button; the pill is decoration of the same action.
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("Update available, version \(version)")
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private weak var target: AnyObject?
+    private let action: Selector
+
+    // The accent color follows the system setting; a layer color set once would not.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        card.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        pill.textColor = .controlAccentColor
+    }
+    override func mouseDown(with event: NSEvent) {
+        enclosingMenuItem?.menu?.cancelTracking()
+        NSApp.sendAction(action, to: target, from: self)
+    }
+}

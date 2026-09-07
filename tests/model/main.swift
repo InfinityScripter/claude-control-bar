@@ -987,6 +987,56 @@ check(crabFrameSet.frames(for: .onFire).allSatisfy { frame in
     } >= 12
 }, "the flames join the shell instead of floating above a dark seam")
 
+// MARK: Update feed — the DMG the one-click update installs, and what proves it is intact
+
+let releaseFixture: [String: Any] = [
+    "tag_name": "v0.8.0", "body": "### Fixed\n- a thing",
+    "assets": [
+        ["name": "SHA256SUMS", "browser_download_url": "https://x/SHA256SUMS", "size": 90],
+        ["name": "claude-control-bar.dmg",
+         "browser_download_url": "https://github.com/x/releases/download/v0.8.0/claude-control-bar.dmg",
+         "size": 1_236_911,
+         "digest": "sha256:72a5efc5ab509cc7184926b797dd9e0ed2367dea2391469d2495bed40397918a"],
+    ],
+]
+let asset = UpdateFeed.dmgAsset(in: releaseFixture)
+check(asset?.url.absoluteString.hasSuffix("/claude-control-bar.dmg") == true,
+      "the .dmg asset is picked over the checksum file")
+check(asset?.size == 1_236_911, "the advertised size rides along: \(asset?.size ?? -1)")
+check(asset?.sha256 == "72a5efc5ab509cc7184926b797dd9e0ed2367dea2391469d2495bed40397918a",
+      "the digest loses its sha256: prefix")
+check(UpdateFeed.dmgAsset(in: ["assets": [["name": "src.tar.gz", "browser_download_url": "https://x/a", "size": 1]]]) == nil,
+      "a release without a DMG offers no asset")
+check(UpdateFeed.dmgAsset(in: ["assets": [["name": "a.dmg", "browser_download_url": "https://x/a.dmg", "size": 5]]])?.sha256 == nil,
+      "a release that carries no digest still installs, without the checksum")
+check(UpdateFeed.dmgAsset(in: ["assets": [["name": "a.dmg", "browser_download_url": "https://x/a.dmg"]]]) == nil,
+      "a size-less asset is refused: without it a truncated download cannot be told apart")
+check(UpdateFeed.dmgAsset(in: ["assets": [["name": "a.dmg", "browser_download_url": "https://x/a.dmg",
+                                           "size": 5, "digest": "md5:abc"]]])?.sha256 == nil,
+      "a digest of another algorithm is not mistaken for sha256")
+// The asset survives the round trip through UserDefaults the way the daily check stores it.
+let stored = asset!.dictionary
+check(UpdateFeed.ReleaseAsset(dictionary: stored) == asset, "asset survives its dictionary round trip")
+check(UpdateFeed.ReleaseAsset(dictionary: ["url": "https://x/a.dmg", "size": 7]) != nil,
+      "a stored asset without a digest reads back")
+check(UpdateFeed.ReleaseAsset(dictionary: ["url": "", "size": 7]) == nil, "an empty stored url is refused")
+check(UpdateFeed.ReleaseAsset(dictionary: ["url": "https://x/a.dmg", "size": 0]) == nil, "a zero size is refused")
+check(UpdateFeed.sha256Hex(of: Data("abc".utf8))
+      == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+      "sha256 matches the reference vector for \"abc\"")
+let dmgTmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("ccb-asset-test.dmg")
+try! Data("abc".utf8).write(to: dmgTmp)
+let good = UpdateFeed.ReleaseAsset(url: URL(string: "https://x/a.dmg")!, size: 3,
+    sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+check(UpdateFeed.verify(file: dmgTmp, against: good) == nil, "a download of the right size and digest verifies")
+check(UpdateFeed.verify(file: dmgTmp, against: UpdateFeed.ReleaseAsset(url: good.url, size: 4, sha256: good.sha256)) != nil,
+      "a size mismatch is refused before hashing")
+check(UpdateFeed.verify(file: dmgTmp, against: UpdateFeed.ReleaseAsset(url: good.url, size: 3, sha256: "00")) != nil,
+      "a digest mismatch is refused")
+check(UpdateFeed.verify(file: dmgTmp, against: UpdateFeed.ReleaseAsset(url: good.url, size: 3, sha256: nil)) == nil,
+      "no digest advertised: the size check alone stands")
+try? FileManager.default.removeItem(at: dmgTmp)
+
 // MARK: Needs-you sound — one cue per prompt, and none when the prompt is already on screen
 
 check(NeedsYouSound.shouldCue(prevState: "tool", state: "permission", effective: "permission",

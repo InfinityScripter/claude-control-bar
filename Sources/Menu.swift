@@ -44,6 +44,37 @@ extension StatusController {
         if Date().timeIntervalSince1970 - (limits?.ts ?? 0) > 600 { pollLimits() }
         checkForUpdate() // refreshes the update cache for next open (gated to once a day)
 
+        // The update, first thing in the menu when there is one — a card, not a row, so it is
+        // seen without reading down to the version line. Homebrew installs keep their copyable
+        // command at the bottom: brew owns that bundle, and a DMG swapped under it would be
+        // undone by the next `brew upgrade`.
+        let latestVersion = UserDefaults.standard.string(forKey: "latestVersion")
+        let updateAvailable = latestVersion.map { Self.versionIsNewer($0, than: currentVersion) } ?? false
+        let onDisk = installedVersion
+        let newerOnDisk = onDisk.map { Self.versionIsNewer($0, than: currentVersion) } ?? false
+        let brew = brewManaged
+        if let latest = latestVersion, updateAvailable, !brew, !newerOnDisk {
+            // The banner is the item's whole face, and its own click handler is the action —
+            // an NSMenuItem action would never fire behind a custom view.
+            let it = NSMenuItem(title: "Update available: \(latest)", action: nil, keyEquivalent: "")
+            let banner = UpdateBannerView(version: latest, width: boxWidth, target: self,
+                                          action: #selector(showWhatsNewLatest))
+            banner.stage = updateStage
+            var tip = "\(latest) is out — this copy is \(currentVersion). The release notes open first;"
+            if latestAsset != nil {
+                tip += " from there one click downloads the release and replaces this app."
+            } else if canBuildFromSource {
+                tip += " from there one click downloads the source and rebuilds this app (about a minute)."
+            } else {
+                tip += " this release has no prebuilt app, so the download page opens from there."
+            }
+            banner.toolTip = tip
+            it.view = banner
+            updateBanner = banner
+            menu.addItem(it)
+            menu.addItem(.separator())
+        }
+
         // Branches otherwise refresh only on hook events, so re-read on open (one tiny file read per
         // session) to catch a checkout made while a session sat idle.
         for (id, s) in sessions where !s.cwd.isEmpty {
@@ -196,10 +227,6 @@ extension StatusController {
         menu.addItem(settings)
 
         menu.addItem(.separator())
-        let latestVersion = UserDefaults.standard.string(forKey: "latestVersion")
-        let updateAvailable = latestVersion.map {
-            Self.versionIsNewer($0, than: currentVersion)
-        } ?? false
         let whatsNewSelection = WhatsNewMenuSelection(
             currentIsUnseen: whatsNewUnseen == currentVersion,
             updateAvailable: updateAvailable)
@@ -207,17 +234,17 @@ extension StatusController {
         // Checked before the download line and instead of it: when the newer copy is already on
         // disk there is nothing left to fetch, and offering "Update to 0.5.1" next to a 0.5.1
         // bundle sends the user to download what they installed an hour ago.
-        if let onDisk = installedVersion, Self.versionIsNewer(onDisk, than: currentVersion) {
+        if let onDisk, newerOnDisk {
             let it = NSMenuItem(title: "Restart to finish updating",
                                 action: #selector(restartIntoInstalledCopy), keyEquivalent: "")
             it.target = self
             it.toolTip = "\(onDisk) is already installed. macOS keeps the copy that was running"
                 + " when it was replaced, so this one is still \(currentVersion) until it restarts."
             menu.addItem(it)
-        } else if let latest = latestVersion, updateAvailable {
+        } else if updateAvailable {
             let width = boxWidth
             let brewVer = UserDefaults.standard.string(forKey: "brewCaskVersion")
-            if brewManaged {
+            if brew {
                 // Silent until the cask catches up (autobump lag): never offer a command that
                 // would report "already up to date".
                 if let bv = brewVer, Self.versionIsNewer(bv, than: currentVersion) {
@@ -226,36 +253,15 @@ extension StatusController {
                     it.view = CopyRowView(title: title, command: brewUpgradeCommand, width: width)
                     menu.addItem(it)
                 }
-            } else if canBuildFromSource {
-                // With a Swift toolchain on the machine the update is one click: the release
-                // source is downloaded and built in place — no DMG, no Gatekeeper (the binary is
-                // compiled locally, quarantine never applies). A nil action while the build runs
-                // is what greys the row out under autoenablesItems.
-                let up = NSMenuItem(title: selfUpdating ? "Updating to \(latest)…" : "Update to \(latest)",
-                                    action: selfUpdating ? nil : #selector(selfUpdate), keyEquivalent: "")
-                up.target = self
-                up.toolTip = selfUpdating
-                    ? "Downloading and rebuilding in place — the app restarts itself when done."
-                    : "\(latest) is out — this copy is \(currentVersion). One click downloads the"
-                        + " release source, rebuilds this app in place (about a minute) and"
-                        + " restarts it. Errors land in ~/.claude/control-bar/problems.log."
-                menu.addItem(up)
-            } else {
-                // The version number lives in the tooltip, not the title: the line above already
-                // says which version is running, and a second number beside it reads as a riddle.
-                let up = NSMenuItem(title: "Update available", action: #selector(openLatestRelease), keyEquivalent: "")
-                up.target = self
-                up.toolTip = "\(latest) is out — this copy is \(currentVersion)"
-                menu.addItem(up)
-                // Only once the cask actually exists. brewCaskVersion is written solely by a
+            } else if brewVer != nil {
+                // The banner above carries the update; this row is the alternative to it. Only
+                // once the cask actually exists: brewCaskVersion is written solely by a
                 // successful cask-API response, so while the cask is unpublished the key is
                 // absent — and the row would be handing out a command that is guaranteed to
                 // fail with "cask not found".
-                if brewVer != nil {
-                    let sw = NSMenuItem(title: "Switch to Homebrew", action: nil, keyEquivalent: "")
-                    sw.view = CopyRowView(title: "Switch to Homebrew", command: brewInstallCommand, width: width)
-                    menu.addItem(sw)
-                }
+                let sw = NSMenuItem(title: "Switch to Homebrew", action: nil, keyEquivalent: "")
+                sw.view = CopyRowView(title: "Switch to Homebrew", command: brewInstallCommand, width: width)
+                menu.addItem(sw)
             }
         }
         switch whatsNewSelection {
@@ -356,6 +362,7 @@ extension StatusController {
         // compilers would be orphaned, finish minutes later and swap the bundle with nobody
         // left to restart into it. Ending the child turns that into an ordinary failed build.
         updateBuild?.terminate()
+        updateDownload?.cancel()
         let marker = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/quit-intent")
         FileManager.default.createFile(atPath: marker, contents: nil)
         NSApp.terminate(nil)

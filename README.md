@@ -34,6 +34,12 @@ The app compiles from source on your Mac at the next session start, so you need 
 > The DMG is not notarized, so macOS blocks the first launch. Open **System Settings → Privacy & Security** and press **Open Anyway**, or run
 > `xattr -dr com.apple.quarantine "/Applications/Claude Control Bar.app"`.
 
+Updates for the DMG install are one click: when a newer release is out, the menu opens with an
+**Update available** card. Click it to read what changed, then **Download and install** — the
+app fetches the release DMG, checks its size and SHA-256 against what GitHub advertises, swaps
+itself in place and restarts. No Gatekeeper prompt the second time: the app clears the quarantine
+flag from the copy it installs itself.
+
 Pick one install channel. With both installed every hook runs twice; the app resolves the conflict in favor of the plugin, but there is no reason to keep both.
 
 ## First launch
