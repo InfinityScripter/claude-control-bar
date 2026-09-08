@@ -7,6 +7,22 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.10.0] - 2026-09-08
+
+### Added
+- **Hovering a session shows its card.** Alongside the row, the card carries what one line
+  cannot: the branch with its count of uncommitted files, the context gauge with the real
+  token figures, and the session's cost, wall time and lines changed — the totals Claude Code
+  reports to the status line and nowhere else. Every block appears only when its data does:
+  a desktop-app session, which runs no status line, shows branch and context alone.
+
+### Fixed
+- **Clicking a desktop session opens that conversation again.** The desktop app now files
+  every enabled MCP tool into a conversation's record, and with a few hundred tools the record
+  passes 200 KB — the size past which the lookup skipped it, so the click fell back to merely
+  opening Claude. The lookup reads only the record's head, where the id lives, and the size no
+  longer matters.
+
 ## [0.9.0] - 2026-09-07
 
 ### Added
@@ -981,6 +997,7 @@ reports on Claude Code — it switches parts of it off.
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[0.10.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.10.0
 [0.9.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.9.0
 [0.8.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.8.0
 [0.7.12]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.7.12

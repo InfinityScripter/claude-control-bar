@@ -198,6 +198,55 @@ class Context(unittest.TestCase):
         self.assertEqual(got["window"], 1000000)
         self.assertEqual(got["model"], "claude-opus-5")
 
+    def test_цена_и_длительность_сессии_едут_рядом_с_контекстом(self):
+        # Стоимость, время и строки кода Claude Code тоже сообщает только статуслайну.
+        self.statusline.capture_context({
+            "session_id": "abc",
+            "context_window": {"used_percentage": 5, "total_input_tokens": 1000,
+                               "context_window_size": 200000},
+            "cost": {"total_cost_usd": 0.4249, "total_duration_ms": 4500000,
+                     "total_lines_added": 48, "total_lines_removed": 6},
+        })
+        got = self.record("abc")
+        self.assertEqual(got["cost"], 0.42)
+        self.assertEqual(got["duration"], 4500)
+        self.assertEqual(got["linesAdded"], 48)
+        self.assertEqual(got["linesRemoved"], 6)
+
+    def test_бегущая_длительность_сама_по_себе_не_переписывает_файл(self):
+        payload = {"session_id": "abc",
+                   "context_window": {"used_percentage": 5, "total_input_tokens": 1000,
+                                      "context_window_size": 200000},
+                   "cost": {"total_cost_usd": 0.1, "total_duration_ms": 1000}}
+        self.statusline.capture_context(payload)
+        path = os.path.join(self.tmp, "context.d", "abc.json")
+        before = os.stat(path).st_mtime_ns
+        payload["cost"]["total_duration_ms"] = 3000
+        self.statusline.capture_context(payload)
+        self.assertEqual(os.stat(path).st_mtime_ns, before)
+
+    def test_пакет_без_cost_не_стирает_уже_снятую_цену(self):
+        ctx = {"used_percentage": 5, "total_input_tokens": 1000, "context_window_size": 200000}
+        self.statusline.capture_context({"session_id": "abc", "context_window": dict(ctx),
+                                         "cost": {"total_cost_usd": 0.5, "total_duration_ms": 9000,
+                                                  "total_lines_added": 3, "total_lines_removed": 1}})
+        ctx["used_percentage"] = 6
+        self.statusline.capture_context({"session_id": "abc", "context_window": ctx})
+        got = self.record("abc")
+        self.assertEqual(got["pct"], 6)
+        self.assertEqual((got["cost"], got["duration"], got["linesAdded"], got["linesRemoved"]),
+                         (0.5, 9, 3, 1))
+
+    def test_без_блока_cost_запись_контекста_всё_равно_пишется(self):
+        self.statusline.capture_context({
+            "session_id": "abc", "cost": "мусор",
+            "context_window": {"used_percentage": 5, "total_input_tokens": 1000,
+                               "context_window_size": 200000},
+        })
+        got = self.record("abc")
+        self.assertEqual(got["pct"], 5)
+        self.assertNotIn("cost", got)
+
     def test_без_процента_запись_не_появляется(self):
         """used_percentage бывает null до первого ответа API и сразу после /compact."""
         self.statusline.capture_context({"session_id": "abc", "context_window": {}})

@@ -215,6 +215,76 @@ test("a statusLine reading old enough to be stale loses to the transcript", () =
   assert.equal(state.tokens, 100000);
 });
 
+test("session cost, duration and lines changed ride along from the statusLine record", () => {
+  const home = sandbox();
+  writeContextSidecar(home, "s7", {
+    pct: 19, tokens: 192782, window: 1000000, model: "claude-opus-5",
+    cost: 0.42, duration: 4500, linesAdded: 48, linesRemoved: 6,
+    ts: Math.floor(Date.now() / 1000),
+  });
+
+  run(updatePath, home, ["prompt"], JSON.stringify({ session_id: "s7", cwd: home }));
+
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "s7.json"), "utf8"));
+  assert.equal(state.cost, 0.42);
+  assert.equal(state.duration, 4500);
+  assert.equal(state.linesAdded, 48);
+  assert.equal(state.linesRemoved, 6);
+});
+
+test("a stale statusLine record still lends its cost: the total only ever grows", () => {
+  // The context figure goes stale (the session may have moved to the app, which measures
+  // differently), but the cost so far is a fact about the past, not an estimate.
+  const home = sandbox();
+  writeContextSidecar(home, "s8", {
+    pct: 3, tokens: 6000, window: 200000, model: "m", cost: 1.5, duration: 60,
+    linesAdded: 0, linesRemoved: 0, ts: Math.floor(Date.now() / 1000) - 3600,
+  });
+
+  run(updatePath, home, ["prompt"], JSON.stringify({ session_id: "s8", cwd: home }));
+
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "s8.json"), "utf8"));
+  assert.equal(state.cost, 1.5);
+  assert.equal(state.duration, 60);
+});
+
+test("the uncommitted count is measured at turn boundaries and carried through tool events", () => {
+  // PreToolUse blocks the tool call until the hook exits, and a git status walk on a large
+  // tree is the slowest thing this hook could do — so it runs on prompt and stop only.
+  const home = sandbox();
+  const repo = path.join(home, "repo");
+  fs.mkdirSync(repo);
+  execFileSync("git", ["-C", repo, "init", "-q"]);
+  fs.writeFileSync(path.join(repo, "a.txt"), "1");
+
+  run(updatePath, home, ["prompt"], JSON.stringify({ session_id: "g3", cwd: repo }));
+  fs.writeFileSync(path.join(repo, "b.txt"), "2");
+  run(updatePath, home, ["pre"], JSON.stringify({ session_id: "g3", cwd: repo, tool_name: "Bash" }));
+  const midTurn = JSON.parse(fs.readFileSync(path.join(stateDir(home), "g3.json"), "utf8"));
+  assert.equal(midTurn.dirty, 1, "a tool event reuses the figure from the turn's start");
+
+  run(updatePath, home, ["stop"], JSON.stringify({ session_id: "g3", cwd: repo }));
+  const turnEnd = JSON.parse(fs.readFileSync(path.join(stateDir(home), "g3.json"), "utf8"));
+  assert.equal(turnEnd.dirty, 2, "the turn's end re-measures");
+});
+
+test("the count of uncommitted files comes from git status; outside a repo it is null", () => {
+  const home = sandbox();
+  const repo = path.join(home, "repo");
+  fs.mkdirSync(repo);
+  execFileSync("git", ["-C", repo, "init", "-q"]);
+  fs.writeFileSync(path.join(repo, "a.txt"), "1");
+  fs.writeFileSync(path.join(repo, "b.txt"), "2");
+
+  run(updatePath, home, ["prompt"], JSON.stringify({ session_id: "g1", cwd: repo }));
+  const inRepo = JSON.parse(fs.readFileSync(path.join(stateDir(home), "g1.json"), "utf8"));
+  assert.equal(inRepo.dirty, 2);
+
+  run(updatePath, home, ["prompt"], JSON.stringify({ session_id: "g2", cwd: home }));
+  const outside = JSON.parse(fs.readFileSync(path.join(stateDir(home), "g2.json"), "utf8"));
+  assert.equal(outside.dirty, null);
+});
+
 test("ending a session takes its context record with it", () => {
   const home = sandbox();
   fs.writeFileSync(path.join(stateDir(home), "s6.json"), JSON.stringify({ sessionId: "s6" }));
@@ -480,9 +550,9 @@ test("the state file a hook event writes carries exactly the keys the swift read
 
   const state = JSON.parse(fs.readFileSync(path.join(stateDir(home), "pin1.json"), "utf8"));
   assert.deepEqual(Object.keys(state).sort(), [
-    "assumed", "cwd", "entrypoint", "label", "model", "pct", "pid", "project", "sessionId",
-    "started", "startedAt", "state", "term_bundle", "term_program", "tokens", "tool",
-    "transcript", "ts", "window",
+    "assumed", "cost", "cwd", "dirty", "duration", "entrypoint", "label", "linesAdded",
+    "linesRemoved", "model", "pct", "pid", "project", "sessionId", "started", "startedAt",
+    "state", "term_bundle", "term_program", "tokens", "tool", "transcript", "ts", "window",
   ]);
   assert.equal(typeof state.state, "string");
   assert.equal(typeof state.pid, "number");

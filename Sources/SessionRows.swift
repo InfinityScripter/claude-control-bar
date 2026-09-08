@@ -62,16 +62,16 @@ extension StatusController {
                     pillSelected: tag.isEmpty ? nil : pillImage(tag, selected: true),
                     pillInset: CGFloat(cfg["pillInset"] ?? 12),
                     timerGap: CGFloat(cfg["timerGap"] ?? 10))
-        // Truncated rows stay inspectable: full name, branch, and path on hover.
-        var tip = sessionName(s)
-        if !s.branch.isEmpty { tip += " · " + s.branch }
-        if let pct = s.pct, let tokens = s.tokens, let window = s.window {
-            tip += "\ncontext \(pct)% — \(Self.grouped(tokens)) of \(Self.grouped(window)) tokens"
-            if !s.model.isEmpty { tip += " · " + s.model }
-            if s.assumed { tip += "\nwindow size inferred, not reported by this model" }
-        }
-        if !s.cwd.isEmpty { tip += "\n" + s.cwd }
-        v.toolTip = tip
+        // The hover card carries what the row cannot: full name, branch and uncommitted count,
+        // the context gauge with token figures, the session totals, the path. Captured here,
+        // which is fresh enough: the open menu reconfigures every row on each tick.
+        let content = SessionCard.Content(
+            name: sessionName(s), model: s.model, branch: s.branch, dirty: s.dirty,
+            pct: s.pct, tokens: s.tokens, window: s.window, assumed: s.assumed,
+            cost: s.cost, duration: s.duration, linesAdded: s.linesAdded, linesRemoved: s.linesRemoved,
+            cwd: s.cwd)
+        v.onHover = { row in SessionCard.show(content, near: row) }
+        v.toolTip = nil
     }
 
     // Only ever asked for an active state: a resting lead renders the bare icon, no text.
@@ -189,13 +189,6 @@ extension StatusController {
             if let sub = item.submenu { line += "\n" + describe(sub, depth: depth + 1) }
             return line
         }.joined(separator: "\n")
-    }
-
-    static func grouped(_ n: Int) -> String {
-        let f = NumberFormatter()
-        f.numberStyle = .decimal
-        f.groupingSeparator = " "   // thin, language-neutral: 154 452 reads the same everywhere
-        return f.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 
     // "1m 1s" / "43s" — Claude Code's elapsed-clock style.

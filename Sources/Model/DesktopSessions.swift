@@ -29,12 +29,23 @@ enum DesktopSessions {
         // Matched as text rather than parsed: the app writes these with JSON.stringify, so the
         // pair is always spelled exactly this way. A miss costs nothing — the caller falls back
         // to merely focusing the app, which is what every click did before.
+        //
+        // Only the head of each file is read. cliSessionId is the second key the app writes,
+        // within the first hundred bytes; the rest of the record is the enabled-tool map, one
+        // key per MCP tool, and an account with a few hundred tools pushes the file past
+        // 200 KB. The previous whole-file read with a 200 KB size cap skipped exactly those —
+        // 150 of 718 records on one machine — so every click on a busy session merely opened
+        // the app. Reading 4 KB per file also makes the walk over hundreds of records cheap.
         let needle = "\"cliSessionId\":\"\(cliSession)\""
         var best: (name: String, at: Date)?
         for case let url as URL in walk
         where url.pathExtension == "json" && url.lastPathComponent.hasPrefix("local_") {
-            guard let data = fm.contents(atPath: url.path), data.count <= 200_000,
-                  let text = String(data: data, encoding: .utf8), text.contains(needle) else { continue }
+            guard let handle = FileHandle(forReadingAtPath: url.path) else { continue }
+            let head = handle.readData(ofLength: 4096)
+            handle.closeFile()
+            // Lossy decoding on purpose: the 4 KB cut can land inside a multibyte character in
+            // a title, and a strict decode would drop the whole record for it.
+            guard String(decoding: head, as: UTF8.self).contains(needle) else { continue }
             let at = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
                 .contentModificationDate ?? .distantPast
             if best == nil || at > best!.at { best = (url.deletingPathExtension().lastPathComponent, at) }

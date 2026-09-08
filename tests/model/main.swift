@@ -175,16 +175,21 @@ check(!Transcript.isTurnRecord(#"{"type":"user","timestamp":"2026-"#),
 let sessionsRoot = NSTemporaryDirectory() + "ccb-desktop-sessions/"
 let workspace = sessionsRoot + "account/workspace/"
 try? FileManager.default.createDirectory(atPath: workspace, withIntermediateDirectories: true)
-func writeSession(_ name: String, cli: String, modified: Date) {
+func writeSession(_ name: String, cli: String, modified: Date, tail: String = "") {
     let path = workspace + name + ".json"
     // Exactly how the desktop app writes it: JSON.stringify, no spaces.
-    try? #"{"sessionId":"\#(name)","cliSessionId":"\#(cli)","cwd":"/tmp"}"#
+    try? #"{"sessionId":"\#(name)","cliSessionId":"\#(cli)","cwd":"/tmp"\#(tail)}"#
         .write(toFile: path, atomically: true, encoding: .utf8)
     try? FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: path)
 }
 writeSession("local_older", cli: "cli-1", modified: Date(timeIntervalSince1970: 1_000))
 writeSession("local_newer", cli: "cli-1", modified: Date(timeIntervalSince1970: 2_000))
 writeSession("local_other", cli: "cli-2", modified: Date(timeIntervalSince1970: 3_000))
+// The app files every enabled MCP tool into the record, one key per tool, and with a few
+// hundred tools on the account the file passes 200 KB. Measured 2026-09-08: 150 of 718
+// records over that size, and every click on one of them fell back to "just open Claude".
+writeSession("local_fat", cli: "cli-fat", modified: Date(timeIntervalSince1970: 4_000),
+             tail: ",\"enabledMcpTools\":{" + String(repeating: "\"tool\":true,", count: 30_000) + "\"z\":true}")
 
 check(DesktopSessions.sessionID(forCLI: "cli-2", root: sessionsRoot) == "local_other",
       "a session id resolves through two directory levels")
@@ -192,6 +197,8 @@ check(DesktopSessions.sessionID(forCLI: "cli-2", root: sessionsRoot) == "local_o
 // app is actually showing is the most recent.
 check(DesktopSessions.sessionID(forCLI: "cli-1", root: sessionsRoot) == "local_newer",
       "when two records claim one conversation, the newest wins")
+check(DesktopSessions.sessionID(forCLI: "cli-fat", root: sessionsRoot) == "local_fat",
+      "a record grown past 200 KB by the tool map still resolves")
 check(DesktopSessions.sessionID(forCLI: "cli-3", root: sessionsRoot) == nil,
       "a conversation this machine never opened resolves to nothing")
 check(DesktopSessions.sessionID(forCLI: "", root: sessionsRoot) == nil,
@@ -237,13 +244,32 @@ check((-7.9).clampedInt == -7, "truncation toward zero holds for negatives too")
 // the hooks relaunch the app straight back into the same crash otherwise.
 let mangled = Session(json: ["state": 5, "pid": "x", "ts": [], "pct": "z", "started": "yes",
                              "tokens": NSNull(), "window": false, "project": 7,
-                             "cwd": [:], "transcript": 1.5], id: "mangled")
+                             "cwd": [:], "transcript": 1.5, "cost": "free", "duration": [1],
+                             "dirty": NSNull()], id: "mangled")
 check(mangled.state == "idle" && mangled.pid == 0 && mangled.ts == 0,
       "wrong-typed state/pid/ts degrade to their defaults instead of trapping")
 check(mangled.pct == nil && mangled.tokens == nil && !mangled.started,
       "wrong-typed optionals read as absent, not as garbage")
+check(mangled.cost == nil && mangled.duration == nil && mangled.dirty == nil,
+      "wrong-typed session totals read as absent too")
+let totals = Session(json: ["cost": 0.42, "duration": 4500, "linesAdded": 48, "linesRemoved": 6,
+                            "dirty": 1], id: "totals")
+check(totals.cost == 0.42 && totals.duration == 4500 && totals.linesAdded == 48
+      && totals.linesRemoved == 6 && totals.dirty == 1,
+      "session totals parse from the state file")
 check(mangled.project.isEmpty && mangled.cwd.isEmpty && mangled.transcript.isEmpty,
       "wrong-typed strings degrade to empty")
+
+check(SessionFormat.prettyModel("claude-fable-5-1") == "Fable 5.1", "model id reads as a name")
+check(SessionFormat.prettyModel("claude-opus-4-8-20260101") == "Opus 4.8",
+      "a date suffix is not a version component")
+check(SessionFormat.prettyModel("") == "" && SessionFormat.prettyModel("2-x") == "2-x",
+      "an unrecognized id is shown as is, not mangled")
+check(SessionFormat.compact(87_956) == "88k" && SessionFormat.compact(1_000_000) == "1M"
+      && SessionFormat.compact(1_500_000) == "1.5M" && SessionFormat.compact(999) == "999",
+      "token counts compact to a glanceable figure")
+check(SessionFormat.elapsed(4500) == "1h 15m" && SessionFormat.elapsed(59) == "0m"
+      && SessionFormat.elapsed(720) == "12m", "session wall time reads in minutes and hours")
 
 // The session state machine — the logic behind every serious bug of the 0.7.x review, and
 // untestable until it moved out of main.swift into SessionEngine.
@@ -341,6 +367,10 @@ if !FileManager.default.fileExists(atPath: sessionSeamPath) {
     check(parsed.started, "real activity crosses over as started")
     check(parsed.pct != nil, "the measured context percentage crosses over")
     check(!parsed.transcript.isEmpty, "the transcript path crosses over")
+    // The pin test writes the fixture from a repo-less sandbox with no status line record,
+    // so both are null on disk — and null must read as absent, not as zero.
+    check(parsed.dirty == nil && parsed.cost == nil,
+          "null totals cross over as absent")
 } else {
     check(false, "session seam fixture unreadable")
 }

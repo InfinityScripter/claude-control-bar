@@ -18,23 +18,26 @@ import Cocoa
 // light bubble and anchor arrow (foreign against the menu material), it takes mouse events, and
 // its own header documents that it silently does nothing when the anchoring view is scrolled out
 // of view — which is exactly what a long tool list is.
-final class ToolCard {
-    static let shared = ToolCard()
+//
+// One window serves every kind of hover card — the MCP tool card and the session card — since
+// two cards can never be up at once: the cursor is over one row. `body` builds the content
+// at fire time, not at hover time, so a row the cursor merely crossed costs nothing.
+final class HoverCard {
+    static let shared = HoverCard()
 
     private var window: NSWindow?
     private var pending: Timer?
 
-    private static let width: CGFloat = 360
-    private static let pad: CGFloat = 12
+    static let pad: CGFloat = 12
     private static let delay: TimeInterval = 0.3
 
-    func show(tool: MCPTool, prefix: String, near row: NSView) {
+    func show(near row: NSView, width: CGFloat, body: @escaping () -> NSView) {
         pending?.invalidate()
-        let timer = Timer(timeInterval: ToolCard.delay, repeats: false) { [weak row] _ in
+        let timer = Timer(timeInterval: HoverCard.delay, repeats: false) { [weak row] _ in
             // The menu can close while the delay ticks; a row pulled out of its menu has no
             // window, and positioning against it would put the card at the screen origin.
             guard let row, let host = row.window else { return }
-            self.place(ToolCard.body(tool: tool, prefix: prefix), row: row, host: host)
+            self.place(body(), width: width, row: row, host: host)
         }
         // Menu tracking runs in NSEventTrackingRunLoopMode, and a timer scheduled the usual way
         // sits in the default mode and does not fire until the menu closes. .common covers both
@@ -50,7 +53,7 @@ final class ToolCard {
         window?.orderOut(nil)
     }
 
-    private func place(_ content: NSView, row: NSView, host: NSWindow) {
+    private func place(_ content: NSView, width: CGFloat, row: NSView, host: NSWindow) {
         let card = window ?? make()
         window = card
         // Inherit the appearance of the row, not of the app. A window of its own resolves
@@ -59,9 +62,9 @@ final class ToolCard {
         // would render this card black on near-black.
         card.appearance = row.effectiveAppearance
         card.contentView?.subviews.forEach { $0.removeFromSuperview() }
-        let size = NSSize(width: ToolCard.width, height: content.frame.height + ToolCard.pad * 2)
+        let size = NSSize(width: width, height: content.frame.height + HoverCard.pad * 2)
         card.setContentSize(size)
-        content.setFrameOrigin(NSPoint(x: ToolCard.pad, y: ToolCard.pad))
+        content.setFrameOrigin(NSPoint(x: HoverCard.pad, y: HoverCard.pad))
         card.contentView?.addSubview(content)
 
         let anchor = host.convertToScreen(row.convert(row.bounds, to: nil))
@@ -104,6 +107,16 @@ final class ToolCard {
                                    .ignoresCycle]
         card.hidesOnDeactivate = false
         return card
+    }
+}
+
+// The MCP tool card: name, what it does, and its parameters.
+enum ToolCard {
+    static let width: CGFloat = 360
+    private static let pad = HoverCard.pad
+
+    static func show(tool: MCPTool, prefix: String, near row: NSView) {
+        HoverCard.shared.show(near: row, width: width) { body(tool: tool, prefix: prefix) }
     }
 
     /// Internal rather than private so a harness can render the card body to an image and

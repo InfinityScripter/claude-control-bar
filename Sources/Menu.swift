@@ -15,6 +15,7 @@ extension StatusController {
     }
     func menuDidClose(_ menu: NSMenu) {
         menuIsOpen = false
+        HoverCard.shared.hide()
         sessionMenuItems.removeAll()
         mcpCountLabels.removeAll()   // they capture menu items that are about to be discarded
     }

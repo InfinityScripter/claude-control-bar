@@ -24,6 +24,14 @@ struct Session {
     var window: Int?
     var model: String = ""
     var assumed = false    // the window size is a family guess, not a known figure
+    // Session totals Claude Code reports to statusLine only, captured by hooks/statusline.py
+    // and carried into the state file by hooks/update.js. nil for a session no status line
+    // ever ran for — the desktop app runs none — and the card leaves the block out.
+    var cost: Double?      // USD so far, rounded to cents by the writer
+    var duration: Int?     // seconds of wall time
+    var linesAdded: Int?
+    var linesRemoved: Int?
+    var dirty: Int?        // files with uncommitted changes in cwd; nil outside a git repo
 
     var eff: String = ""   // effective state, recomputed once per tick in evaluate()
     var branch: String = ""      // git branch (or short SHA when detached); "" outside a repo
@@ -48,6 +56,11 @@ struct Session {
         self.window = (o["window"] as? NSNumber)?.intValue
         self.model = o["model"] as? String ?? ""
         self.assumed = o["assumed"] as? Bool ?? false
+        self.cost = (o["cost"] as? NSNumber)?.doubleValue
+        self.duration = (o["duration"] as? NSNumber)?.intValue
+        self.linesAdded = (o["linesAdded"] as? NSNumber)?.intValue
+        self.linesRemoved = (o["linesRemoved"] as? NSNumber)?.intValue
+        self.dirty = (o["dirty"] as? NSNumber)?.intValue
     }
 }
 

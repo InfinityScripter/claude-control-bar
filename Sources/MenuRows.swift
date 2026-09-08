@@ -105,6 +105,7 @@ final class ToggleView: NSView {
 final class SessionRowView: NSView {
     let id: String
     var onClick: (() -> Void)?
+    var onHover: ((NSView) -> Void)?   // fires on enter; the hover card hides itself on exit
     private let iconView = NSImageView()
     private let spinner = NSProgressIndicator()
     private let nameField = NSTextField(labelWithString: "")
@@ -263,6 +264,7 @@ final class SessionRowView: NSView {
     private func setHover(_ h: Bool) {
         hovered = h
         highlightView.isHidden = !h
+        if h { onHover?(self) } else { HoverCard.shared.hide() }
         renderName()
         timerField.textColor = h ? .white : .secondaryLabelColor
         contextField.textColor = h ? .white : contextBase
@@ -272,6 +274,12 @@ final class SessionRowView: NSView {
     override func layout() {
         super.layout()
         highlightView.frame = bounds.insetBy(dx: 5, dy: 0)
+    }
+    // mouseExited never arrives when the menu closes under the cursor (measured for the MCP
+    // rows); leaving the window is the one signal that always comes.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { HoverCard.shared.hide() }
     }
     override func mouseDown(with event: NSEvent) { onClick?() }
 }

@@ -83,6 +83,40 @@ function contextFromStatusLine(sessionId, now) {
   };
 }
 
+// Session cost, wall time and lines changed, from the same statusLine record. No age check,
+// unlike the context figure above: a percentage can be re-measured from the transcript, a
+// running total cannot — and the last known figure is a fact about the session, not a guess.
+// null when no status line ever ran for this session (the desktop app runs none).
+function costFromStatusLine(sessionId, prev) {
+  const record = readJSON(path.join(contextDir, sessionId + ".json"));
+  const source = typeof (record || {}).cost === "number" ? record : prev;
+  const num = (v) => (typeof v === "number" ? v : null);
+  return {
+    cost: num(source.cost), duration: num(source.duration),
+    linesAdded: num(source.linesAdded), linesRemoved: num(source.linesRemoved),
+  };
+}
+
+// Files with uncommitted changes, untracked included: the "1 uncommitted" on the session card.
+// null outside a git repository or when git is missing/slow. Measured only at the turn's
+// boundaries — prompt and stop — and carried through the tool events in between: PreToolUse
+// blocks the tool call until this hook exits, and a status walk over a large tree is the
+// slowest thing the hook could do, so it must not run twice per tool call. The hard timeout
+// is the second net. The app reads .git/HEAD for the branch without spawning git; a status
+// walk has no such shortcut.
+function dirtyCount(cwd, event, prev) {
+  if (!cwd) return null;
+  if (event !== "prompt" && event !== "stop") return typeof prev.dirty === "number" ? prev.dirty : null;
+  try {
+    const res = cp.spawnSync("git", ["-C", cwd, "status", "--porcelain"],
+      { encoding: "utf8", timeout: 1500, stdio: ["ignore", "pipe", "ignore"] });
+    if (res.status !== 0 || res.error) return null;
+    return res.stdout.split("\n").filter(Boolean).length;
+  } catch {
+    return null;
+  }
+}
+
 // used% = clamp(round((input + cache_creation + cache_read) / window * 100), 0, 100).
 // output_tokens is NOT in the numerator — checked against a live statusLine payload.
 function contextOf(transcript) {
@@ -253,7 +287,8 @@ process.stdin.on("end", () => {
     || {
       pct: prev.pct, tokens: prev.tokens, window: prev.window, model: prev.model, assumed: prev.assumed,
     };
-  const out = { state, label, tool: p.tool_name || "", project, cwd, sessionId: p.session_id || "", transcript, entrypoint, term_program: termProgram, term_bundle: termBundle, pid: process.ppid, started: true, startedAt, ts, ...ctx };
+  const out = { state, label, tool: p.tool_name || "", project, cwd, sessionId: p.session_id || "", transcript, entrypoint, term_program: termProgram, term_bundle: termBundle, pid: process.ppid, started: true, startedAt, ts, ...ctx,
+    ...costFromStatusLine(sid, prev), dirty: dirtyCount(cwd, event, prev) };
   try {
     fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
     const tmp = statePath + "." + process.pid + ".tmp";

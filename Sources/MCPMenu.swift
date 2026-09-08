@@ -151,7 +151,7 @@ final class MCPRowView: NSView {
         trailing.textColor = .secondaryLabelColor
         chevron.textColor = .tertiaryLabelColor
         spinner.tint = .secondaryLabelColor
-        ToolCard.shared.hide()
+        HoverCard.shared.hide()
     }
 
     // The one hook that always fires when the menu goes away. mouseExited does not arrive on
@@ -160,7 +160,7 @@ final class MCPRowView: NSView {
     // screen indefinitely.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window == nil { ToolCard.shared.hide() }
+        if window == nil { HoverCard.shared.hide() }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -440,7 +440,7 @@ extension StatusController {
             // The card gets the toolPrefix, not the display name: its identifier line shows the
             // REAL full tool name, and for a plugin or connector those differ — the same
             // distinction the switch above already had to learn.
-            onHover: { view in ToolCard.shared.show(tool: tool, prefix: prefix, near: view) }
+            onHover: { view in ToolCard.show(tool: tool, prefix: prefix, near: view) }
         ) { [weak self] on in
             guard let self else { return }
             // Local first, then the backend. Rewriting settings.json and re-deriving the picture

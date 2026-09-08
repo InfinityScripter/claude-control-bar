@@ -172,12 +172,34 @@ def capture_context(payload):
         "model": ((payload.get("model") or {}).get("id") or ""),
         "ts": int(time.time()),
     }
+    # Session cost, wall time and lines changed travel in the same record: like the context
+    # figure they exist nowhere but this payload, and the app shows them on the session card.
+    # Cents and whole seconds — the card never needs finer, and coarser values keep the
+    # "identical record" check below from rewriting the file on every redraw while a second
+    # ticks by.
     path = os.path.join(CONTEXT_DIR, safe + ".json")
     previous = read_json(path, {})
+    cost = payload.get("cost")
+    if not isinstance(cost, dict):
+        cost = {}
+    usd, ms = cost.get("total_cost_usd"), cost.get("total_duration_ms")
+    lines = [cost.get("total_lines_added"), cost.get("total_lines_removed")]
+    if all(isinstance(v, (int, float)) for v in [usd, ms] + lines):
+        record["cost"] = round(float(usd), 2)
+        record["duration"] = int(ms // 1000)
+        record["linesAdded"], record["linesRemoved"] = int(lines[0]), int(lines[1])
+    else:
+        # A payload without a usable cost block does not unlearn the totals already captured:
+        # they only ever grow, so the last figure stays true until a fuller payload arrives.
+        for k in ("cost", "duration", "linesAdded", "linesRemoved"):
+            if k in previous:
+                record[k] = previous[k]
     # Same rule as the limits: an identical record is not rewritten on every redraw, but the
     # timestamp is allowed to age only a minute — the reader treats a stale record as no
     # record, and a session sitting at one percentage would otherwise expire while still true.
-    same = all(previous.get(k) == v for k, v in record.items() if k != "ts")
+    # The duration alone never counts as a change: it moves on every redraw by definition, and
+    # a minute of lag on the card is cheaper than a write per second.
+    same = all(previous.get(k) == v for k, v in record.items() if k not in ("ts", "duration"))
     if same and record["ts"] - (previous.get("ts") or 0) < 60:
         return
     atomic_write(path, record)
