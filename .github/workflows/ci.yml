@@ -65,6 +65,17 @@ jobs:
       - name: Build the app and the DMG
         run: CONTROL_BAR_APP="$RUNNER_TEMP/Claude Control Bar.app" bash build.sh --dmg
 
+      # The DMG this run just proved it can build is worth keeping for a week: a reviewer of a
+      # visual change installs it from the run page instead of building the branch by hand.
+      # Ad-hoc signed, unnotarized — Gatekeeper wants a right-click Open the first time.
+      - name: Keep the DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: Claude-Control-Bar-dmg
+          path: build/*.dmg
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Manifests are valid JSON
         run: |
           /usr/bin/python3 -c "
