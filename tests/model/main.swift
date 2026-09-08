@@ -1130,6 +1130,14 @@ check(Limits.fableKey(in: ["seven_day", "weekly_fable"]) == "weekly_fable",
 check(Limits.fableKey(in: ["seven_day_fable", "fable_beta"]) == "seven_day_fable",
       "the canonical key wins over other matches")
 check(Limits.fableKey(in: ["seven_day", "five_hour"]) == nil, "no key, no window")
+// What the usage endpoint actually sends on a Fable plan (observed 2026-09): no seven_day_fable,
+// just this codename as the one extra window. Zero use and no reset time is a real reading.
+let observed = Limits(json: ["ts": 1.0, "source": "oauth",
+                             "five_hour": ["used_percentage": 6, "resets_at": 1_788_902_999.0] as [String: Any],
+                             "seven_day": ["used_percentage": 60, "resets_at": 1_788_944_399.0] as [String: Any],
+                             "nimbus_quill": ["used_percentage": 0, "resets_at": NSNull()] as [String: Any]])
+check(observed?.fable?.used == 0 && observed?.fable?.resets == nil,
+      "the endpoint's nimbus_quill window is the Fable row, even at zero")
 
 // hooks/statusline.py rounds on the way in; a writer that forgets must not make the row vanish
 // with the rest of the file still readable — and must not crash on it either.

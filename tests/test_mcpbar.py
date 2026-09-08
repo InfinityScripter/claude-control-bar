@@ -1662,7 +1662,7 @@ class ReportResilience(unittest.TestCase):
                               "ts": 1, "pct": 42}],
                 "limits": {"ts": time.time(), "source": "oauth", "five_hour": 3,
                            "seven_day": {"used_percentage": 55, "resets_at": None},
-                           "seven_day_fable": {"used_percentage": 17, "resets_at": None}},
+                           "nimbus_quill": {"used_percentage": 17, "resets_at": None}},
             }, fh)
 
     def tearDown(self):

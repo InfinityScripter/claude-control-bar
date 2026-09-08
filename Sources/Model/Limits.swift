@@ -31,12 +31,17 @@ struct Limits {
     let ts: Double
 
     /// Anthropic names the per-model weekly windows `seven_day_<model>` (seven_day_opus,
-    /// seven_day_sonnet, ...) and both writers copy the key through untouched. The exact
-    /// spelling for Fable is not pinned anywhere we can read, so the canonical name wins and
-    /// any other key carrying the model's name is the fallback — a renamed window should
-    /// keep the row rather than silently drop it.
+    /// seven_day_sonnet, ...) and both writers copy the key through untouched. The usage
+    /// endpoint does not follow that pattern for Fable: on a plan with the model it reports a
+    /// window called `nimbus_quill` beside five_hour and seven_day and nothing else — an
+    /// internal codename, read as the Fable window because it is the only one the plan gains.
+    /// The spelled-out name is kept first in case the endpoint ever catches up with the
+    /// convention, and any other key carrying the model's name is the fallback — a renamed
+    /// window should keep the row rather than silently drop it.
+    static let fableKeys = ["seven_day_fable", "nimbus_quill"]
+
     static func fableKey(in keys: [String]) -> String? {
-        if keys.contains("seven_day_fable") { return "seven_day_fable" }
+        if let known = fableKeys.first(where: { keys.contains($0) }) { return known }
         return keys.filter { $0 != "ts" && $0 != "source" && $0.lowercased().contains("fable") }
             .sorted().first
     }

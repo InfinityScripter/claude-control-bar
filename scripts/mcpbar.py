@@ -1853,10 +1853,11 @@ def report(force=False):
         out.append("")
 
     limits = data.get("limits") or {}
-    # The weekly Fable window is per model and arrives only on plans that have it; the app
-    # reads the same key (Sources/Model/Limits.swift), so the two must not drift apart.
+    # The weekly Fable window is per model and arrives only on plans that have it. The
+    # endpoint calls it nimbus_quill (a codename, the one extra window such a plan reports);
+    # the app reads the same keys (Sources/Model/Limits.swift), so the two must not drift.
     windows = (("five_hour", t("limits.five")), ("seven_day", t("limits.seven")),
-               ("seven_day_fable", t("limits.fable")))
+               ("seven_day_fable", t("limits.fable")), ("nimbus_quill", t("limits.fable")))
     if any(limits.get(key) for key, _ in windows):
         out.append(paint(t("head.limits"), "1"))
         for key, label in windows:
