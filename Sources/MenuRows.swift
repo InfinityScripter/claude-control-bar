@@ -377,12 +377,14 @@ final class UpdateBannerView: NSView {
         self.version = version
         self.target = target
         self.action = action
-        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 60))
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 66))
         autoresizingMask = [.width]
         card.wantsLayer = true
         card.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
         card.layer?.cornerRadius = 10
-        card.frame = bounds.insetBy(dx: 8, dy: 4)
+        // More room above than below: the item is the first in the menu, and a card 4pt from
+        // the top edge ran into the menu's own rounded corner and read as clipped.
+        card.frame = NSRect(x: 8, y: 4, width: bounds.width - 16, height: bounds.height - 14)
         card.autoresizingMask = [.width, .height]
         addSubview(card)
 
