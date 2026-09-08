@@ -1096,19 +1096,21 @@ check(NeedsYouSound.choices.allSatisfy { NSSound(named: NSSound.Name($0)) != nil
 
 try? FileManager.default.removeItem(atPath: dir)
 try? FileManager.default.removeItem(atPath: sessionsRoot)
-print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 
 // MARK: Limits — the third window is Fable's, and it is optional
 // limits.json is written by two scripts that copy the endpoint's keys through untouched; the
 // Fable window arrives as seven_day_fable beside seven_day_opus and friends. It is a row of its
 // own in the menu, so the parse must find it, must survive its absence, and must not be fooled
 // by the fractional percentage the writers are supposed to have rounded.
+// Nested literals are typed explicitly: an untyped ["used_percentage": 42, "resets_at": 1.0]
+// infers [String: Double] and turns 42 into 42.0, which `as? Int` rightly refuses — the very
+// case the fractional check below covers, but not the one this fixture is about.
 let fullLimits = Limits(json: [
     "ts": 1_785_000_000.0, "source": "oauth",
-    "five_hour": ["used_percentage": 42, "resets_at": 1_785_003_600.0],
-    "seven_day": ["used_percentage": 71, "resets_at": 1_785_400_000.0],
-    "seven_day_opus": ["used_percentage": 9],
-    "seven_day_fable": ["used_percentage": 17, "resets_at": 1_785_400_000.0],
+    "five_hour": ["used_percentage": 42, "resets_at": 1_785_003_600.0] as [String: Any],
+    "seven_day": ["used_percentage": 71, "resets_at": 1_785_400_000.0] as [String: Any],
+    "seven_day_opus": ["used_percentage": 9] as [String: Any],
+    "seven_day_fable": ["used_percentage": 17, "resets_at": 1_785_400_000.0] as [String: Any],
 ])
 check(fullLimits?.fiveHour?.used == 42 && fullLimits?.sevenDay?.used == 71,
       "the account windows read as before")
@@ -1131,9 +1133,10 @@ check(Limits.fableKey(in: ["seven_day", "five_hour"]) == nil, "no key, no window
 
 // hooks/statusline.py rounds on the way in; a writer that forgets must not make the row vanish
 // with the rest of the file still readable — and must not crash on it either.
-let fractional = Limits(json: ["ts": 1.0, "seven_day_fable": ["used_percentage": 4.2],
-                               "five_hour": ["used_percentage": 5]])
+let fractional = Limits(json: ["ts": 1.0, "seven_day_fable": ["used_percentage": 4.2] as [String: Any],
+                               "five_hour": ["used_percentage": 5] as [String: Any]])
 check(fractional?.fable == nil && fractional?.fiveHour?.used == 5,
       "a fractional Fable figure drops that window alone")
 
+print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 exit(failures == 0 ? 0 : 1)
