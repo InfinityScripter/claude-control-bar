@@ -246,6 +246,9 @@ extension StatusController {
     private static func until(_ stamp: Double) -> String {
         let left = (stamp - Date().timeIntervalSince1970).clampedInt
         let hours = left / 3600, minutes = (left % 3600) / 60
+        // A weekly window is days away, and "76h 12m" is arithmetic the reader has to do; the
+        // minutes are noise at that range, so they go.
+        if hours >= 24 { return "\(hours / 24)d \(hours % 24)h" }
         return hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
     }
 

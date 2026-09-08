@@ -9,8 +9,11 @@ import Cocoa
 /// strip beside the icon never disagree about what 18% looks like.
 final class LimitRowView: NSView {
     static let rowH: CGFloat = 26
-    private static let pad: CGFloat = 14, barW: CGFloat = 84, barH: CGFloat = 5
-    private static let titleW: CGFloat = 76, pctW: CGFloat = 40, gap: CGFloat = 10
+    // The width budget is the default 300pt box: 14 + 72 + 8 + 64 + 8 + 36 + 8 leaves 76pt for
+    // the reset time, enough for "↻ 76h 12m" at 11pt. A longer bar looked better on its own
+    // and pushed the reset time into an ellipsis on every row.
+    private static let pad: CGFloat = 14, barW: CGFloat = 64, barH: CGFloat = 5
+    private static let titleW: CGFloat = 72, pctW: CGFloat = 36, gap: CGFloat = 8
 
     private let title = NSTextField(labelWithString: "")
     private let badge = NSTextField(labelWithString: "")
@@ -62,7 +65,9 @@ final class LimitRowView: NSView {
                                y: (h - 16) / 2, width: Self.pctW, height: 16)
         addSubview(percent)
 
-        reset.stringValue = resets.map { "resets in \($0)" } ?? ""
+        // A glyph instead of "resets in": the words cost 50pt the row does not have, and the
+        // arrow beside a duration reads the same way the battery menu's "until full" does.
+        reset.stringValue = resets.map { "\u{21BB} \($0)" } ?? ""
         reset.font = .systemFont(ofSize: 11)
         reset.textColor = .secondaryLabelColor
         reset.alignment = .right
@@ -75,8 +80,8 @@ final class LimitRowView: NSView {
         // Screen readers get the sentence the bar draws.
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
-        setAccessibilityLabel([text, tag, "\(used)% used", reset.stringValue]
-            .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", "))
+        setAccessibilityLabel([text, tag, "\(used)% used", resets.map { "resets in \($0)" }]
+            .compactMap { $0 }.joined(separator: ", "))
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
