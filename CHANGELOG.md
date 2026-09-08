@@ -7,7 +7,7 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
-## [Unreleased]
+## [0.11.0] - 2026-09-08
 
 ### Added
 - **Fable's weekly limit in the Limits section.** Plans with the model get a third row, *Fable*
@@ -1017,6 +1017,7 @@ reports on Claude Code — it switches parts of it off.
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[0.11.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.11.0
 [0.10.1]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.10.1
 [0.10.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.10.0
 [0.9.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.9.0
