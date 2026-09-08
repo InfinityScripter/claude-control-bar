@@ -8,7 +8,7 @@ A macOS menu bar app for **Claude Code**. It shows what Claude is doing and lets
 
 - **Sessions.** An animated icon while Claude works, a yellow dot when it waits for your permission, a turn timer and context-window usage for each session. Click a session to focus the terminal or editor it runs in.
 - **MCP.** Every server and every tool has its own switch. A muted tool disappears from Claude's context at the next session start.
-- **Limits.** 5-hour and 7-day usage as bars in the menu bar, with reset times in the menu.
+- **Limits.** 5-hour and 7-day usage as bars in the menu bar; the menu lists them with reset times, plus Fable's weekly window on plans that have one.
 
 ## Install
 

@@ -7,6 +7,20 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.11.0] - 2026-09-08
+
+### Added
+- **Fable's weekly limit in the Limits section.** Plans with the model get a third row, *Fable*
+  with a small *7d* badge, under the account's 5-hour and 7-day windows: the same figure and
+  reset time, in the indigo the account bars never use, so it reads as the model's own slice
+  of the week. The window is read from the usage endpoint's per-model `limits` list; the
+  row is absent, not empty, on plans that report no such window. `/mcp-health` lists it too.
+
+### Changed
+- The Limits rows are drawn as bars instead of a line of text each: the name and figure on
+  one line, a full-width capsule fill under them with the reset countdown, using the same
+  honest fill as the strip beside the menu bar icon.
+
 ## [0.10.1] - 2026-09-08
 
 ### Fixed
@@ -1003,6 +1017,7 @@ reports on Claude Code — it switches parts of it off.
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[0.11.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.11.0
 [0.10.1]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.10.1
 [0.10.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.10.0
 [0.9.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.9.0

@@ -40,14 +40,6 @@ final class StatusController: NSObject, NSMenuDelegate {
         return ("/usr/bin/python3", bundled ?? "")
     }()
 
-    struct Limits {
-        let fiveHour: Int?
-        let sevenDay: Int?
-        let fiveHourResets: Double?
-        let sevenDayResets: Double?
-        let ts: Double
-    }
-
     var pollTimer: Timer?
     var animTimer: Timer?
     var frameIdx = 0
@@ -157,7 +149,7 @@ final class StatusController: NSObject, NSMenuDelegate {
     var showTimer = false
     var iconSystem = false // false = brand Orange; true = adaptive black/white (template image)
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
-    var oauthLimits = true          // poll Anthropic's usage endpoint for the 5h/7d limits
+    var oauthLimits = true          // poll Anthropic's usage endpoint for the 5h/7d/Fable limits
     var sessionWord: [String: String] = [:] // id -> current thinking word; re-picked on each entry into "thinking"
     var soundThreshold: Double = 0  // 0 = off; else the min turn length (seconds) that chimes on completion
     var needsYouSound = NeedsYouSound.defaultChoice  // system sound name; "" = off
@@ -646,18 +638,9 @@ final class StatusController: NSObject, NSMenuDelegate {
             limits = nil
             return
         }
-        // as? Int, deliberately: the statusLine payload reports fractional percentages and
-        // hooks/statusline.py rounds them on the way in. If a writer ever forgets, the limits
-        // vanish from the menu while limits.json still looks perfectly healthy — so the
-        // rounding lives in one place and is covered by a test.
-        let five = root["five_hour"] as? [String: Any]
-        let seven = root["seven_day"] as? [String: Any]
-        limits = Limits(
-            fiveHour: five?["used_percentage"] as? Int,
-            sevenDay: seven?["used_percentage"] as? Int,
-            fiveHourResets: five?["resets_at"] as? Double,
-            sevenDayResets: seven?["resets_at"] as? Double,
-            ts: root["ts"] as? Double ?? 0)
+        // The parse lives in Sources/Model/Limits.swift so the model check can cover it;
+        // a file with no readable window at all reads as "no data", not as zeros.
+        limits = Limits(json: root)
     }
 
     /// A server falling over is worth interrupting for; a tool count moving is not — that is
@@ -775,8 +758,8 @@ final class StatusController: NSObject, NSMenuDelegate {
     }
 
     func currentGauge() -> Gauge {
-        Gauge(fiveHour: limits?.fiveHour.map { Double($0) / 100 },
-              sevenDay: limits?.sevenDay.map { Double($0) / 100 })
+        Gauge(fiveHour: limits?.fiveHour?.fraction,
+              sevenDay: limits?.sevenDay?.fraction)
     }
 
     // The .json session files currently in state.d/ (ignores the .tmp files mid-write).

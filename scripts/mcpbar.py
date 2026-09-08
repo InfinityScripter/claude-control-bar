@@ -106,6 +106,7 @@ STRINGS = {
     "session.spent": ("{used} of {total}", "{used} из {total}"),
     "limits.five": ("5 hours", "5 часов"),
     "limits.seven": ("7 days", "7 дней"),
+    "limits.fable": ("Fable, 7 days", "Fable, 7 дней"),
     "limits.age": ("data {n} min old, source: {src}", "данным {n} мин, источник: {src}"),
     "limits.none": ("not measured yet", "ещё не измерены"),
     "error.check": ("Check failed: {e}", "Ошибка проверки: {e}"),
@@ -1391,7 +1392,34 @@ def usage_record(payload, now=None):
             "used_percentage": pct,
             "resets_at": parse_reset(block.get("resets_at")),
         }
+    # Окно Fable эндпоинт отдаёт не верхним ключом, а элементом массива limits[] с
+    # kind=weekly_scoped и scope.model.display_name="Fable" (поле percent, не utilization).
+    # Наружу — под именем seven_day_fable, по образцу seven_day_opus: приложение и
+    # report() читают один ключ, и верхнеуровневый seven_day_fable, если он однажды
+    # появится, ляжет в ту же ячейку.
+    scoped = scoped_model_window(payload.get("limits"), "fable")
+    if scoped is not None and "seven_day_fable" not in record:
+        record["seven_day_fable"] = scoped
     return record if len(record) > 2 else None
+
+
+def scoped_model_window(limits, model):
+    """Элемент limits[] с недельным окном модели → {used_percentage, resets_at} или None."""
+    if not isinstance(limits, list):
+        return None
+    for entry in limits:
+        if not isinstance(entry, dict) or entry.get("kind") != "weekly_scoped":
+            continue
+        scope = entry.get("scope") or {}
+        name = ((scope.get("model") or {}).get("display_name") or "") if isinstance(scope, dict) else ""
+        if not isinstance(name, str) or name.strip().lower() != model:
+            continue
+        try:
+            pct = int(round(float(entry.get("percent"))))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        return {"used_percentage": pct, "resets_at": parse_reset(entry.get("resets_at"))}
+    return None
 
 
 def fetch_limits():
@@ -1852,9 +1880,13 @@ def report(force=False):
         out.append("")
 
     limits = data.get("limits") or {}
-    if limits.get("five_hour") or limits.get("seven_day"):
+    # The weekly Fable window is per model and arrives only on plans that have it; the app
+    # reads the same key (Sources/Model/Limits.swift), so the two must not drift apart.
+    windows = (("five_hour", t("limits.five")), ("seven_day", t("limits.seven")),
+               ("seven_day_fable", t("limits.fable")))
+    if any(limits.get(key) for key, _ in windows):
         out.append(paint(t("head.limits"), "1"))
-        for key, label in (("five_hour", t("limits.five")), ("seven_day", t("limits.seven"))):
+        for key, label in windows:
             block = limits.get(key)
             if isinstance(block, dict) and block.get("used_percentage") is not None:
                 out.append(f"  {label:<{width}}  {block['used_percentage']:>3}%")

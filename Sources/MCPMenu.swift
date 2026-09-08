@@ -196,12 +196,13 @@ extension StatusController {
 
     var mcpRowWidth: CGFloat { boxWidth }
 
-    /// The detail behind the bars in the menu bar: the same two percentages spelled out, with
-    /// when each window resets and how old the reading is.
+    /// The detail behind the bars in the menu bar: the account's two windows spelled out as
+    /// rows with bars, plus the weekly Fable window when the plan has one, each with when it
+    /// resets and how old the reading is.
     func addLimitsSection(to menu: NSMenu) {
         menu.addItem(.separator())
         menu.addItem(header("Limits"))
-        guard let limits, limits.fiveHour != nil || limits.sevenDay != nil else {
+        guard let limits, !limits.isEmpty else {
             // Empty means the usage poll has not succeeded yet: switched off in Options, or
             // Claude Code is not signed in through the browser OAuth flow (a `setup-token`
             // login lacks the profile scope the endpoint wants). Saying so beats an empty
@@ -211,34 +212,43 @@ extension StatusController {
                 : "  switched off — see \"Limits via Anthropic API\""))
             return
         }
-        let rows: [(String, Int?, Double?)] = [
-            ("5 hours", limits.fiveHour, limits.fiveHourResets),
-            ("7 days", limits.sevenDay, limits.sevenDayResets),
+        // Account windows first, the model's own window last: 5h and 7d are what every plan
+        // has, Fable is a slice of the week that only some plans carry. The row is skipped,
+        // not zeroed, when the endpoint does not report it — an empty bar would read as
+        // "you have not used Fable", which is not what "no such window" means.
+        let rows: [(String, String?, LimitWindow?, NSColor?)] = [
+            ("5 hours", nil, limits.fiveHour, nil),
+            ("7 days", nil, limits.sevenDay, nil),
+            ("Fable", "7d", limits.fable, Self.fableTint),
         ]
-        for (title, value, resets) in rows {
-            guard let value else { continue }
-            var tail = "\(value)%"
-            if let resets, resets > Date().timeIntervalSince1970 {
-                tail += "  ·  resets in " + Self.until(resets)
-            }
-            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            item.attributedTitle = NSAttributedString(
-                string: "  \(title)   \(tail)",
-                attributes: [
-                    .foregroundColor: value >= 90 ? NSColor.systemRed
-                        : (value >= 75 ? NSColor.systemOrange : NSColor.labelColor),
-                    .font: NSFont.systemFont(ofSize: 12),
-                ])
+        let now = Date().timeIntervalSince1970
+        for (title, badge, window, accent) in rows {
+            guard let window else { continue }
+            let resets = window.resets.flatMap { $0 > now ? Self.until($0) : nil }
+            let item = NSMenuItem(title: "\(title) \(window.used)%", action: nil, keyEquivalent: "")
+            item.view = LimitRowView(title: title, badge: badge, used: window.used, resets: resets,
+                                     accent: accent, width: boxWidth)
+            // Read-only: a click on the row must not close the menu the way an enabled item
+            // without an action would. The view draws itself regardless of the item's state.
             item.isEnabled = false
             menu.addItem(item)
         }
-        let age = (Date().timeIntervalSince1970 - limits.ts).clampedInt / 60
+        let age = (now - limits.ts).clampedInt / 60
         menu.addItem(header(age < 1 ? "  just measured" : "  measured \(age) min ago"))
     }
+
+    /// Fable's own hue in the section. systemIndigo rather than a hand-picked purple: it is
+    /// tuned by the system for both appearances and for the increased-contrast setting, and it
+    /// is the one accent in the menu the account bars never use, so the row cannot be
+    /// mistaken for a third account window.
+    static let fableTint = NSColor.systemIndigo
 
     private static func until(_ stamp: Double) -> String {
         let left = (stamp - Date().timeIntervalSince1970).clampedInt
         let hours = left / 3600, minutes = (left % 3600) / 60
+        // A weekly window is days away, and "76h 12m" is arithmetic the reader has to do; the
+        // minutes are noise at that range, so they go.
+        if hours >= 24 { return "\(hours / 24)d \(hours % 24)h" }
         return hours > 0 ? "\(hours)h \(minutes)m" : "\(minutes)m"
     }
 
