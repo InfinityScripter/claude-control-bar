@@ -13,13 +13,13 @@ from, and are kept so the history reads continuously.
 - **Fable's weekly limit in the Limits section.** Plans with the model get a third row, *Fable*
   with a small *7d* badge, under the account's 5-hour and 7-day windows: the same figure and
   reset time, in the indigo the account bars never use, so it reads as the model's own slice
-  of the week. The usage endpoint reports the window under the codename `nimbus_quill`;
-  the row is absent, not empty, on plans that report no such window. `/mcp-health` lists it
-  too.
+  of the week. The window is read from the usage endpoint's per-model `limits` list; the
+  row is absent, not empty, on plans that report no such window. `/mcp-health` lists it too.
 
 ### Changed
-- The Limits rows are drawn as bars — name, capsule fill, figure, reset time — instead of a
-  line of text each, using the same honest fill as the strip beside the menu bar icon.
+- The Limits rows are drawn as bars instead of a line of text each: the name and figure on
+  one line, a full-width capsule fill under them with the reset countdown, using the same
+  honest fill as the strip beside the menu bar icon.
 
 ## [0.10.1] - 2026-09-08
 

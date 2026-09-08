@@ -1194,6 +1194,31 @@ class UsageEndpoint(unittest.TestCase):
         }, now=1)
         self.assertIn("seven_day_opus", record)
 
+    def test_окно_fable_берётся_из_массива_limits(self):
+        """Реальная форма ответа: Fable — элемент limits[] с kind=weekly_scoped, не верхний
+        ключ. Прочие верхние окна (тот же nimbus_quill) Fable не являются."""
+        record = mcpbar.usage_record({
+            "five_hour": {"utilization": 6, "resets_at": None},
+            "seven_day": {"utilization": 60, "resets_at": None},
+            "nimbus_quill": {"utilization": 0, "resets_at": None},
+            "limits": [
+                {"kind": "five_hour", "percent": 6},
+                {"kind": "weekly_scoped", "percent": 12.4, "resets_at": "2026-09-13T07:00:00Z",
+                 "is_active": True, "scope": {"model": {"display_name": "Fable"}}},
+            ],
+        }, now=1)
+        self.assertEqual(record["seven_day_fable"],
+                         {"used_percentage": 12, "resets_at": 1_789_282_800})
+        self.assertIn("nimbus_quill", record)
+
+    def test_массив_limits_без_fable_не_рождает_окно(self):
+        record = mcpbar.usage_record({
+            "five_hour": {"utilization": 6, "resets_at": None},
+            "limits": [{"kind": "weekly_scoped", "percent": 3,
+                        "scope": {"model": {"display_name": "Opus"}}}, "garbage", None],
+        }, now=1)
+        self.assertNotIn("seven_day_fable", record)
+
     def test_пустой_ответ_не_рождает_запись(self):
         self.assertIsNone(mcpbar.usage_record({}, now=1))
         self.assertIsNone(mcpbar.usage_record({"error": "x"}, now=1))
@@ -1662,7 +1687,7 @@ class ReportResilience(unittest.TestCase):
                               "ts": 1, "pct": 42}],
                 "limits": {"ts": time.time(), "source": "oauth", "five_hour": 3,
                            "seven_day": {"used_percentage": 55, "resets_at": None},
-                           "nimbus_quill": {"used_percentage": 17, "resets_at": None}},
+                           "seven_day_fable": {"used_percentage": 17, "resets_at": None}},
             }, fh)
 
     def tearDown(self):

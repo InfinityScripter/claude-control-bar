@@ -30,18 +30,14 @@ struct Limits {
     let source: String
     let ts: Double
 
-    /// Anthropic names the per-model weekly windows `seven_day_<model>` (seven_day_opus,
-    /// seven_day_sonnet, ...) and both writers copy the key through untouched. The usage
-    /// endpoint does not follow that pattern for Fable: on a plan with the model it reports a
-    /// window called `nimbus_quill` beside five_hour and seven_day and nothing else — an
-    /// internal codename, read as the Fable window because it is the only one the plan gains.
-    /// The spelled-out name is kept first in case the endpoint ever catches up with the
-    /// convention, and any other key carrying the model's name is the fallback — a renamed
-    /// window should keep the row rather than silently drop it.
-    static let fableKeys = ["seven_day_fable", "nimbus_quill"]
-
+    /// The usage endpoint carries the Fable window inside its `limits[]` array (a weekly_scoped
+    /// entry for the model), and scripts/mcpbar.py lifts it out under `seven_day_fable`, the
+    /// name the per-model windows follow (seven_day_opus, seven_day_sonnet). Any other key
+    /// carrying the model's name is the fallback, so a renamed window keeps the row rather
+    /// than silently dropping it. Nothing else qualifies: the endpoint also reports windows
+    /// under codenames, and a row that guesses one of those is Fable would be a lie.
     static func fableKey(in keys: [String]) -> String? {
-        if let known = fableKeys.first(where: { keys.contains($0) }) { return known }
+        if keys.contains("seven_day_fable") { return "seven_day_fable" }
         return keys.filter { $0 != "ts" && $0 != "source" && $0.lowercased().contains("fable") }
             .sorted().first
     }

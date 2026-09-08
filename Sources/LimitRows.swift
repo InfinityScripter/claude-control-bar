@@ -1,19 +1,18 @@
 import Cocoa
 
-/// One limit window as a menu row: name on the left, a capsule bar in the middle, the figure and
-/// the reset time on the right. A bar, because the three windows are read as a set — "which one
-/// is filling up" is a glance at three fills, and three numbers in a column need reading.
+/// One limit window as a menu row, in two tiers: the name and the figure on the first line,
+/// a full-width capsule bar with the reset countdown under them. Stacked rather than inline
+/// because the menu is 300pt wide: a bar that shares its line with a name, a figure and a time
+/// gets 64pt, and 6% of 64pt is a dot. The whole width makes the three windows comparable at
+/// a glance, which is the point of drawing bars instead of printing numbers.
 ///
-/// The bar is the same honest fill the menu bar gauge draws (Gauge.fillWidth): straight-edged,
+/// The fill is the same honest one the menu bar gauge draws (Gauge.fillWidth): straight-edged,
 /// clipped by the capsule, one device pixel floor above zero — so the row in the menu and the
-/// strip beside the icon never disagree about what 18% looks like.
+/// strip beside the icon never disagree about what a small value looks like.
 final class LimitRowView: NSView {
-    static let rowH: CGFloat = 26
-    // The width budget is the default 300pt box: 14 + 72 + 8 + 64 + 8 + 36 + 8 leaves 76pt for
-    // the reset time, enough for "↻ 76h 12m" at 11pt. A longer bar looked better on its own
-    // and pushed the reset time into an ellipsis on every row.
-    private static let pad: CGFloat = 14, barW: CGFloat = 64, barH: CGFloat = 5
-    private static let titleW: CGFloat = 72, pctW: CGFloat = 36, gap: CGFloat = 8
+    static let rowH: CGFloat = 38
+    private static let pad: CGFloat = 14, barH: CGFloat = 6
+    private static let lineY: CGFloat = 20, barY: CGFloat = 8, resetW: CGFloat = 78
 
     private let title = NSTextField(labelWithString: "")
     private let badge = NSTextField(labelWithString: "")
@@ -33,12 +32,11 @@ final class LimitRowView: NSView {
         autoresizingMask = [.width]
 
         let level = Gauge.level(value)
-        let h = Self.rowH
         title.stringValue = text
         title.font = .menuFont(ofSize: 0)
         title.textColor = .labelColor
         title.sizeToFit()
-        title.setFrameOrigin(NSPoint(x: Self.pad, y: (h - title.frame.height) / 2))
+        title.setFrameOrigin(NSPoint(x: Self.pad, y: Self.lineY - 1))
         addSubview(title)
 
         // A tiny capsule after the name: the Fable window is a weekly one, and the row would
@@ -53,7 +51,8 @@ final class LimitRowView: NSView {
             badge.layer?.backgroundColor = (accent ?? NSColor.labelColor).withAlphaComponent(0.14).cgColor
             badge.alignment = .center
             let bw = badge.frame.width + 8, bh = badge.frame.height + 1
-            badge.frame = NSRect(x: title.frame.maxX + 5, y: ((h - bh) / 2).rounded(), width: bw, height: bh)
+            badge.frame = NSRect(x: title.frame.maxX + 5,
+                                 y: title.frame.midY - bh / 2, width: bw, height: bh)
             addSubview(badge)
         }
 
@@ -61,20 +60,19 @@ final class LimitRowView: NSView {
         percent.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
         percent.textColor = level ?? .labelColor
         percent.alignment = .right
-        percent.frame = NSRect(x: Self.pad + Self.titleW + Self.gap + Self.barW + Self.gap,
-                               y: (h - 16) / 2, width: Self.pctW, height: 16)
+        percent.frame = NSRect(x: width - Self.pad - 48, y: Self.lineY - 1, width: 48, height: 16)
+        percent.autoresizingMask = [.minXMargin]
         addSubview(percent)
 
-        // A glyph instead of "resets in": the words cost 50pt the row does not have, and the
-        // arrow beside a duration reads the same way the battery menu's "until full" does.
+        // A glyph instead of "resets in": the arrow beside a duration reads the way the battery
+        // menu's "until full" does, and leaves the line to the bar.
         reset.stringValue = resets.map { "\u{21BB} \($0)" } ?? ""
-        reset.font = .systemFont(ofSize: 11)
+        reset.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         reset.textColor = .secondaryLabelColor
         reset.alignment = .right
-        reset.lineBreakMode = .byTruncatingTail
-        let rx = percent.frame.maxX + Self.gap
-        reset.frame = NSRect(x: rx, y: (h - 14) / 2, width: max(width - rx - Self.pad, 0), height: 14)
-        reset.autoresizingMask = [.width]
+        reset.frame = NSRect(x: width - Self.pad - Self.resetW, y: Self.barY - 4,
+                             width: Self.resetW, height: 13)
+        reset.autoresizingMask = [.minXMargin]
         addSubview(reset)
 
         // Screen readers get the sentence the bar draws.
@@ -86,15 +84,18 @@ final class LimitRowView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func draw(_ dirtyRect: NSRect) {
-        let x = Self.pad + Self.titleW + Self.gap
-        let y = ((Self.rowH - Self.barH) / 2).rounded()
+        // The bar stops short of the reset time when there is one; a window with no known
+        // reset takes the whole width rather than leaving a gap that reads as a missing label.
+        let trailing = reset.stringValue.isEmpty ? 0 : Self.resetW + 8
+        let x = Self.pad, w = bounds.width - Self.pad * 2 - trailing
+        let y = Self.barY - Self.barH / 2 + 2
         let radius = Self.barH / 2
-        let track = NSBezierPath(roundedRect: NSRect(x: x, y: y, width: Self.barW, height: Self.barH),
+        let track = NSBezierPath(roundedRect: NSRect(x: x, y: y, width: w, height: Self.barH),
                                  xRadius: radius, yRadius: radius)
         NSColor.labelColor.withAlphaComponent(0.12).setFill()
         track.fill()
         let scale = window?.backingScaleFactor ?? 2
-        let filled = Gauge.fillWidth(value, trackWidth: Self.barW, scale: scale)
+        let filled = Gauge.fillWidth(value, trackWidth: w, scale: scale)
         guard filled > 0 else { return }
         NSGraphicsContext.current?.saveGraphicsState()
         track.setClip()
