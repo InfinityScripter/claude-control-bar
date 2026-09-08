@@ -1661,7 +1661,8 @@ class ReportResilience(unittest.TestCase):
                 "sessions": [{"id": "abcd1234", "project": "проект", "entrypoint": "cli",
                               "ts": 1, "pct": 42}],
                 "limits": {"ts": time.time(), "source": "oauth", "five_hour": 3,
-                           "seven_day": {"used_percentage": 55, "resets_at": None}},
+                           "seven_day": {"used_percentage": 55, "resets_at": None},
+                           "seven_day_fable": {"used_percentage": 17, "resets_at": None}},
             }, fh)
 
     def tearDown(self):
@@ -1675,6 +1676,11 @@ class ReportResilience(unittest.TestCase):
     def test_окно_лимитов_не_словарём_пропускается(self):
         text = mcpbar.report()
         self.assertIn("55", text)
+
+    def test_недельное_окно_fable_показывается_своей_строкой(self):
+        text = mcpbar.report()
+        self.assertIn("Fable", text)
+        self.assertIn(" 17%", text)
 
 
 class SeamContract(unittest.TestCase):

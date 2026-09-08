@@ -1097,4 +1097,43 @@ check(NeedsYouSound.choices.allSatisfy { NSSound(named: NSSound.Name($0)) != nil
 try? FileManager.default.removeItem(atPath: dir)
 try? FileManager.default.removeItem(atPath: sessionsRoot)
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
+
+// MARK: Limits — the third window is Fable's, and it is optional
+// limits.json is written by two scripts that copy the endpoint's keys through untouched; the
+// Fable window arrives as seven_day_fable beside seven_day_opus and friends. It is a row of its
+// own in the menu, so the parse must find it, must survive its absence, and must not be fooled
+// by the fractional percentage the writers are supposed to have rounded.
+let fullLimits = Limits(json: [
+    "ts": 1_785_000_000.0, "source": "oauth",
+    "five_hour": ["used_percentage": 42, "resets_at": 1_785_003_600.0],
+    "seven_day": ["used_percentage": 71, "resets_at": 1_785_400_000.0],
+    "seven_day_opus": ["used_percentage": 9],
+    "seven_day_fable": ["used_percentage": 17, "resets_at": 1_785_400_000.0],
+])
+check(fullLimits?.fiveHour?.used == 42 && fullLimits?.sevenDay?.used == 71,
+      "the account windows read as before")
+check(fullLimits?.fable?.used == 17, "seven_day_fable is the Fable window")
+check(fullLimits?.fable?.resets == 1_785_400_000.0, "the Fable window keeps its reset time")
+check(fullLimits?.fable?.fraction == 0.17, "the fraction feeds the same gauge maths as the bars")
+check(fullLimits?.source == "oauth" && fullLimits?.ts == 1_785_000_000.0, "source and stamp survive")
+
+let noFable = Limits(json: ["ts": 1.0, "five_hour": ["used_percentage": 3]])
+check(noFable?.fable == nil && noFable?.isEmpty == false, "a plan without Fable has no Fable row")
+check(Limits(json: ["ts": 1.0, "source": "statusline"]) == nil, "a file with no window is no data")
+
+// A renamed window keeps the row; a served-up spelling other than the canonical one is still
+// the same limit, and dropping it would look like the plan lost the model.
+check(Limits.fableKey(in: ["seven_day", "weekly_fable"]) == "weekly_fable",
+      "another key carrying the model's name is the fallback")
+check(Limits.fableKey(in: ["seven_day_fable", "fable_beta"]) == "seven_day_fable",
+      "the canonical key wins over other matches")
+check(Limits.fableKey(in: ["seven_day", "five_hour"]) == nil, "no key, no window")
+
+// hooks/statusline.py rounds on the way in; a writer that forgets must not make the row vanish
+// with the rest of the file still readable — and must not crash on it either.
+let fractional = Limits(json: ["ts": 1.0, "seven_day_fable": ["used_percentage": 4.2],
+                               "five_hour": ["used_percentage": 5]])
+check(fractional?.fable == nil && fractional?.fiveHour?.used == 5,
+      "a fractional Fable figure drops that window alone")
+
 exit(failures == 0 ? 0 : 1)

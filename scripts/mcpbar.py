@@ -106,6 +106,7 @@ STRINGS = {
     "session.spent": ("{used} of {total}", "{used} из {total}"),
     "limits.five": ("5 hours", "5 часов"),
     "limits.seven": ("7 days", "7 дней"),
+    "limits.fable": ("Fable, 7 days", "Fable, 7 дней"),
     "limits.age": ("data {n} min old, source: {src}", "данным {n} мин, источник: {src}"),
     "limits.none": ("not measured yet", "ещё не измерены"),
     "error.check": ("Check failed: {e}", "Ошибка проверки: {e}"),
@@ -1852,9 +1853,13 @@ def report(force=False):
         out.append("")
 
     limits = data.get("limits") or {}
-    if limits.get("five_hour") or limits.get("seven_day"):
+    # The weekly Fable window is per model and arrives only on plans that have it; the app
+    # reads the same key (Sources/Model/Limits.swift), so the two must not drift apart.
+    windows = (("five_hour", t("limits.five")), ("seven_day", t("limits.seven")),
+               ("seven_day_fable", t("limits.fable")))
+    if any(limits.get(key) for key, _ in windows):
         out.append(paint(t("head.limits"), "1"))
-        for key, label in (("five_hour", t("limits.five")), ("seven_day", t("limits.seven"))):
+        for key, label in windows:
             block = limits.get(key)
             if isinstance(block, dict) and block.get("used_percentage") is not None:
                 out.append(f"  {label:<{width}}  {block['used_percentage']:>3}%")

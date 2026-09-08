@@ -7,6 +7,19 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [Unreleased]
+
+### Added
+- **Fable's weekly limit in the Limits section.** Plans with the model get a third row, *Fable*
+  with a small *7d* badge, under the account's 5-hour and 7-day windows: the same figure and
+  reset time, in the indigo the account bars never use, so it reads as the model's own slice
+  of the week. The row is absent, not empty, on plans the endpoint reports no such window
+  for. `/mcp-health` lists it too.
+
+### Changed
+- The Limits rows are drawn as bars — name, capsule fill, figure, reset time — instead of a
+  line of text each, using the same honest fill as the strip beside the menu bar icon.
+
 ## [0.10.1] - 2026-09-08
 
 ### Fixed
