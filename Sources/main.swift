@@ -154,6 +154,7 @@ final class StatusController: NSObject, NSWindowDelegate {
     var iconSystem = false // false = brand Orange; true = adaptive black/white (template image)
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
     var oauthLimits = true          // poll Anthropic's usage endpoint for the 5h/7d/Fable limits
+    var analytics = true            // the anonymous daily ping (Sources/Analytics.swift); env var and endpoint also gate it
     var sessionWord: [String: String] = [:] // id -> current thinking word; re-picked on each entry into "thinking"
     var soundThreshold: Double = 0  // 0 = off; else the min turn length (seconds) that chimes on completion
     var needsYouSound = NeedsYouSound.defaultChoice  // system sound name; "" = off
@@ -231,6 +232,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         if d.object(forKey: "iconSystem") != nil { iconSystem = d.bool(forKey: "iconSystem") }
         if d.object(forKey: "thinkingWords") != nil { useThinkingWords = d.bool(forKey: "thinkingWords") }
         if d.object(forKey: "oauthLimits") != nil { oauthLimits = d.bool(forKey: "oauthLimits") }
+        if d.object(forKey: "analytics") != nil { analytics = d.bool(forKey: "analytics") }
         if d.object(forKey: "soundThreshold") != nil { soundThreshold = d.double(forKey: "soundThreshold") }
         if let s = d.string(forKey: "needsYouSound") { needsYouSound = s }
         if let s = d.string(forKey: "animStyle"), let st = AnimStyle(rawValue: s) { animStyle = st }
@@ -348,6 +350,12 @@ final class StatusController: NSObject, NSWindowDelegate {
         checkForUpdate()
         announceVersionChange()
         warmCanBuildFromSource()
+        // Hourly, not daily: the app runs for weeks, and a 24h timer that fires while the Mac is
+        // asleep is simply late. The throttle inside decides whether a tick sends anything.
+        sendAnalyticsPingIfDue()
+        Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+            self?.sendAnalyticsPingIfDue()
+        }
     }
 
     // Bundles this project shipped under earlier names. See identity.env: upstream's

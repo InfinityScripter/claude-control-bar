@@ -1,0 +1,14 @@
+name = "ccb-ping"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+# Workers Analytics Engine: free tier, no IP stored unless the code stores it (it does not),
+# retention 90 days on Cloudflare's side. The dataset name is the table you query below.
+[[analytics_engine_datasets]]
+binding = "PINGS"
+dataset = "ccb_pings"
+
+# Keep observability off: Workers Logs would record request metadata, which is exactly the
+# thing PRIVACY.md says the receiver does not keep.
+[observability]
+enabled = false

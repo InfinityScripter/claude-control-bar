@@ -1146,5 +1146,27 @@ let fractional = Limits(json: ["ts": 1.0, "seven_day_fable": ["used_percentage":
 check(fractional?.fable == nil && fractional?.fiveHour?.used == 5,
       "a fractional Fable figure drops that window alone")
 
+// The anonymous ping. The whole point is what it cannot do: line two pings up into a history.
+let day: TimeInterval = 24 * 3600
+let ping = AnalyticsPing.payload(version: "0.13.0", osMajor: 15, arch: "arm64", channel: "brew")
+check(Set(ping.keys) == ["v", "app", "os", "arch", "channel"],
+      "the payload has exactly the five documented fields: \(ping.keys.sorted())")
+check((ping["os"] as? String) == "15" && (ping["v"] as? Int) == 1, "major OS version and schema ride as documented")
+check(ping.values.allSatisfy { $0 is String || $0 is Int }, "no nested values, nothing that could carry an id")
+check(AnalyticsPing.channel(brewManaged: true, ownerChannel: "plugin") == "brew",
+      "Homebrew's Caskroom wins over owner.json")
+check(AnalyticsPing.channel(brewManaged: false, ownerChannel: "plugin") == "plugin", "plugin channel from owner.json")
+check(AnalyticsPing.channel(brewManaged: false, ownerChannel: nil) == "dmg", "no owner.json reads as a DMG install")
+check(AnalyticsPing.channel(brewManaged: false, ownerChannel: "app") == "dmg", "the installer's own 'app' is the DMG channel")
+// Notice first, ping a day later, then one a day — and never without the notice.
+check(!AnalyticsPing.due(now: 10 * day, lastAttempt: nil, noticedAt: nil), "no notice, no ping")
+check(!AnalyticsPing.due(now: 10 * day, lastAttempt: nil, noticedAt: 9.5 * day), "a ping within a day of the notice is refused")
+check(AnalyticsPing.due(now: 10 * day, lastAttempt: nil, noticedAt: 9 * day), "the first ping is due a day after the notice")
+check(!AnalyticsPing.due(now: 10 * day, lastAttempt: 9.5 * day, noticedAt: 1), "one attempt per day")
+check(AnalyticsPing.due(now: 10 * day, lastAttempt: 9 * day, noticedAt: 1), "and the next one a day later")
+check(!AnalyticsPing.configured || AnalyticsPing.endpoint.hasPrefix("https://"),
+      "a configured endpoint is https or it is nothing")
+check(["arm64", "x86_64", "other"].contains(AnalyticsPing.arch), "arch is one of three words")
+
 print(failures == 0 ? "\nall model checks passed" : "\n\(failures) failed")
 exit(failures == 0 ? 0 : 1)

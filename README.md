@@ -97,6 +97,7 @@ Server and tool switches apply to new sessions: Claude Code assembles the tool l
 - **Timer in menu bar** — the running turn's elapsed time next to the icon. The session rows always show theirs.
 - **Thinking words** — one of Claude Code's own spinner verbs ("Manifesting…") in place of "Thinking…".
 - **Limits via Anthropic API** — the usage poll behind the 5h/7d bars; off means the request never happens (see [PRIVACY.md](PRIVACY.md)).
+- **Anonymous usage ping** — once a day: app version, macOS version, chip, install channel, and no identifier, so the project can count copies in use. Off means the request never happens; `CONTROL_BAR_NO_ANALYTICS=1` in the environment does the same. Exact bytes in [PRIVACY.md](PRIVACY.md).
 
 **Appearance**
 

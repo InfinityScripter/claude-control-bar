@@ -1,6 +1,9 @@
 # Privacy
 
-Claude Control Bar collects no data and has no servers. Everything it does happens on your Mac.
+Claude Control Bar keeps no data about you and runs no account or cloud service. Everything it
+shows happens on your Mac. The one thing it sends the developer is a daily count of one, with
+nothing in it that names a machine — described in full under "The anonymous ping" below, with
+the switch that stops it.
 
 ## Network
 
@@ -19,9 +22,46 @@ Claude Control Bar collects no data and has no servers. Everything it does happe
   locally, for a release that shipped without a DMG). This request only ever happens on that
   click — the daily check above never downloads anything.
 
-Nothing is sent to the developer — GitHub, Homebrew and Anthropic see that a request arrived;
-the developer never does. Those are the only requests the app makes for itself. There is no
-telemetry, no crash reporting and no analytics.
+GitHub, Homebrew and Anthropic see that a request arrived; the developer never does. Those, and
+the ping in the next section, are the only requests the app makes for itself. There is no crash
+reporting and no analytics kit of any kind in the binary.
+
+## The anonymous ping
+
+Once a day the app tells the project it exists, so there is an answer to "how many people use
+this". That is the entire purpose, and the ping is shaped so it can answer nothing else.
+
+- **What is sent.** One `POST` of exactly this, to the project's own receiver (a Cloudflare
+  Worker whose source is in `tools/analytics/`; the address is the `endpoint` constant in
+  `Sources/Model/AnalyticsPing.swift`):
+
+  ```json
+  {"v":1,"app":"0.13.0","os":"15","arch":"arm64","channel":"brew"}
+  ```
+
+  The app version, the macOS major version, the CPU architecture, and which of the three
+  install channels this copy came through. Each field is a value shared by thousands of Macs.
+- **What is not sent.** No identifier of any kind: no install UUID, no hardware id, no
+  hostname, no user name, no locale, no time zone, no minor OS version, no Mac model. Two
+  pings from the same machine cannot be told from two pings from two machines, which is what
+  makes the count a count and not a history.
+- **What the receiver keeps.** One row per ping with those four fields and a timestamp, for 90
+  days. The Worker never reads the request's IP address, sets no cookie, and has request
+  logging switched off; the request itself is made from a fresh session with no cookie jar, so
+  nothing the server could set would ride along on the next day's ping. Redirects are refused
+  outright, the same way the limits poll refuses them.
+- **When.** Not on first launch: the first launch posts a notification saying the ping exists,
+  and the first ping is a full day later, so there is time to switch it off before anything is
+  sent. After that, at most one a day, counted from the last attempt.
+- **Off.** Settings → General → *Anonymous usage ping*. Or set `CONTROL_BAR_NO_ANALYTICS` in
+  the app's environment (any value), which wins over the setting, the way `HOMEBREW_NO_ANALYTICS`
+  does for brew. Either way the request never happens. A build whose endpoint constant is empty
+  sends nothing and shows no switch.
+- **Why opt-out and not opt-in.** An opt-in count of a menu bar app measures how many people
+  open Settings, not how many use the app. Homebrew's analytics work the same way, with the same
+  three protections: no identifier in the payload, no IP stored, a notice before the first
+  event. If any of these three ever changes, this page changes first and the version's
+  changelog says so.
 
 One indirect kind of traffic is worth naming: the MCP health check runs `claude mcp list` and a
 `tools/list` round trip, which **starts your configured MCP servers** — every ten minutes, and
