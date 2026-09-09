@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Claude Control Bar — финальный макет</title>
+<style>
+  :root {
+    --ink: #1d1d1f; --ink2: rgba(60,60,67,0.62); --ink3: rgba(60,60,67,0.38);
+    --card: rgba(0,0,0,0.028); --cardline: rgba(0,0,0,0.070);
+    --green: #30a14e; --red: #d1242f; --indigo: #5856d6; --orange: #cf6a3f;
+    --track: rgba(0,0,0,0.12);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 40px 32px 72px;
+    background: linear-gradient(160deg, #dfe4ec 0%, #cdd5e2 45%, #c3ccdd 100%);
+    font: 13px/1.35 -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+    color: var(--ink); -webkit-font-smoothing: antialiased; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  .lede { color: #4a5060; font-size: 14px; margin: 0 0 30px; max-width: 980px; line-height: 1.5; }
+  .row { display: flex; gap: 30px; align-items: flex-start; flex-wrap: wrap; }
+  .col { width: 330px; }
+  .col > h2 { font-size: 14px; font-weight: 600; margin: 0 0 10px; }
+  .note { font-size: 12.5px; color: #3c4252; line-height: 1.5; margin-top: 14px;
+          background: rgba(255,255,255,0.55); border: 0.5px solid rgba(0,0,0,0.08);
+          border-radius: 8px; padding: 10px 12px; }
+  .note b { font-weight: 600; }
+  .gone { text-decoration: line-through; color: var(--ink3); }
+
+  .panel { width: 320px; border-radius: 13px; padding: 9px;
+    background: rgba(246,246,248,0.93); border: 0.5px solid rgba(0,0,0,0.13);
+    box-shadow: 0 12px 34px rgba(0,0,0,0.20), 0 1px 2px rgba(0,0,0,0.10); }
+
+  /* лимиты — тонкая полоска, всегда видна */
+  .strip { display: flex; gap: 5px; }
+  .strip .u { flex: 1; background: rgba(0,0,0,0.032); border-radius: 8px; padding: 6px 8px 7px; }
+  .strip .lbl { font-size: 9px; font-weight: 600; letter-spacing: .35px; color: var(--ink3); }
+  .strip .num { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums;
+                line-height: 17px; letter-spacing: -0.2px; }
+
+  .tabs { display: flex; gap: 2px; background: rgba(0,0,0,0.045); border-radius: 8px;
+          padding: 2px; margin-top: 7px; }
+  .tab { flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px;
+         padding: 5px 0; border-radius: 6px; font-size: 12px; color: var(--ink2); }
+  .tab.on { background: #fff; color: var(--ink); font-weight: 500;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.10); }
+  .tab svg { width: 14px; height: 14px; }
+  .tab .cnt { font-size: 10px; font-variant-numeric: tabular-nums; color: var(--ink3); }
+
+  .sect { font-size: 10px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase;
+          color: var(--ink2); margin: 11px 4px 5px; display: flex; align-items: center; gap: 6px; }
+  .sect .acc { flex: 1; letter-spacing: 0; text-transform: none; font-weight: 400; color: var(--ink3);
+               text-align: right; }
+  .sect .ic { color: var(--ink2); display: flex; }
+  .sect .ic svg { width: 13px; height: 13px; }
+
+  .card { background: var(--card); border: 0.7px solid var(--cardline); border-radius: 10px; }
+  .pad { padding: 8px 10px; }
+  .divide { border-top: 0.7px solid var(--cardline); }
+
+  .srow { display: flex; align-items: center; gap: 8px; padding: 7px 10px; }
+  .srow .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .srow .nm { font-size: 13px; font-weight: 500; }
+  .srow .meta { font-size: 11px; color: var(--ink2); margin-top: 1px; }
+  .srow .grow { flex: 1; min-width: 0; }
+  .srow .val { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ink2); }
+  .tag { font-size: 9px; font-weight: 600; letter-spacing: 0.3px; color: var(--ink2);
+         background: rgba(0,0,0,0.07); border-radius: 4px; padding: 1px 5px; }
+  .bar { height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
+  .bar > i { display: block; height: 100%; border-radius: 2px; }
+
+  .grp { padding: 6px 10px 2px; font-size: 9.5px; letter-spacing: .4px; text-transform: uppercase;
+         color: var(--ink3); }
+
+  .foot { display: flex; align-items: center; gap: 8px; margin-top: 9px; padding: 0 3px; }
+  .fbtn { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink2);
+          padding: 5px 9px; border-radius: 7px; background: rgba(0,0,0,0.035); }
+  .fbtn svg { width: 13px; height: 13px; }
+
+  .sw { width: 25px; height: 15px; border-radius: 8px; flex: none; position: relative; }
+  .sw i { position: absolute; top: 1.5px; width: 12px; height: 12px; border-radius: 50%;
+          background: #fff; box-shadow: 0 0.5px 1.5px rgba(0,0,0,0.30); }
+  .sw.on { background: #3478f6; } .sw.on i { right: 1.5px; }
+  .sw.off { background: rgba(0,0,0,0.16); } .sw.off i { left: 1.5px; }
+  .chev { color: var(--ink3); font-size: 11px; }
+</style>
+</head>
+<body>
+
+<h1>Финальный макет: две вкладки, минимум лишнего</h1>
+<p class="lede">Вкладок ровно две — «смотреть» и «настраивать». Лимиты закреплены сверху тонкой полоской и видны на обеих.
+Из низа панели ушло всё, что было списком строк: «Check MCP now» стал круговой стрелкой в заголовке секции MCP,
+«Open settings.json» — иконкой рядом с ней, номер версии уехал в настройки.</p>
+
+<div class="row">
+
+<!-- ═══ вкладка Sessions ═══ -->
+<div class="col">
+  <h2>Вкладка Sessions — что происходит сейчас</h2>
+
+  <div class="panel">
+    <div class="strip">
+      <div class="u"><div class="lbl">5 HOURS</div><div class="num">36%</div>
+        <div class="bar" style="margin-top:4px"><i style="width:36%;background:rgba(60,60,67,0.50)"></i></div></div>
+      <div class="u"><div class="lbl">7 DAYS</div><div class="num">70%</div>
+        <div class="bar" style="margin-top:4px"><i style="width:70%;background:#c9822f"></i></div></div>
+      <div class="u"><div class="lbl">FABLE 7D</div><div class="num" style="color:var(--red)">94%</div>
+        <div class="bar" style="margin-top:4px"><i style="width:94%;background:var(--red)"></i></div></div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab on">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2.5" y="3.5" width="15" height="13" rx="3"/><path d="M6 8l2.5 2.5L6 13M10.5 13H14"/></svg>
+        Sessions <span class="cnt">2</span></div>
+      <div class="tab">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M7 2.5v4M13 2.5v4"/><rect x="4.5" y="6.5" width="11" height="5.5" rx="2"/><path d="M10 12v5"/></svg>
+        MCP <span class="cnt">8/9</span></div>
+    </div>
+
+    <div style="height:9px"></div>
+    <div class="card">
+      <div class="srow"><span class="dot" style="background:var(--orange)"></span>
+        <span class="grow"><div class="nm">talalaev-m</div><div class="meta">main · Thinking · 14s</div></span>
+        <span class="val">15%</span><span class="tag">APP</span></div>
+      <div class="srow divide"><span class="dot" style="background:var(--orange)"></span>
+        <span class="grow"><div class="nm">talalaev-m</div><div class="meta">main · Working · 22s</div></span>
+        <span class="val">36%</span><span class="tag">APP</span></div>
+      <div class="srow divide"><span class="dot" style="background:rgba(0,0,0,0.20)"></span>
+        <span class="grow"><div class="nm">claude-control-bar</div><div class="meta">main · Idle · 4m</div></span>
+        <span class="val">72%</span><span class="tag">CLI</span></div>
+    </div>
+
+    <div class="foot">
+      <span style="flex:1;font-size:10.5px;color:var(--ink3)">measured 1 min ago</span>
+      <div class="fbtn">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="10" cy="10" r="2.6"/><path d="M10 2.8v2M10 15.2v2M2.8 10h2M15.2 10h2M4.9 4.9l1.4 1.4M13.7 13.7l1.4 1.4M15.1 4.9l-1.4 1.4M6.3 13.7l-1.4 1.4"/></svg>
+        Settings</div>
+      <div class="fbtn">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10 3v7"/><path d="M6 5.6a6 6 0 1 0 8 0"/></svg>
+        Quit</div>
+    </div>
+  </div>
+
+  <div class="note"><b>Что видно сразу при открытии:</b> три числа лимитов, сколько сессий живо и что каждая делает.
+  Больше на этой вкладке ничего нет.</div>
+</div>
+
+<!-- ═══ вкладка MCP ═══ -->
+<div class="col">
+  <h2>Вкладка MCP — что настраивать</h2>
+
+  <div class="panel">
+    <div class="strip">
+      <div class="u"><div class="lbl">5 HOURS</div><div class="num">36%</div>
+        <div class="bar" style="margin-top:4px"><i style="width:36%;background:rgba(60,60,67,0.50)"></i></div></div>
+      <div class="u"><div class="lbl">7 DAYS</div><div class="num">70%</div>
+        <div class="bar" style="margin-top:4px"><i style="width:70%;background:#c9822f"></i></div></div>
+      <div class="u"><div class="lbl">FABLE 7D</div><div class="num" style="color:var(--red)">94%</div>
+        <div class="bar" style="margin-top:4px"><i style="width:94%;background:var(--red)"></i></div></div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2.5" y="3.5" width="15" height="13" rx="3"/><path d="M6 8l2.5 2.5L6 13M10.5 13H14"/></svg>
+        Sessions <span class="cnt">2</span></div>
+      <div class="tab on">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M7 2.5v4M13 2.5v4"/><rect x="4.5" y="6.5" width="11" height="5.5" rx="2"/><path d="M10 12v5"/></svg>
+        MCP <span class="cnt">8/9</span></div>
+    </div>
+
+    <div class="sect">
+      <span>8 of 9 connected</span>
+      <span class="acc">327 tools on</span>
+      <span class="ic" title="Check MCP now">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M16.5 10a6.5 6.5 0 1 1-1.9-4.6"/><path d="M16.6 2.8v3h-3"/></svg></span>
+      <span class="ic" title="Open settings.json">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 3H5.5A1.5 1.5 0 0 0 4 4.5v11A1.5 1.5 0 0 0 5.5 17h9a1.5 1.5 0 0 0 1.5-1.5V13"/>
+          <path d="M11 9l6-6M17 3h-4M17 3v4"/></svg></span>
+    </div>
+
+    <div class="card">
+      <div class="grp">Local config</div>
+      <div class="srow" style="padding:4px 10px"><span class="dot" style="background:var(--green)"></span>
+        <span class="grow nm">deepagent</span><span class="val">3/3</span><span class="chev">›</span><span class="sw on"><i></i></span></div>
+      <div class="srow" style="padding:4px 10px"><span class="dot" style="background:var(--green)"></span>
+        <span class="grow nm">stefania-devtools</span><span class="val">82/82</span><span class="chev">›</span><span class="sw on"><i></i></span></div>
+      <div class="srow" style="padding:4px 10px"><span class="dot" style="background:var(--green)"></span>
+        <span class="grow nm">tracker_mcp</span><span class="val">108/108</span><span class="chev">›</span><span class="sw on"><i></i></span></div>
+      <div class="srow" style="padding:4px 10px"><span class="dot" style="background:var(--green)"></span>
+        <span class="grow nm">wiki</span><span class="val">31/31</span><span class="chev">›</span><span class="sw on"><i></i></span></div>
+
+      <div class="grp divide">claude.ai connectors</div>
+      <div class="srow" style="padding:4px 10px"><span class="dot" style="background:rgba(0,0,0,0.16)"></span>
+        <span class="grow nm" style="color:var(--ink3)">Gmail</span><span class="val">24/24</span><span class="sw off"><i></i></span></div>
+      <div class="srow" style="padding:4px 10px"><span class="dot" style="background:rgba(0,0,0,0.16)"></span>
+        <span class="grow nm" style="color:var(--ink3)">Vercel</span><span class="val">34/34</span><span class="sw off"><i></i></span></div>
+
+      <div class="grp divide">From plugins</div>
+      <div class="srow" style="padding:4px 10px"><span class="dot" style="background:var(--red)"></span>
+        <span class="grow nm">mcp-search</span><span class="val" style="color:var(--red)">failed</span><span class="chev">›</span><span class="sw on"><i></i></span></div>
+      <div class="srow" style="padding:4px 10px 7px"><span class="dot" style="background:var(--green)"></span>
+        <span class="grow nm">figma</span><span class="val">41/41</span><span class="chev">›</span><span class="sw on"><i></i></span></div>
+    </div>
+
+    <div class="foot">
+      <span style="flex:1;font-size:10.5px;color:var(--ink3)">6 waiting for authorisation ›</span>
+      <div class="fbtn">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="10" cy="10" r="2.6"/><path d="M10 2.8v2M10 15.2v2M2.8 10h2M15.2 10h2M4.9 4.9l1.4 1.4M13.7 13.7l1.4 1.4M15.1 4.9l-1.4 1.4M6.3 13.7l-1.4 1.4"/></svg>
+        Settings</div>
+      <div class="fbtn">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10 3v7"/><path d="M6 5.6a6 6 0 1 0 8 0"/></svg>
+        Quit</div>
+    </div>
+  </div>
+
+  <div class="note"><b>Две иконки в заголовке секции</b> заменили две строки меню: круговая стрелка — «проверить MCP сейчас»,
+  стрелка из рамки — «открыть settings.json». Шесть серверов, ждущих авторизации, свернулись в одну строку внизу.</div>
+</div>
+
+<!-- ═══ что убрано ═══ -->
+<div class="col">
+  <h2>Что ушло из панели</h2>
+
+  <div class="panel" style="padding: 12px 14px">
+    <div style="font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--ink2);margin-bottom:8px">Было строками меню</div>
+    <div style="font-size:13px;line-height:2.1">
+      <div class="gone">Check MCP now &nbsp;⌘R</div>
+      <div class="gone">Open settings.json</div>
+      <div class="gone">Version 0.12.0</div>
+      <div class="gone">What’s new in 0.12.0</div>
+      <div class="gone">Settings… &nbsp;⌘,</div>
+      <div class="gone">Quit &nbsp;⌘Q</div>
+    </div>
+
+    <div style="border-top:0.7px solid var(--cardline);margin:12px 0 10px"></div>
+
+    <div style="font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--ink2);margin-bottom:8px">Стало</div>
+    <div style="font-size:12.5px;line-height:1.75;color:#3c4252">
+      <div>↻ &nbsp;иконка в заголовке MCP</div>
+      <div>↗ &nbsp;иконка в заголовке MCP</div>
+      <div>→ &nbsp;окно настроек, страница About</div>
+      <div>→ &nbsp;окно настроек, страница About</div>
+      <div>⚙ &nbsp;кнопка внизу панели</div>
+      <div>⏻ &nbsp;кнопка внизу панели</div>
+    </div>
+  </div>
+
+  <div class="note"><b>Клавиши никуда не деваются:</b> ⌘R, ⌘, и ⌘Q продолжают работать, пока панель открыта — просто их
+  больше не нужно показывать шестью строками текста.<br><br>
+  <b>Осталось условным:</b> баннер обновления (появляется, только когда вышла новая версия) и предупреждение о
+  выключенных уведомлениях. Оба показываются поверх вкладок и исчезают, когда причина ушла.</div>
+</div>
+
+</div>
+</body>
+</html>

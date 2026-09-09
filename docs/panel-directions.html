@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Claude Control Bar — макеты нового дизайна</title>
+<style>
+  :root {
+    --ink: #1d1d1f;
+    --ink2: rgba(60,60,67,0.62);
+    --ink3: rgba(60,60,67,0.40);
+    --hair: rgba(0,0,0,0.10);
+    --card: rgba(0,0,0,0.030);
+    --cardline: rgba(0,0,0,0.075);
+    --green: #30a14e;
+    --red: #d1242f;
+    --indigo: #5856d6;
+    --orange: #cf6a3f;
+    --track: rgba(0,0,0,0.13);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 32px 72px;
+    background: linear-gradient(160deg, #dfe4ec 0%, #cdd5e2 45%, #c3ccdd 100%);
+    font: 13px/1.35 -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  .lede { color: #4a5060; font-size: 14px; margin: 0 0 32px; max-width: 900px; line-height: 1.5; }
+  .row { display: flex; gap: 34px; align-items: flex-start; flex-wrap: wrap; }
+  .col { width: 340px; }
+  .col > h2 { font-size: 15px; font-weight: 600; margin: 0 0 2px; }
+  .col > .sub { font-size: 12.5px; color: #4a5060; margin: 0 0 14px; line-height: 1.45; min-height: 34px; }
+  .note { font-size: 12.5px; color: #3c4252; line-height: 1.5; margin-top: 14px;
+          background: rgba(255,255,255,0.55); border: 0.5px solid rgba(0,0,0,0.08);
+          border-radius: 8px; padding: 10px 12px; }
+  .note b { font-weight: 600; }
+
+  /* ── panel chrome ─────────────────────────────────────────── */
+  .panel {
+    width: 320px; border-radius: 13px; padding: 10px;
+    background: rgba(246,246,248,0.92);
+    border: 0.5px solid rgba(0,0,0,0.13);
+    box-shadow: 0 12px 34px rgba(0,0,0,0.20), 0 1px 2px rgba(0,0,0,0.10);
+  }
+  .menu {
+    width: 300px; border-radius: 10px; padding: 5px 0;
+    background: rgba(246,246,248,0.94);
+    border: 0.5px solid rgba(0,0,0,0.13);
+    box-shadow: 0 12px 34px rgba(0,0,0,0.20), 0 1px 2px rgba(0,0,0,0.10);
+  }
+
+  /* ── shared bits ──────────────────────────────────────────── */
+  .sect { font-size: 10px; font-weight: 600; letter-spacing: 0.55px; text-transform: uppercase;
+          color: var(--ink2); margin: 12px 4px 6px; display: flex; justify-content: space-between; }
+  .sect .acc { letter-spacing: 0; text-transform: none; font-weight: 400; color: var(--ink3); }
+  .card { background: var(--card); border: 0.7px solid var(--cardline); border-radius: 10px; }
+  .card + .card { margin-top: 8px; }
+  .pad { padding: 8px 10px; }
+  .divide { border-top: 0.7px solid var(--cardline); }
+
+  .srow { display: flex; align-items: center; gap: 8px; padding: 7px 10px; }
+  .srow .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .srow .nm { font-size: 13px; font-weight: 500; }
+  .srow .meta { font-size: 11px; color: var(--ink2); margin-top: 1px; }
+  .srow .grow { flex: 1; min-width: 0; }
+  .srow .val { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ink2); }
+  .tag { font-size: 9px; font-weight: 600; letter-spacing: 0.3px; color: var(--ink2);
+         background: rgba(0,0,0,0.07); border-radius: 4px; padding: 1px 5px; }
+
+  .bar { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
+  .bar > i { display: block; height: 100%; border-radius: 3px; }
+
+  .tile { flex: 1; background: rgba(0,0,0,0.035); border-radius: 9px; padding: 8px 10px; }
+  .tile .k { font-size: 10.5px; color: var(--ink2); display: flex; align-items: center; gap: 4px; }
+  .tile .v { font-size: 23px; font-weight: 600; letter-spacing: -0.4px; margin-top: 2px;
+             font-variant-numeric: tabular-nums; }
+  .tile .r { font-size: 10px; color: var(--ink3); font-variant-numeric: tabular-nums; }
+
+  .btns { display: flex; gap: 8px; margin-top: 10px; }
+  .btn { flex: 1; text-align: center; font-size: 12.5px; padding: 7px 0; border-radius: 8px;
+         background: rgba(255,255,255,0.85); border: 0.7px solid rgba(0,0,0,0.10); }
+
+  /* tabs */
+  .tabs { display: flex; gap: 2px; background: rgba(0,0,0,0.045); border-radius: 9px;
+          padding: 3px; margin-top: 8px; }
+  .tab { flex: 1; text-align: center; padding: 6px 0; border-radius: 7px; font-size: 11px;
+         color: var(--ink2); }
+  .tab.on { background: #fff; color: var(--ink); font-weight: 500;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.10); }
+  .tab svg { display: block; margin: 0 auto 2px; width: 15px; height: 15px; }
+
+  .mark { text-align: center; padding: 6px 0 2px; }
+  .mark svg { width: 26px; height: 26px; }
+
+  /* menu variant rows */
+  .mrow { display: flex; align-items: center; gap: 8px; padding: 5px 14px; font-size: 13px; }
+  .mrow .grow { flex: 1; }
+  .mrow .kbd { color: var(--ink3); font-size: 12px; }
+  .msep { border-top: 0.5px solid var(--hair); margin: 5px 12px; }
+  .mhead { font-size: 11px; font-weight: 600; color: var(--ink2); padding: 4px 14px 2px; }
+  .mcard { margin: 2px 8px; background: var(--card); border: 0.7px solid var(--cardline);
+           border-radius: 9px; overflow: hidden; }
+
+  .sw { width: 26px; height: 15px; border-radius: 8px; flex: none; position: relative; }
+  .sw i { position: absolute; top: 1.5px; width: 12px; height: 12px; border-radius: 50%;
+          background: #fff; box-shadow: 0 0.5px 1.5px rgba(0,0,0,0.30); }
+  .sw.on { background: #3478f6; } .sw.on i { right: 1.5px; }
+  .sw.off { background: rgba(0,0,0,0.16); } .sw.off i { left: 1.5px; }
+  .chev { color: var(--ink3); font-size: 11px; }
+  .spark { display: block; }
+</style>
+</head>
+<body>
+
+<h1>Claude Control Bar — три направления дизайна</h1>
+<p class="lede">Все три показаны в натуральную величину и на одних и тех же данных, чтобы сравнение было честным.
+Слева направо растёт визуальная амбиция и объём работы.</p>
+
+<div class="row">
+
+<!-- ═══════════ 1. ПАНЕЛЬ СО ВКЛАДКАМИ ═══════════ -->
+<div class="col">
+  <h2>1. Панель со вкладками</h2>
+  <p class="sub">Точная калька референса: своё окно вместо системного меню, значок сверху, ряд вкладок, карточки, кнопки внизу.</p>
+
+  <div class="panel">
+    <div class="mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#cf6a3f" stroke-width="1.6" stroke-linecap="round">
+        <path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4"/>
+      </svg>
+    </div>
+
+    <div class="tabs">
+      <div class="tab">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2.5" y="3.5" width="15" height="13" rx="3"/><path d="M6 8l2.5 2.5L6 13M10.5 13H14"/></svg>
+        Sessions</div>
+      <div class="tab">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 14a7 7 0 1 1 14 0"/><path d="M10 14l3.5-4.5"/></svg>
+        Limits</div>
+      <div class="tab on">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M7 2.5v4M13 2.5v4"/><rect x="4.5" y="6.5" width="11" height="5.5" rx="2"/><path d="M10 12v5"/></svg>
+        MCP</div>
+      <div class="tab">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="10" cy="10" r="2.6"/><path d="M10 2.6v2M10 15.4v2M2.6 10h2M15.4 10h2M4.8 4.8l1.4 1.4M13.8 13.8l1.4 1.4M15.2 4.8l-1.4 1.4M6.2 13.8l-1.4 1.4"/></svg>
+        Settings</div>
+    </div>
+
+    <div class="sect">MCP <span class="acc">8/9 · 327 tools</span></div>
+
+    <div class="card pad" style="display:flex;gap:8px">
+      <div class="tile" style="background:rgba(48,161,78,0.10)">
+        <div class="k">Connected</div>
+        <div class="v" style="color:var(--green)">8<span style="font-size:14px;color:var(--ink3)">/9</span></div>
+      </div>
+      <div class="tile">
+        <div class="k">Tools on</div>
+        <div class="v">327</div>
+      </div>
+    </div>
+
+    <div class="sect">Local config</div>
+    <div class="card">
+      <div class="srow"><span class="dot" style="background:var(--green)"></span>
+        <span class="grow nm">deepagent</span><span class="val">3/3</span><span class="chev">›</span>
+        <span class="sw on"><i></i></span></div>
+      <div class="srow divide"><span class="dot" style="background:var(--green)"></span>
+        <span class="grow nm">stefania-devtools</span><span class="val">82/82</span><span class="chev">›</span>
+        <span class="sw on"><i></i></span></div>
+      <div class="srow divide"><span class="dot" style="background:var(--green)"></span>
+        <span class="grow nm">tracker_mcp</span><span class="val">108/108</span><span class="chev">›</span>
+        <span class="sw on"><i></i></span></div>
+      <div class="srow divide"><span class="dot" style="background:var(--green)"></span>
+        <span class="grow nm">wiki</span><span class="val">31/31</span><span class="chev">›</span>
+        <span class="sw on"><i></i></span></div>
+    </div>
+
+    <div class="sect">From plugins</div>
+    <div class="card">
+      <div class="srow"><span class="dot" style="background:var(--red)"></span>
+        <span class="grow nm">mcp-search</span><span class="val" style="color:var(--red)">failed</span>
+        <span class="chev">›</span><span class="sw on"><i></i></span></div>
+      <div class="srow divide"><span class="dot" style="background:var(--green)"></span>
+        <span class="grow nm">figma</span><span class="val">41/41</span><span class="chev">›</span>
+        <span class="sw on"><i></i></span></div>
+    </div>
+
+    <div class="sect">Waiting for authorisation</div>
+    <div class="card pad" style="display:flex;flex-wrap:wrap;gap:5px">
+      <span class="tag">atlassian</span><span class="tag">datadog</span><span class="tag">github</span>
+      <span class="tag">linear</span><span class="tag">notion</span><span class="tag">slack</span>
+    </div>
+
+    <div class="btns">
+      <div class="btn">Check MCP</div>
+      <div class="btn">Settings</div>
+      <div class="btn">Quit</div>
+    </div>
+  </div>
+
+  <div class="note"><b>Что даёт:</b> длинный список MCP получает целую страницу вместо простыни на 40 строк;
+  появляется место для крупных цифр.<br>
+  <b>Чем платим:</b> видно одну секцию из трёх — чтобы увидеть сессии и лимиты сразу, надо кликать.
+  Меню перестаёт быть системным: клавиатура, VoiceOver и подменю переписываются с нуля.</div>
+</div>
+
+<!-- ═══════════ 2. ПАНЕЛЬ ОДНОЙ ЛЕНТОЙ ═══════════ -->
+<div class="col">
+  <h2>2. Панель одной лентой</h2>
+  <p class="sub">Тот же язык карточек и то же своё окно, но без вкладок: всё на одной прокручиваемой странице, как сейчас.</p>
+
+  <div class="panel">
+    <div style="display:flex;align-items:center;gap:8px;padding:4px 4px 2px">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#cf6a3f" stroke-width="1.7" stroke-linecap="round">
+        <path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4"/></svg>
+      <div style="flex:1;font-size:13px;font-weight:600">Claude Control Bar</div>
+      <div style="font-size:11px;color:var(--ink3)">2 running</div>
+    </div>
+
+    <div class="sect">Sessions</div>
+    <div class="card">
+      <div class="srow">
+        <span class="dot" style="background:var(--orange)"></span>
+        <span class="grow"><div class="nm">talalaev-m</div><div class="meta">main · 14s</div></span>
+        <span class="val">15%</span><span class="tag">APP</span></div>
+      <div class="srow divide">
+        <span class="dot" style="background:var(--orange)"></span>
+        <span class="grow"><div class="nm">talalaev-m</div><div class="meta">main · 22s</div></span>
+        <span class="val">36%</span><span class="tag">APP</span></div>
+    </div>
+
+    <div class="sect">Limits <span class="acc">measured 1 min ago</span></div>
+    <div class="card pad">
+      <div style="display:flex;gap:8px">
+        <div class="tile">
+          <div class="k">5 hours</div>
+          <div class="v">36<span style="font-size:14px;color:var(--ink3)">%</span></div>
+          <div class="r">↻ 1h 3m</div>
+        </div>
+        <div class="tile">
+          <div class="k">7 days</div>
+          <div class="v">70<span style="font-size:14px;color:var(--ink3)">%</span></div>
+          <div class="r">↻ 23m</div>
+        </div>
+      </div>
+      <div style="margin-top:9px;display:flex;align-items:baseline;gap:6px">
+        <span style="font-size:12px;font-weight:500">Fable</span>
+        <span class="tag" style="color:var(--indigo);background:rgba(88,86,214,0.14)">7d</span>
+        <span style="flex:1"></span>
+        <span style="font-size:13px;font-weight:600;color:var(--red);font-variant-numeric:tabular-nums">94%</span>
+        <span class="r" style="width:40px;text-align:right">↻ 23m</span>
+      </div>
+      <div class="bar" style="margin-top:5px"><i style="width:94%;background:var(--red)"></i></div>
+    </div>
+
+    <div class="sect">MCP <span class="acc">8/9 · 327/327 tools</span></div>
+    <div class="card">
+      <div style="padding:6px 10px 2px;font-size:10px;letter-spacing:.4px;text-transform:uppercase;color:var(--ink3)">Local config</div>
+      <div class="srow" style="padding-top:3px;padding-bottom:3px"><span class="dot" style="background:var(--green)"></span>
+        <span class="grow nm">deepagent</span><span class="val">3/3</span><span class="chev">›</span><span class="sw on"><i></i></span></div>
+      <div class="srow" style="padding-top:3px;padding-bottom:3px"><span class="dot" style="background:var(--green)"></span>
+        <span class="grow nm">stefania-devtools</span><span class="val">82/82</span><span class="chev">›</span><span class="sw on"><i></i></span></div>
+      <div class="srow" style="padding-top:3px;padding-bottom:3px"><span class="dot" style="background:var(--green)"></span>
+        <span class="grow nm">tracker_mcp</span><span class="val">108/108</span><span class="chev">›</span><span class="sw on"><i></i></span></div>
+      <div class="divide" style="padding:6px 10px 2px;font-size:10px;letter-spacing:.4px;text-transform:uppercase;color:var(--ink3)">From plugins</div>
+      <div class="srow" style="padding-top:3px;padding-bottom:5px"><span class="dot" style="background:var(--red)"></span>
+        <span class="grow nm">mcp-search</span><span class="val" style="color:var(--red)">failed</span><span class="chev">›</span><span class="sw on"><i></i></span></div>
+    </div>
+
+    <div class="btns">
+      <div class="btn">Settings</div>
+      <div class="btn">Quit</div>
+    </div>
+  </div>
+
+  <div class="note"><b>Что даёт:</b> вся картина — сессии, лимиты, серверы — видна одним взглядом, как сейчас,
+  но карточками и крупными числами. Внутри своего окна работают раскрытия: клик по серверу выдвигает его инструменты.<br>
+  <b>Чем платим:</b> меню тоже перестаёт быть системным — клавиатуру, VoiceOver и подменю пишем сами.</div>
+</div>
+
+<!-- ═══════════ 3. МЕНЮ С КАРТОЧКАМИ ═══════════ -->
+<div class="col">
+  <h2>3. Меню с карточками</h2>
+  <p class="sub">Остаётся системное меню macOS. Меняется только рисунок секций: карточки, заголовки капсом, крупные цифры лимитов.</p>
+
+  <div class="menu">
+    <div class="mhead">Sessions</div>
+    <div class="mcard">
+      <div class="srow">
+        <span class="dot" style="background:var(--orange)"></span>
+        <span class="grow"><div class="nm">talalaev-m</div><div class="meta">main · 14s</div></span>
+        <span class="val">15%</span><span class="tag">APP</span></div>
+      <div class="srow divide">
+        <span class="dot" style="background:var(--orange)"></span>
+        <span class="grow"><div class="nm">talalaev-m</div><div class="meta">main · 22s</div></span>
+        <span class="val">36%</span><span class="tag">APP</span></div>
+    </div>
+
+    <div class="mhead" style="margin-top:6px">Limits</div>
+    <div class="mcard" style="padding:8px 10px">
+      <div style="display:flex;gap:8px">
+        <div class="tile"><div class="k">5 hours</div>
+          <div class="v">36<span style="font-size:14px;color:var(--ink3)">%</span></div>
+          <div class="r">↻ 1h 3m</div></div>
+        <div class="tile"><div class="k">7 days</div>
+          <div class="v">70<span style="font-size:14px;color:var(--ink3)">%</span></div>
+          <div class="r">↻ 23m</div></div>
+      </div>
+      <div style="margin-top:9px;display:flex;align-items:baseline;gap:6px">
+        <span style="font-size:12px;font-weight:500">Fable</span>
+        <span class="tag" style="color:var(--indigo);background:rgba(88,86,214,0.14)">7d</span>
+        <span style="flex:1"></span>
+        <span style="font-size:13px;font-weight:600;color:var(--red);font-variant-numeric:tabular-nums">94%</span>
+        <span class="r" style="width:40px;text-align:right">↻ 23m</span>
+      </div>
+      <div class="bar" style="margin-top:5px"><i style="width:94%;background:var(--red)"></i></div>
+      <div style="margin-top:6px;font-size:10.5px;color:var(--ink3)">measured 1 min ago</div>
+    </div>
+
+    <div class="mhead" style="margin-top:6px">MCP — 8/9 connected · 327/327 tools on</div>
+    <div class="mcard">
+      <div style="padding:5px 10px 1px;font-size:10px;letter-spacing:.4px;text-transform:uppercase;color:var(--ink3)">Local config</div>
+      <div class="srow" style="padding:3px 10px"><span class="dot" style="background:var(--green)"></span>
+        <span class="grow nm">deepagent</span><span class="val">3/3</span><span class="chev">›</span><span class="sw on"><i></i></span></div>
+      <div class="srow" style="padding:3px 10px"><span class="dot" style="background:var(--green)"></span>
+        <span class="grow nm">stefania-devtools</span><span class="val">82/82</span><span class="chev">›</span><span class="sw on"><i></i></span></div>
+      <div class="srow" style="padding:3px 10px"><span class="dot" style="background:var(--green)"></span>
+        <span class="grow nm">tracker_mcp</span><span class="val">108/108</span><span class="chev">›</span><span class="sw on"><i></i></span></div>
+      <div class="divide" style="padding:5px 10px 1px;font-size:10px;letter-spacing:.4px;text-transform:uppercase;color:var(--ink3)">From plugins</div>
+      <div class="srow" style="padding:3px 10px 5px"><span class="dot" style="background:var(--red)"></span>
+        <span class="grow nm">mcp-search</span><span class="val" style="color:var(--red)">failed</span><span class="chev">›</span><span class="sw on"><i></i></span></div>
+    </div>
+
+    <div class="msep"></div>
+    <div class="mrow"><span class="grow">Settings…</span><span class="kbd">⌘,</span></div>
+    <div class="mrow"><span class="grow">Check MCP now</span><span class="kbd">⌘R</span></div>
+    <div class="mrow"><span class="grow">Open settings.json</span></div>
+    <div class="msep"></div>
+    <div class="mrow" style="color:var(--ink3)"><span class="grow">Version 0.12.0</span></div>
+    <div class="mrow"><span class="grow">Quit</span><span class="kbd">⌘Q</span></div>
+  </div>
+
+  <div class="note"><b>Что даёт:</b> тот же визуальный язык — карточки, капс, крупные цифры — при минимуме риска.
+  Клавиатура, VoiceOver, подменю инструментов и поведение меню остаются системными и бесплатными.<br>
+  <b>Чем платим:</b> нет вкладок и нет раскрытий внутри меню: macOS не даёт менять высоту открытого меню
+  (это уже записано в <code>docs/motion.md</code>). Фон и скругление рисует система, своё окно не подставить.</div>
+</div>
+
+</div>
+</body>
+</html>
