@@ -101,6 +101,12 @@ final class MCPModel {
     /// How long a change stays visible in the menu after it happened.
     static let changeWindow: TimeInterval = 45
 
+    /// Bumped every time the picture behind this model moves — a re-read that found something
+    /// different, or a switch answered locally. It exists so a reader can tell "nothing changed"
+    /// without walking every server and tool to find out: the panel refreshes 2.5 times a second
+    /// and the answer is almost always no.
+    private(set) var revision = 0
+
     private(set) var servers: [MCPServer] = []
     private(set) var waitingAuth: [String] = []
     private(set) var checkedAt: Double = 0
@@ -157,6 +163,7 @@ final class MCPModel {
             if !moved.isEmpty { change = moved }
         }
         previous = snapshot
+        revision += 1
         return true
     }
 
@@ -168,6 +175,7 @@ final class MCPModel {
         guard let s = servers.firstIndex(where: { $0.name == server }),
               let t = servers[s].tools.firstIndex(where: { $0.name == tool }) else { return }
         servers[s].tools[t].enabled = enabled
+        revision += 1
     }
 
     /// Whether this server's row should show a spinner instead of a state.
@@ -187,6 +195,7 @@ final class MCPModel {
         // assembled when a session starts, so the truthful state until then is "pending".
         servers[s].state = enabled ? "pending" : "off"
         servers[s].status = enabled ? "on in a new session" : "disabled"
+        revision += 1
     }
 
     private static func server(from raw: [String: Any]) -> MCPServer {

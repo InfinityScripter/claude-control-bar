@@ -33,10 +33,13 @@ extension StatusController {
     }
 
     // Once/day: cache GitHub's latest release tag in UserDefaults. Nothing sent to us.
-    func checkForUpdate() {
+    /// `force` is the About page's "Check now": someone who came looking is asking a question the
+    /// once-a-day throttle exists to stop us asking on their behalf, and answering "no" to a direct
+    /// press would read as the button doing nothing.
+    func checkForUpdate(force: Bool = false) {
         let d = UserDefaults.standard
         let now = Date().timeIntervalSince1970
-        if now - d.double(forKey: "lastUpdateCheck") < 86400 { return }
+        if !force, now - d.double(forKey: "lastUpdateCheck") < 86400 { return }
         // Stamped here, before the requests, not in the success handler. Written on success only,
         // an unreachable GitHub meant every subsequent menu open fired both requests again — the
         // opposite of the once-a-day check PRIVACY.md promises, and worst exactly when the network
@@ -70,7 +73,7 @@ extension StatusController {
                UserDefaults.standard.string(forKey: "updateNotifiedVersion") != ver {
                 UserDefaults.standard.set(ver, forKey: "updateNotifiedVersion")
                 self.notify(title: "Claude Control Bar \(ver) is available",
-                            body: "The menu has \u{201C}What\u{2019}s new in \(ver)\u{201D} and the update.")
+                            body: "The panel has \u{201C}What\u{2019}s new in \(ver)\u{201D} and the update.")
             }
         }.resume()
         guard let brewURL = URL(string: brewCaskAPIURL) else { return }
@@ -271,7 +274,10 @@ extension StatusController {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.updateStage = stage
-            self.updateBanner?.stage = stage
+            // The banner is part of the panel's picture now, not a view held by reference: the
+            // store re-reads updateStage and republishes, so the progress lands in an open panel
+            // without the download knowing anything about which view is drawing it.
+            self.refreshCounts()
             if let b = self.whatsNewInstallButton {
                 b.title = stage ?? "Download and install"
                 b.isEnabled = stage == nil

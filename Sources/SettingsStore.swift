@@ -55,12 +55,38 @@ final class SettingsStore: ObservableObject {
     var needsYouSound: Binding<String> {
         bind({ $0.needsYouSound }, { $0.applyNeedsYouSound($1) }, or: NeedsYouSound.defaultChoice)
     }
-    /// The one value that does not live on the controller: Motion is asked for it from views built
-    /// inside NSMenu callbacks, which have no controller to reach. It still writes through the
-    /// controller, so every setting keeps exactly one write path.
+    /// The one value that does not live on the controller: Motion is asked for it from views that
+    /// have no controller to reach. It still writes through the controller, so every setting keeps
+    /// exactly one write path.
     var motionLevel: Binding<Motion.Level> {
         bind({ _ in Motion.level }, { $0.applyMotionLevel($1) }, or: .subtle)
     }
+
+    // MARK: About
+    //
+    // Read-only, and read at draw time rather than stored: the version cannot change under an open
+    // window, and the update state is the panel's job to report live — this page only has to say
+    // where this copy stands when someone comes looking for it.
+
+    var appName: String { controller?.appName ?? "Claude Control Bar" }
+    var version: String { controller?.currentVersion ?? "0" }
+
+    /// The newer version on offer, or nil when this copy is current.
+    var newerVersion: String? {
+        guard let controller,
+              let latest = UserDefaults.standard.string(forKey: "latestVersion"),
+              StatusController.versionIsNewer(latest, than: controller.currentVersion)
+        else { return nil }
+        return latest
+    }
+
+    /// True when Homebrew owns this bundle, so updating is `brew upgrade` rather than our own swap.
+    var brewManaged: Bool { controller?.brewManaged ?? false }
+    var brewUpgradeCommand: String { controller?.brewUpgradeCommand ?? "" }
+
+    func showWhatsNew() { controller?.showWhatsNewCurrent() }
+    func showLatestNotes() { controller?.showWhatsNewLatest() }
+    func checkForUpdate() { controller?.checkForUpdate(force: true) }
 }
 
 // Applying a setting: the value, the UserDefaults key it is remembered under, and the side effect

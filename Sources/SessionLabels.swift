@@ -1,7 +1,8 @@
 import Cocoa
 
-// How a session reads in the menu: the row view configuration, its symbols, labels and
-// truncation, plus the per-session ranking the status item and the rows share.
+// How a session reads: its words, its truncation, and the per-session ranking the status item and
+// the panel rows share. Only text and numbers live here — the drawing is SwiftUI's, in
+// PanelTabs.swift, and the values it draws are assembled in PanelData.swift.
 extension StatusController {
     /// evaluate() caches the effective state on the session once per tick; anything that runs
     /// before that tick (a menu opened on a freshly read file) computes it on the spot.
@@ -23,10 +24,11 @@ extension StatusController {
         return line
     }
 
-    // Live layout knobs from ~/.claude/control-bar/uiconfig.json (nameMax, pillInset, timerGap,
-    // boxWidth), so numeric tweaks take effect on the next menu open with NO rebuild. Re-read only
-    // when the file's mtime moves: this runs for every row on every tick while the menu is open,
-    // and parsing the same file three times per row at 2.5 Hz was the one uncached I/O on that path.
+    // Live layout knobs from ~/.claude/control-bar/uiconfig.json, so a numeric tweak takes effect
+    // on the next open with NO rebuild. Only `boxWidth` survives the panel: the row-geometry knobs
+    // (nameMax, pillInset, timerGap, pillTextY) described an AppKit row that no longer exists —
+    // SwiftUI truncates by pixel and lays the row out itself. Re-read only when the file's mtime
+    // moves: this runs on every refresh while the panel is open.
     func uiConfig() -> [String: Double] {
         let p = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/uiconfig.json")
         let m = (try? FileManager.default.attributesOfItem(atPath: p))?[.modificationDate] as? Date
@@ -42,37 +44,6 @@ extension StatusController {
 
     var boxWidth: CGFloat { CGFloat(uiConfig()["boxWidth"] ?? 300) }
 
-    func configureSessionRow(_ v: SessionRowView, _ s: Session, eff: String) {
-        let cfg = uiConfig()
-        let now = Date().timeIntervalSince1970
-        // Generous cap: the row's pixel truncation does the real limiting now that the name field
-        // sizes to the free space; this only guards against pathological strings.
-        let nameMax = (cfg["nameMax"] ?? 30).clampedInt
-        let working = isWorkingState(eff) && s.startedAt > 0
-        let resting = !isActiveState(eff)  // the dim caret
-        let tag = surfaceTag(s)
-        v.configure(icon: sessionSymbol(s, eff: eff),
-                    iconTint: resting ? .tertiaryLabelColor : .labelColor,  // caret dim; spinner matches the name font; amber image ignores tint
-                    spinning: isWorkingState(eff),
-                    name: truncated(sessionName(s), max: nameMax, keep: nameMax),
-                    branch: truncated(s.branch, max: 22, keep: 20),
-                    timer: working ? elapsed(max(0, (now - s.startedAt).clampedInt)) : nil,
-                    context: s.pct, contextAssumed: s.assumed,
-                    pillNormal: tag.isEmpty ? nil : pillImage(tag),
-                    pillSelected: tag.isEmpty ? nil : pillImage(tag, selected: true),
-                    pillInset: CGFloat(cfg["pillInset"] ?? 12),
-                    timerGap: CGFloat(cfg["timerGap"] ?? 10))
-        // The hover card carries what the row cannot: full name, branch and uncommitted count,
-        // the context gauge with token figures, the session totals, the path. Captured here,
-        // which is fresh enough: the open menu reconfigures every row on each tick.
-        let content = SessionCard.Content(
-            name: sessionName(s), model: s.model, branch: s.branch, dirty: s.dirty,
-            pct: s.pct, tokens: s.tokens, window: s.window, assumed: s.assumed,
-            cost: s.cost, duration: s.duration, linesAdded: s.linesAdded, linesRemoved: s.linesRemoved,
-            cwd: s.cwd)
-        v.onHover = { row in SessionCard.show(content, near: row) }
-        v.toolTip = nil
-    }
 
     // Only ever asked for an active state: a resting lead renders the bare icon, no text.
     func statusText(_ s: Session, eff: String) -> String {
@@ -98,49 +69,8 @@ extension StatusController {
         return "CLI"
     }
 
-    // CLI/APP pill rendered as an image so it can sit inside the row text (right after the timer)
-    // rather than as a system badge pinned to the menu edge with a fixed, uncloseable gap.
-    func pillImage(_ text: String, selected: Bool = false) -> NSImage {
-        let t = text as NSString
-        let font = NSFont.monospacedSystemFont(ofSize: 9.5, weight: .semibold)  // mono -> 3 chars = uniform width
-        let pad: CGFloat = 7, h: CGFloat = 15
-        let cfg = uiConfig()
-        let dy = CGFloat(cfg["pillTextY"] ?? -1)  // negative nudges the text down (it reads top-heavy)
-        // Pill bg is a tunable gray per mode (black-on-light / white-on-dark at a low alpha) so light
-        // mode can be lightened independently. On a selected (blue) row it's a light translucent pill.
-        let dark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-        let bgAlpha = CGFloat(cfg[dark ? "pillBgDark" : "pillBgLight"] ?? (dark ? 0.14 : 0.10))
-        let bg = selected ? NSColor.white.withAlphaComponent(0.22)
-                          : (dark ? NSColor.white : NSColor.black).withAlphaComponent(bgAlpha)
-        let fg = selected ? NSColor.white : NSColor.labelColor
-        let w = ceil(t.size(withAttributes: [.font: font]).width) + pad * 2
-        return NSImage(size: NSSize(width: w, height: h), flipped: false) { rect in
-            bg.setFill()
-            NSBezierPath(roundedRect: rect, xRadius: h / 2, yRadius: h / 2).fill()
-            let a: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: fg]
-            let ts = t.size(withAttributes: a)
-            t.draw(at: NSPoint(x: (rect.width - ts.width) / 2, y: (rect.height - ts.height) / 2 + dy), withAttributes: a)
-            return true
-        }
-    }
-
-    func sessionSymbol(_ s: Session, eff: String) -> NSImage? {
-        switch eff {
-        case "permission":       return symbolImage("exclamationmark.circle.fill", tint: amber)
-        case "thinking", "tool": return nil
-        default:                 return restingCaret   // done/idle merged: dim "ready for input" caret
-        }
-    }
 
 
-    func symbolImage(_ name: String, tint: NSColor? = nil) -> NSImage? {
-        guard let img = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return nil }
-        if let tint = tint, #available(macOS 12.0, *) {
-            return img.withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [tint]))
-        }
-        img.isTemplate = true
-        return img
-    }
 
     // Keep the bar narrow: over `max` chars, show the first `keep` + an ellipsis (full text stays in the tooltip).
     // Clamped at zero: `keep` arrives from uiconfig.json (a hand-tuning file), and String.prefix
@@ -180,16 +110,6 @@ extension StatusController {
         sessionWord[s.id] = w
     }
 
-    static func describe(_ menu: NSMenu, depth: Int = 0) -> String {
-        let pad = String(repeating: "  ", count: depth)
-        return menu.items.map { item -> String in
-            if item.isSeparatorItem { return pad + "──" }
-            var line = pad + (item.title.isEmpty ? item.attributedTitle?.string ?? "" : item.title)
-            if let tip = item.toolTip { line += "   [tip: " + tip.replacingOccurrences(of: "\n", with: " ⏎ ") + "]" }
-            if let sub = item.submenu { line += "\n" + describe(sub, depth: depth + 1) }
-            return line
-        }.joined(separator: "\n")
-    }
 
     // "1m 1s" / "43s" — Claude Code's elapsed-clock style.
     func elapsed(_ secs: Int) -> String {

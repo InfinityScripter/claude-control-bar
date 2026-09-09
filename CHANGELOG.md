@@ -7,6 +7,51 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [Unreleased]
+
+### Changed
+- **The dropdown is a panel now, not a menu.** Clicking the icon drops a window of the app's own
+  under it: the usage limits pinned across the top as three figures, then two tabs — *Sessions*
+  and *MCP* — and two buttons at the bottom. The reason is not decoration. `NSMenu` cannot be
+  re-laid-out while it is open, which is why `docs/motion.md` had to record that an accordion was
+  impossible: clicking a server could never open its tools underneath it. In a window it can, and
+  it does. The panel also keeps the width knob the menu had (`boxWidth` in `uiconfig.json`); the
+  row-geometry knobs beside it (`nameMax`, `pillInset`, `timerGap`) described a hand-laid-out
+  AppKit row that no longer exists, and now do nothing.
+- **Two tabs instead of one long list.** Sessions is what you look at, MCP is what you change, and
+  the servers list was long enough that checking a session meant scrolling past twenty rows of it.
+  The limits stay visible on both, because the number worth seeing first should not be behind a
+  click.
+- **Four rows left the bottom of the panel.** *Check MCP now* (⌘R) and *Open settings.json* are
+  the two glyphs in the MCP tab's header — they are actions about MCP, and they now sit on it.
+  The version line and *What's new* moved to Settings → About. Both shortcuts still work.
+
+### Added
+- **Settings → About.** Which version this copy is, what changed in it, whether a newer one is
+  out, and a *Check now* that ignores the once-a-day throttle — someone who came looking is asking
+  a direct question.
+- **Rows expand in place.** A chevron on a session opens the context gauge, the session totals and
+  the path; one on a server opens its tool list with a switch per tool. This replaces the card
+  that used to appear on hover, which existed only because a menu row could not draw outside the
+  menu.
+
+### Fixed
+- **Clicking the icon could open the panel but never close it.** The click makes the menu bar's own
+  window key, so the panel resigns key and closes — and only then does the button's action arrive,
+  find a closed panel, and open it straight back. Caught by review rather than by use, because the
+  status item on the machine this was written on is parked off-screen behind the menu bar's
+  overflow chevron and cannot be clicked at all; `CONTROL_BAR_DIAGNOSE=toggle` now replays that
+  exact order and prints what the panel did, which is the only way to ask on such a machine.
+- **The panel's bars were a different red from the strip beside the icon.** Both use the same
+  thresholds — quiet until 75%, then amber, then red — but the panel picked `.systemRed` while
+  `Gauge.level` returns hand-picked sRGB values, under a comment claiming the two matched. It calls
+  `Gauge.level` now. The nearly-empty floor drifted the same way: one point instead of one device
+  pixel, so a 1%-left bar in the panel was twice the width of the same bar in the menu bar.
+- **The diagnostic modes could never run.** `enforceSingleInstance` compared bundle identifiers,
+  and a bare binary has none — so `nil == nil` matched the first other identifier-less process on
+  the machine (`universalaccessd`, here) and every `CONTROL_BAR_DUMP_MENU=1` or
+  `CONTROL_BAR_DIAGNOSE=1` run stood down before printing anything.
+
 ## [0.12.0] - 2026-09-09
 
 ### Added

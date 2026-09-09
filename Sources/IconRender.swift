@@ -27,7 +27,7 @@ extension StatusController {
             animTimer?.invalidate(); animTimer = nil
             frameIdx = 0
             let icon = restingIcon(color: color)
-            button.image = decorate(badge ? attentionBadgeIcon(icon, color: amber) : icon)
+            button.image = decorate(badge ? attentionBadgeIcon(icon, color: Self.amber) : icon)
         }
         applyTitle()
         // Only the animated path can arrive here imageless (the badge flip above cleared it and
@@ -60,7 +60,7 @@ extension StatusController {
         }
         if let hit = iconCache[frame] { return hit }
         let icon = iconImage(color: activeColor, frame: frame)
-        let made = decorate(activeBadge ? attentionBadgeIcon(icon, color: amber) : icon)
+        let made = decorate(activeBadge ? attentionBadgeIcon(icon, color: Self.amber) : icon)
         iconCache[frame] = made
         return made
     }

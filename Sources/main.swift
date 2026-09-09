@@ -1,7 +1,7 @@
 import Cocoa
 import UserNotifications
 
-final class StatusController: NSObject, NSMenuDelegate, NSWindowDelegate {
+final class StatusController: NSObject, NSWindowDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let root = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar")
     let stateDir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/state.d")
@@ -13,11 +13,6 @@ final class StatusController: NSObject, NSMenuDelegate, NSWindowDelegate {
     var limits: Limits?
     var mcpBusy = false
     var recheckTimer: Timer?
-    /// Every label in the open menu that shows a count. NSMenu will not let rows be added or
-    /// removed while it is tracking, but the items it already holds can be rewritten — which is
-    /// how switching one tool moves its server's total and the grand total on the spot, instead
-    /// of leaving both stale until the menu is reopened.
-    var mcpCountLabels: [() -> Void] = []
     /// How often the MCP picture is rebuilt from scratch in the background. Measured at ~34s a
     /// run, essentially all of it `claude mcp list` starting every configured server and waiting
     /// — which is why it is not on the render path. Without it the picture never updates at all,
@@ -47,6 +42,15 @@ final class StatusController: NSObject, NSMenuDelegate, NSWindowDelegate {
     var settingsWindow: NSWindow?
     /// Built on the first open. It stores nothing itself — only bindings back to this object.
     lazy var settingsStore = SettingsStore(controller: self)
+    /// The dropdown. Kept between opens so the chosen tab survives closing it.
+    var panelWindow: PanelHostWindow?
+    /// Watches for a click outside the panel, which is how a window of our own gets the one menu
+    /// behaviour it does not inherit. Alive only while the panel is open.
+    var panelClickMonitor: Any?
+    /// When the panel last closed, so the click that closed it cannot also reopen it. See
+    /// togglePanel().
+    var panelClosedAt: Double = 0
+    lazy var panelStore = PanelStore(controller: self)
     var frameIdx = 0
 
     let launchedAt = Date()
@@ -73,24 +77,7 @@ final class StatusController: NSObject, NSMenuDelegate, NSWindowDelegate {
     let brewInstallCommand = "brew install --cask claude-control-bar && open -a \"Claude Control Bar\""
     var whatsNewWindow: NSWindow?
     let logoSet: [NSImage] = Data(base64Encoded: claudeLogoPNG).flatMap(NSImage.init(data:)).map { [$0] } ?? []
-    // The shell-style prompt caret (U+276F, what Claude Code shows when idle), dimmed and centered in
-    // a square that matches the spinner gutter so the resting rows align with the working ones.
-    lazy var restingCaret: NSImage? = {
-        let glyph = "\u{276F}" as NSString
-        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        let side: CGFloat = 15
-        let img = NSImage(size: NSSize(width: side, height: side), flipped: false) { _ in
-            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.black]
-            let g = glyph.size(withAttributes: attrs)
-            glyph.draw(at: NSPoint(x: (side - g.width) / 2, y: (side - g.height) / 2), withAttributes: attrs)
-            return true
-        }
-        img.isTemplate = true   // tint via contentTintColor: dim (tertiary) normally, white on hover
-        return img
-    }()
     var prevState: [String: String] = [:]  // id -> previous raw state per session
-    var menuIsOpen = false                  // refresh the dropdown's per-session timers only while open
-    var sessionMenuItems: [(item: NSMenuItem, id: String)] = []
     var activeBase = ""        // label without the elapsed clock
     var renderedTitle: String? // what the status item is actually showing, to skip identical redraws
     var lastLifecycleCheck: Double = 0  // the quit decision is sampled far slower than the UI
@@ -101,7 +88,6 @@ final class StatusController: NSObject, NSMenuDelegate, NSWindowDelegate {
     var updateBuild: Process?           // the in-flight source build; Quit terminates it (see quit())
     var updateDownload: URLSessionDownloadTask?  // the in-flight DMG download; Quit cancels it
     var updateStage: String?            // "Downloading… 43%" / "Installing…" while selfUpdating; nil otherwise
-    weak var updateBanner: UpdateBannerView?      // the open menu's banner, so progress lands without a reopen
     weak var whatsNewInstallButton: NSButton?     // the open "What's new" window's button, same reason
     // Never `xcrun --find`: querying xcrun with no developer tools installed pops the system's
     // "install the command line developer tools?" dialog — from a menu bar app, out of nowhere.
@@ -145,7 +131,8 @@ final class StatusController: NSObject, NSMenuDelegate, NSWindowDelegate {
     var activeBadge = false
 
     let brand = NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1) // #d97757, Anthropic's official "Orange" accent
-    let amber = NSColor(srgbRed: 0.95, green: 0.73, blue: 0.18, alpha: 1) // "Needs you" badge
+    /// Static because the panel needs it too, and a SwiftUI view has no controller to ask.
+    static let amber = NSColor(srgbRed: 0.95, green: 0.73, blue: 0.18, alpha: 1) // "Needs you" badge
     let frames: [NSImage] = StatusController.loadFrames()
     let spriteFPS: Double = 9 // tune: 8 frames per loop -> ~0.9s/cycle
 
@@ -248,9 +235,11 @@ final class StatusController: NSObject, NSMenuDelegate, NSWindowDelegate {
         if let s = d.string(forKey: "needsYouSound") { needsYouSound = s }
         if let s = d.string(forKey: "animStyle"), let st = AnimStyle(rawValue: s) { animStyle = st }
         if let s = d.string(forKey: "motionLevel"), let m = Motion.Level(rawValue: s) { Motion.level = m }
-        let menu = NSMenu()
-        menu.delegate = self
-        statusItem.menu = menu
+        // No `statusItem.menu`: with one set, AppKit swallows the click to open the menu and the
+        // button's own action never fires. The panel is a window of ours, so the click has to
+        // reach us — see PanelWindow.swift for why it is not an NSMenu any more.
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(togglePanel)
         render(label: "", color: iconColor, animate: false, startedAt: 0)
         let t = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(t, forMode: .common)
@@ -292,6 +281,28 @@ final class StatusController: NSObject, NSMenuDelegate, NSWindowDelegate {
                 NSApp.activate(ignoringOtherApps: true)
                 self?.statusItem.button?.performClick(nil)
             }
+        // CONTROL_BAR_DIAGNOSE=toggle answers "does clicking the icon close the panel?" without
+        // clicking it — which is the only way to ask, for the same reason CONTROL_BAR_UPDATE_NOW
+        // exists: a crowded menu bar parks the status item off-screen, where neither a person nor
+        // Accessibility can reach it, and that is exactly the machine this bug hid on. It replays
+        // the order AppKit produces for that click and prints what the panel did.
+        } else if ProcessInfo.processInfo.environment["CONTROL_BAR_DIAGNOSE"] == "toggle" {
+            Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
+                guard let self else { return }
+                self.openPanel()
+                print("after open:        \(self.panelIsOpen ? "OPEN" : "closed  <-- the panel did not open")")
+                // The menu bar takes key status first, which closes the panel; the button's own
+                // action arrives after it. Without a guard the action finds a closed panel and
+                // opens it straight back, so the icon can open the panel but never close it.
+                self.closePanel()
+                self.togglePanel()
+                print("after icon click:  \(self.panelIsOpen ? "OPEN  <-- it reopened itself" : "closed")")
+                Timer.scheduledTimer(withTimeInterval: 0.6, repeats: false) { _ in
+                    self.togglePanel()
+                    print("after later click: \(self.panelIsOpen ? "OPEN" : "closed  <-- the guard is too wide")")
+                    NSApp.terminate(nil)
+                }
+            }
         } else if ProcessInfo.processInfo.environment["CONTROL_BAR_DIAGNOSE"] != nil {
             Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
                 guard let self else { return }
@@ -326,9 +337,8 @@ final class StatusController: NSObject, NSMenuDelegate, NSWindowDelegate {
         }
         if ProcessInfo.processInfo.environment["CONTROL_BAR_DUMP_MENU"] != nil {
             Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
-                guard let self, let menu = self.statusItem.menu else { return }
-                self.menuNeedsUpdate(menu)
-                print(StatusController.describe(menu))
+                guard let self else { return }
+                print(self.describePanel())
                 NSApp.terminate(nil)
             }
         }
@@ -398,10 +408,15 @@ final class StatusController: NSObject, NSMenuDelegate, NSWindowDelegate {
     // picking between them at random. The copy in /Applications wins because that is the one
     // brew updates; a plugin build stands down rather than fighting it.
     func enforceSingleInstance() {
+        // A bare binary — which is how the diagnostic modes and ad-hoc builds run — has no bundle
+        // identifier, and `nil == nil` matched every OTHER bundle-less process on the machine. The
+        // first one found (universalaccessd, on this Mac) counted as "already running" and every
+        // diagnostic run stood down before printing anything.
+        guard let id = Bundle.main.bundleIdentifier else { return }
         let me = ProcessInfo.processInfo.processIdentifier
         let mine = Bundle.main.bundlePath
         let others = NSWorkspace.shared.runningApplications.filter {
-            $0.bundleIdentifier == Bundle.main.bundleIdentifier && $0.processIdentifier != me
+            $0.bundleIdentifier == id && $0.processIdentifier != me
         }
         guard !others.isEmpty else { return }
         let systemWide = mine.hasPrefix("/Applications/")
@@ -587,12 +602,11 @@ final class StatusController: NSObject, NSMenuDelegate, NSWindowDelegate {
         }
     }
 
-    func watchCount(_ update: @escaping () -> Void) {
-        mcpCountLabels.append(update)
-        update()
-    }
-
-    func refreshCounts() { mcpCountLabels.forEach { $0() } }
+    /// Re-publish the panel's picture if it is on screen. The menu needed a list of closures for
+    /// this, because NSMenu would not let rows be added or removed while it tracked and the only
+    /// thing that could move was the text already in them. A window has no such rule: the store
+    /// re-reads, and only a real difference redraws anything.
+    func refreshCounts() { if panelIsOpen { panelStore.refresh() } }
 
     func setMCPServer(_ name: String, enabled: Bool) {
         mcp.setServerLocally(name, enabled: enabled)
@@ -625,6 +639,12 @@ final class StatusController: NSObject, NSMenuDelegate, NSWindowDelegate {
     /// the bug: for a plugin or a claude.ai connector it produced `mcp__claude.ai Figma__…`,
     /// which matches no tool at all — the switch went off and the tool kept loading.
     func setMCPTool(server: String, tool: String, prefix: String, enabled: Bool) {
+        // Local first, then the backend. Rewriting settings.json and re-deriving the whole picture
+        // takes long enough that the counts would sit stale until the panel is reopened, which
+        // reads as the switch having done nothing. No recheck is scheduled, unlike a server
+        // toggle: a tool moving in or out of the context does not change which servers answered.
+        mcp.setToolLocally(server: server, tool: tool, enabled: enabled)
+        refreshCounts()
         runBackend(["toggle-tool", MCPServer.fullToolName(prefix: prefix, tool: tool),
                     "--server", server, "--tool", tool, enabled ? "--on" : "--off"])
     }
@@ -757,13 +777,13 @@ final class StatusController: NSObject, NSMenuDelegate, NSWindowDelegate {
         }
         // Both are mtime checks against a file another process rewrites atomically, so this is
         // a stat() per tick, not a parse — the parse happens only when something actually moved.
-        if mcp.reloadIfChanged() {
-            notifyMCPChange()
-            if menuIsOpen { refreshCounts() }
-        }
+        if mcp.reloadIfChanged() { notifyMCPChange() }
         loadLimits()
         evaluate()
-        if menuIsOpen { refreshOpenMenuRows() }
+        // The panel is a live window, not a menu frozen at open time: the per-session clocks, the
+        // limit figures and the server states all move under it. The store publishes only when
+        // something actually differs, so a quiet tick costs one comparison and no redraw.
+        if panelIsOpen { panelStore.refresh() }
     }
 
     /// Bars ride in the same status item as the icon. A second status item would be cleaner to
@@ -1056,9 +1076,11 @@ final class StatusController: NSObject, NSMenuDelegate, NSWindowDelegate {
     func checkLifecycle() {
         let now = Date()
         if now.timeIntervalSince(launchedAt) < launchGrace { return }
-        // An open Settings window is someone using the app right now. Without this the idle quit
-        // fires three seconds after the last session ends and closes the window under their hands.
-        if settingsWindow?.isVisible == true {
+        // An open Settings window or panel is someone using the app right now. Without this the
+        // idle quit fires three seconds after the last session ends and closes what they are
+        // looking at under their hands — which the panel made reachable in a way the menu did not:
+        // a menu ran a modal tracking loop that the timer could not interrupt, a window does not.
+        if settingsWindow?.isVisible == true || panelIsOpen {
             notNeededSince = nil
             return
         }
