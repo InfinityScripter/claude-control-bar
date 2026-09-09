@@ -211,6 +211,28 @@ extension StatusController {
         soundParent.submenu = soundSub
         menu.addItem(soundParent)
 
+        // A fourth submenu in a block that already has three, so the setting arrives in a shape
+        // the menu has already taught. Off is the option that has to exist: motion is a matter of
+        // taste and of hardware, and a menu bar app is not the place to argue about either.
+        let motionParent = NSMenuItem(title: "Motion", action: nil, keyEquivalent: "")
+        let motionSub = NSMenu()
+        for level in Motion.Level.allCases {
+            let it = NSMenuItem(title: level.title, action: #selector(chooseMotion(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = level.rawValue
+            it.state = Motion.level == level ? .on : .off
+            it.toolTip = level.detail
+            motionSub.addItem(it)
+        }
+        // Said here rather than left as a mystery: with Reduce Motion on, picking Expressive
+        // changes very little, and a setting that visibly does nothing reads as broken.
+        if Motion.systemReducesMotion {
+            motionSub.addItem(.separator())
+            motionSub.addItem(header("Reduce Motion is on — movement is crossfaded"))
+        }
+        motionParent.submenu = motionSub
+        menu.addItem(motionParent)
+
         menu.addItem(.separator())
         // A nil action while a check runs is what actually greys the row out: the menu keeps the
         // default autoenablesItems, under which an item with a live target/action is re-enabled
@@ -458,6 +480,15 @@ extension StatusController {
         needsYouSound = name
         UserDefaults.standard.set(name, forKey: "needsYouSound")
         playNeedsYou()   // the pick is its own preview
+    }
+
+    @objc func chooseMotion(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let level = Motion.Level(rawValue: raw) else { return }
+        Motion.level = level
+        UserDefaults.standard.set(raw, forKey: "motionLevel")
+        // Nothing to re-render: the menu is rebuilt on every open, and the level is read at the
+        // moment each animation is committed rather than baked into the views.
     }
 
     @objc func chooseStyle(_ sender: NSMenuItem) {

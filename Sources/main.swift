@@ -230,6 +230,7 @@ final class StatusController: NSObject, NSMenuDelegate {
         if d.object(forKey: "soundThreshold") != nil { soundThreshold = d.double(forKey: "soundThreshold") }
         if let s = d.string(forKey: "needsYouSound") { needsYouSound = s }
         if let s = d.string(forKey: "animStyle"), let st = AnimStyle(rawValue: s) { animStyle = st }
+        if let s = d.string(forKey: "motionLevel"), let m = Motion.Level(rawValue: s) { Motion.level = m }
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu

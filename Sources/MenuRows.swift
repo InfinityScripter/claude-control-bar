@@ -58,18 +58,30 @@ final class ToggleView: NSView {
         let toPos = knobCenter()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        if animated {
-            let spring = CASpringAnimation(keyPath: "position")
+        if animated, Motion.enabled {
+            // The same spring Motion hands to everything else — its numbers started here.
+            let spring = Motion.spring("position")
             spring.fromValue = NSValue(point: knob.presentation()?.position ?? knob.position)
             spring.toValue = NSValue(point: toPos)
-            spring.damping = 16; spring.stiffness = 260; spring.mass = 1; spring.initialVelocity = 0
-            spring.duration = spring.settlingDuration
             knob.add(spring, forKey: "position")
             let col = CABasicAnimation(keyPath: "backgroundColor")
             col.fromValue = track.presentation()?.backgroundColor ?? track.backgroundColor
             col.toValue = toColor
-            col.duration = 0.2
+            col.duration = Motion.time(0.2)
             track.add(col, forKey: "backgroundColor")
+            if Motion.moves {
+                // The knob stretches while it travels and settles back at the end, the way a real
+                // switch does. It is what tells the eye the knob was thrown rather than teleported
+                // — the position spring alone reads the same at any distance.
+                let w = knob.bounds.width
+                let squash = CAKeyframeAnimation(keyPath: "bounds.size.width")
+                squash.values = [NSNumber(value: Double(w)), NSNumber(value: Double(w + 4)),
+                                 NSNumber(value: Double(w))]
+                squash.keyTimes = [NSNumber(value: 0.0), NSNumber(value: 0.45), NSNumber(value: 1.0)]
+                squash.duration = Motion.time(0.34)
+                squash.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                knob.add(squash, forKey: "squash")
+            }
         }
         knob.position = toPos
         track.backgroundColor = toColor
@@ -263,7 +275,7 @@ final class SessionRowView: NSView {
     override func mouseExited(with event: NSEvent) { setHover(false) }
     private func setHover(_ h: Bool) {
         hovered = h
-        highlightView.isHidden = !h
+        Motion.setHighlight(highlightView, on: h)
         if h { onHover?(self) } else { HoverCard.shared.hide() }
         renderName()
         timerField.textColor = h ? .white : .secondaryLabelColor
@@ -279,7 +291,7 @@ final class SessionRowView: NSView {
     // rows); leaving the window is the one signal that always comes.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window == nil { HoverCard.shared.hide() }
+        if window == nil { HoverCard.shared.hide() } else { Motion.enterMenu(self) }
     }
     override func mouseDown(with event: NSEvent) { onClick?() }
 }
@@ -331,13 +343,17 @@ final class CopyRowView: NSView {
     override func mouseEntered(with event: NSEvent) { setHover(true) }
     override func mouseExited(with event: NSEvent) { setHover(false) }
     private func setHover(_ h: Bool) {
-        highlightView.isHidden = !h
+        Motion.setHighlight(highlightView, on: h)
         label.textColor = h ? .white : .labelColor
         icon.contentTintColor = h ? .white : (copied ? .labelColor : .secondaryLabelColor)
     }
     override func layout() {
         super.layout()
         highlightView.frame = bounds.insetBy(dx: 5, dy: 0)
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { Motion.enterMenu(self) }
     }
     override func mouseDown(with event: NSEvent) {
         let pb = NSPasteboard.general
@@ -363,6 +379,9 @@ final class UpdateBannerView: NSView {
     private let subtitle = NSTextField(labelWithString: "")
     private let pill = NSTextField(labelWithString: "Update")
     private let card = NSView()
+    private let progress = MotionBar(value: 0, fill: .white,
+                                     track: NSColor.white.withAlphaComponent(0.30),
+                                     height: 3, width: 200)
     private let version: String
     private let pad: CGFloat = 14
 
@@ -370,7 +389,25 @@ final class UpdateBannerView: NSView {
         didSet {
             subtitle.stringValue = stage ?? "Version \(version)"
             pill.isHidden = stage != nil
+            // Only a stage that carries a number gets a bar. "Installing…" has no fraction to
+            // draw, and a bar frozen at the last download percentage would claim it still had one.
+            if let fraction = Self.percent(in: stage) {
+                progress.isHidden = false
+                progress.setValue(fraction, animated: true)
+            } else {
+                progress.isHidden = true
+            }
         }
+    }
+
+    /// The stage text is composed in Updates.swift ("Downloading… 43%") and the percentage is read
+    /// back out of it here rather than threaded through as a second field: setUpdateStage has six
+    /// callers and five of them have no number to pass. One producer, one consumer, both in this
+    /// repository — but that format is a contract between them, and this is the other end of it.
+    private static func percent(in stage: String?) -> Double? {
+        guard let stage,
+              let range = stage.range(of: "[0-9]+%", options: .regularExpression) else { return nil }
+        return Double(String(stage[range].dropLast())).map { $0 / 100 }
     }
 
     init(version: String, width: CGFloat, target: AnyObject?, action: Selector) {
@@ -413,6 +450,16 @@ final class UpdateBannerView: NSView {
         pill.frame = NSRect(x: card.frame.width - pad - 72, y: (card.frame.height - 24) / 2, width: 72, height: 24)
         pill.autoresizingMask = [.minXMargin]
         card.addSubview(pill)
+
+        // Under the stage line, and hidden until there is a percentage to show. Without it the
+        // card only moves when a new figure lands, so a slow download reads as a hang: the same
+        // "43%" sitting there for twenty seconds says nothing about whether anything is happening.
+        progress.frame = NSRect(x: pad + 32, y: 5, width: card.frame.width - pad * 2 - 32, height: 3)
+        progress.autoresizingMask = [.width]
+        progress.isHidden = true
+        progress.setAccessibilityElement(false)   // the card already speaks as one button
+        card.addSubview(progress)
+
         subtitle.stringValue = "Version \(version)"
         // VoiceOver reads the card as one button; the pill is decoration of the same action.
         setAccessibilityElement(true)
@@ -430,8 +477,38 @@ final class UpdateBannerView: NSView {
         card.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
         pill.textColor = .controlAccentColor
     }
+    /// The card lands rather than switching on — it is the first thing in the menu and the only
+    /// thing in it that is a card, so arriving as one object is what separates it from the rows.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil, Motion.enabled, let layer = card.layer else { return }
+        layer.add(Motion.fade(from: 0, to: 1, seconds: 0.3), forKey: "appear")
+        guard Motion.moves else { return }
+        let grow = Motion.settle("transform.scale")
+        grow.fromValue = 0.97
+        grow.toValue = 1
+        layer.add(grow, forKey: "grow")
+    }
+
     override func mouseDown(with event: NSEvent) {
-        enclosingMenuItem?.menu?.cancelTracking()
-        NSApp.sendAction(action, to: target, from: self)
+        guard Motion.enabled, !pill.isHidden, let layer = pill.layer else {
+            enclosingMenuItem?.menu?.cancelTracking()
+            NSApp.sendAction(action, to: target, from: self)
+            return
+        }
+        let press = CAKeyframeAnimation(keyPath: "transform.scale")
+        press.values = [NSNumber(value: 1.0), NSNumber(value: 0.96), NSNumber(value: 1.0)]
+        press.keyTimes = [NSNumber(value: 0.0), NSNumber(value: 0.4), NSNumber(value: 1.0)]
+        press.duration = Motion.time(0.16)
+        press.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(press, forKey: "press")
+        // Long enough for the press to reach the screen before the menu goes: this click starts a
+        // download and closes the menu, so without the beat the only feedback is the disappearance.
+        // The copy row already holds its checkmark this way, for the same reason.
+        DispatchQueue.main.asyncAfter(deadline: .now() + Motion.time(0.1)) { [weak self] in
+            guard let self else { return }
+            self.enclosingMenuItem?.menu?.cancelTracking()
+            NSApp.sendAction(self.action, to: self.target, from: self)
+        }
     }
 }

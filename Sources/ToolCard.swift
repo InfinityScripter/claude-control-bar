@@ -50,7 +50,27 @@ final class HoverCard {
     func hide() {
         pending?.invalidate()
         pending = nil
-        window?.orderOut(nil)
+        guard let card = window, card.isVisible, Motion.enabled,
+              let layer = card.contentView?.layer else {
+            window?.orderOut(nil)
+            return
+        }
+        layer.removeAnimation(forKey: "appear")
+        layer.removeAnimation(forKey: "grow")
+        let from = layer.presentation()?.opacity ?? layer.opacity
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        // The model opacity is the token. If a hover on the next row re-shows the card while this
+        // fade is still running, place() sets it back to 1 and this block leaves the window alone
+        // rather than ordering out a card that is on screen again.
+        CATransaction.setCompletionBlock { [weak self] in
+            guard let self, let card = self.window,
+                  card.contentView?.layer?.opacity == 0 else { return }
+            card.orderOut(nil)
+        }
+        layer.opacity = 0
+        layer.add(Motion.fade(from: from, to: 0, seconds: 0.12, curve: .easeIn), forKey: "hide")
+        CATransaction.commit()
     }
 
     private func place(_ content: NSView, width: CGFloat, row: NSView, host: NSWindow) {
@@ -79,12 +99,29 @@ final class HoverCard {
         // underneath, closed the submenu, and took the card with it mid-sentence.
         let right = anchor.maxX + 8
         var x = right
+        var onRight = true
         if right + size.width > visible.maxX {
             let left = anchor.minX - size.width - 8
             x = left >= visible.minX ? left : max(visible.maxX - size.width, visible.minX)
+            onRight = false
         }
         card.setFrameOrigin(NSPoint(x: x, y: y))
         card.orderFrontRegardless()
+
+        // A fade left over from a hide that was still running has to be cleared before the card
+        // is shown again: its model opacity is 0, and that hide's completion block reads exactly
+        // that value to decide whether the window is still wanted.
+        if let layer = card.contentView?.layer {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer.removeAnimation(forKey: "hide")
+            layer.opacity = 1
+            CATransaction.commit()
+            // It comes out of the row it belongs to: the offset points back toward that row, so a
+            // card placed to the right grows leftward into view and one pushed left grows right.
+            if Motion.enabled { Motion.appear(layer, from: CGPoint(x: onRight ? -10 : 10, y: 0)) }
+        }
+        Motion.revealContents(of: content)
     }
 
     private func make() -> NSWindow {
