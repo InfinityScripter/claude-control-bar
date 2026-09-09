@@ -66,18 +66,18 @@ enum SessionCard {
             value.frame.origin = NSPoint(x: inner - value.frame.width, y: y)
             view.addSubview(caption); view.addSubview(value)
             y += 20
-            let track = NSView(frame: NSRect(x: 0, y: y, width: inner, height: 4))
-            track.wantsLayer = true
-            track.layer?.cornerRadius = 2
-            track.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
-            let fill = NSView(frame: NSRect(x: 0, y: 0, width: inner * CGFloat(max(0, min(100, pct))) / 100, height: 4))
-            fill.wantsLayer = true
-            fill.layer?.cornerRadius = 2
-            // Same thresholds as the row's percentage: green until three quarters, then amber, then red.
-            fill.layer?.backgroundColor = (pct >= 90 ? NSColor.systemRed
-                : pct >= 75 ? NSColor.systemOrange : NSColor.systemGreen).cgColor
-            track.addSubview(fill)
-            view.addSubview(track)
+            // Same thresholds as the row's percentage: green until three quarters, then amber,
+            // then red. The width now comes from Gauge.fillWidth by way of MotionBar, so this bar
+            // and the strip beside the menu bar icon agree about what a small value looks like.
+            let tint: NSColor = pct >= 90 ? .systemRed : (pct >= 75 ? .systemOrange : .systemGreen)
+            let bar = MotionBar(value: Double(max(0, min(100, pct))) / 100, fill: tint,
+                                track: .quaternaryLabelColor, height: 4, width: inner)
+            // A beat behind the card itself, so the run-up is watched rather than spent behind a
+            // card that is still fading in.
+            bar.revealDelay = 0.16
+            bar.setFrameOrigin(NSPoint(x: 0, y: y))
+            bar.setAccessibilityLabel("Context \(pct)%")
+            view.addSubview(bar)
             y += 16
         }
 

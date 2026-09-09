@@ -136,22 +136,43 @@ final class MCPRowView: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         hovered = true
-        highlight.isHidden = false
+        Motion.setHighlight(highlight, on: true)
         label.textColor = .white
         trailing.textColor = NSColor.white.withAlphaComponent(0.75)
         chevron.textColor = NSColor.white.withAlphaComponent(0.75)
         spinner.tint = NSColor.white.withAlphaComponent(0.75)
+        leanChevron(true)
         onHover?(self)
     }
 
     override func mouseExited(with event: NSEvent) {
         hovered = false
-        highlight.isHidden = true
+        Motion.setHighlight(highlight, on: false)
         label.textColor = .labelColor
         trailing.textColor = .secondaryLabelColor
         chevron.textColor = .tertiaryLabelColor
         spinner.tint = .secondaryLabelColor
+        leanChevron(false)
         HoverCard.shared.hide()
+    }
+
+    /// Two points toward the submenu it opens. Small on purpose: the chevron is already saying
+    /// "there is more in here", and the lean is only the promise that the row heard the cursor.
+    /// A transform rather than a frame nudge, because layoutRow() owns this view's frame and
+    /// would put it straight back on the next status refresh.
+    private func leanChevron(_ on: Bool) {
+        guard hasChevron, Motion.moves else { return }
+        chevron.wantsLayer = true
+        guard let layer = chevron.layer else { return }
+        let lean = Motion.settle("transform.translation.x")
+        lean.fromValue = layer.presentation()?.value(forKeyPath: "transform.translation.x")
+            ?? layer.value(forKeyPath: "transform.translation.x")
+        lean.toValue = on ? 2 : 0
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.setValue(on ? 2 : 0, forKeyPath: "transform.translation.x")
+        layer.add(lean, forKey: "lean")
+        CATransaction.commit()
     }
 
     // The one hook that always fires when the menu goes away. mouseExited does not arrive on
@@ -160,7 +181,7 @@ final class MCPRowView: NSView {
     // screen indefinitely.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window == nil { HoverCard.shared.hide() }
+        if window == nil { HoverCard.shared.hide() } else { Motion.enterMenu(self) }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -222,12 +243,18 @@ extension StatusController {
             ("Fable", "7d", limits.fable, Self.fableTint),
         ]
         let now = Date().timeIntervalSince1970
+        var shown = 0
         for (title, badge, window, accent) in rows {
             guard let window else { continue }
             let resets = window.resets.flatMap { $0 > now ? Self.until($0) : nil }
             let item = NSMenuItem(title: "\(title) \(window.used)%", action: nil, keyEquivalent: "")
-            item.view = LimitRowView(title: title, badge: badge, used: window.used, resets: resets,
-                                     accent: accent, width: boxWidth)
+            let row = LimitRowView(title: title, badge: badge, used: window.used, resets: resets,
+                                   accent: accent, width: boxWidth)
+            // Top to bottom, a beat apart. Skipped windows do not leave a gap in the sequence —
+            // the counter follows the rows that exist, not the rows that might have.
+            row.revealDelay = 0.12 + Double(shown) * 0.07
+            shown += 1
+            item.view = row
             // Read-only: a click on the row must not close the menu the way an enabled item
             // without an action would. The view draws itself regardless of the item's state.
             item.isEnabled = false

@@ -1,0 +1,128 @@
+import Combine
+import SwiftUI
+
+/// What the Settings window edits, exposed as bindings straight into the object that already owns
+/// every one of these values.
+///
+/// It deliberately keeps no copies. Each binding reads from StatusController and writes through
+/// the matching `apply` method below — the same method that performs the side effect the old menu
+/// row performed inline: re-rendering the bar, re-polling limits, previewing the picked sound.
+/// A second copy of a setting is how a switch ends up disagreeing with the thing it switches, and
+/// this window stays open while the menu, the poll timer and the hooks all keep running.
+final class SettingsStore: ObservableObject {
+    private weak var controller: StatusController?
+
+    init(controller: StatusController) { self.controller = controller }
+
+    /// `fallback` is only reachable once the controller has gone away, which in this app means the
+    /// process is on its way out. It is never shown; it exists so the binding stays total.
+    private func bind<Value>(_ read: @escaping (StatusController) -> Value,
+                             _ write: @escaping (StatusController, Value) -> Void,
+                             or fallback: Value) -> Binding<Value> {
+        Binding(
+            get: { [weak self] in
+                guard let controller = self?.controller else { return fallback }
+                return read(controller)
+            },
+            set: { [weak self] value in
+                guard let self, let controller = self.controller else { return }
+                // Announced before the write, not after. SwiftUI re-reads the getter once it has
+                // been told the object changed, so announcing afterwards leaves the control
+                // showing the previous value until something else happens to redraw it.
+                self.objectWillChange.send()
+                write(controller, value)
+            })
+    }
+
+    var showTimer: Binding<Bool> {
+        bind({ $0.showTimer }, { $0.applyShowTimer($1) }, or: false)
+    }
+    var thinkingWords: Binding<Bool> {
+        bind({ $0.useThinkingWords }, { $0.applyThinkingWords($1) }, or: true)
+    }
+    var oauthLimits: Binding<Bool> {
+        bind({ $0.oauthLimits }, { $0.applyOAuthLimits($1) }, or: true)
+    }
+    var animStyle: Binding<StatusController.AnimStyle> {
+        bind({ $0.animStyle }, { $0.applyAnimStyle($1) }, or: .crab)
+    }
+    var iconSystem: Binding<Bool> {
+        bind({ $0.iconSystem }, { $0.applyIconSystem($1) }, or: false)
+    }
+    var soundThreshold: Binding<Double> {
+        bind({ $0.soundThreshold }, { $0.applySoundThreshold($1) }, or: 0)
+    }
+    var needsYouSound: Binding<String> {
+        bind({ $0.needsYouSound }, { $0.applyNeedsYouSound($1) }, or: NeedsYouSound.defaultChoice)
+    }
+    /// The one value that does not live on the controller: Motion is asked for it from views built
+    /// inside NSMenu callbacks, which have no controller to reach. It still writes through the
+    /// controller, so every setting keeps exactly one write path.
+    var motionLevel: Binding<Motion.Level> {
+        bind({ _ in Motion.level }, { $0.applyMotionLevel($1) }, or: .subtle)
+    }
+}
+
+// Applying a setting: the value, the UserDefaults key it is remembered under, and the side effect
+// that makes the change visible now rather than at the next poll. These were the bodies of the
+// menu's @objc choosers; they moved here whole when the Options block became a window, so the
+// behaviour of every switch is unchanged and there is still one place that performs it.
+extension StatusController {
+
+    func applyShowTimer(_ on: Bool) {
+        showTimer = on
+        UserDefaults.standard.set(on, forKey: "showTimer")
+        applyTitle()
+    }
+
+    func applyThinkingWords(_ on: Bool) {
+        useThinkingWords = on
+        UserDefaults.standard.set(on, forKey: "thinkingWords")
+        evaluate()   // re-render the bar label immediately with or without the rotating word
+    }
+
+    /// Off is a real choice here, not decoration: the poll authenticates with the user's own
+    /// Claude OAuth token (sent to api.anthropic.com and nowhere else). Switching it back on polls
+    /// immediately — waiting up to five minutes to see the effect of a click reads as a click that
+    /// did not land.
+    func applyOAuthLimits(_ on: Bool) {
+        oauthLimits = on
+        UserDefaults.standard.set(on, forKey: "oauthLimits")
+        // The parse gate would otherwise keep the pre-toggle figures until the file's next
+        // rewrite: off must drop oauth-sourced numbers on the next tick, on must re-adopt them.
+        limitsMTime = nil
+        if on { pollLimits() }
+    }
+
+    func applyAnimStyle(_ style: AnimStyle) {
+        animStyle = style
+        UserDefaults.standard.set(style.rawValue, forKey: "animStyle")
+        animTimer?.invalidate(); animTimer = nil   // recreated at the new style's fps by render()
+        frameIdx = 0
+        evaluate()
+    }
+
+    func applyIconSystem(_ system: Bool) {
+        iconSystem = system
+        UserDefaults.standard.set(system, forKey: "iconSystem")
+        evaluate()   // re-render the current state in the new colour
+    }
+
+    func applySoundThreshold(_ seconds: Double) {
+        soundThreshold = seconds
+        UserDefaults.standard.set(seconds, forKey: "soundThreshold")
+    }
+
+    func applyNeedsYouSound(_ name: String) {
+        needsYouSound = name
+        UserDefaults.standard.set(name, forKey: "needsYouSound")
+        playNeedsYou()   // the pick is its own preview
+    }
+
+    /// Nothing to re-render: the menu is rebuilt on every open, and each animation asks Motion for
+    /// the level at the moment it is committed rather than baking it into a view.
+    func applyMotionLevel(_ level: Motion.Level) {
+        Motion.level = level
+        UserDefaults.standard.set(level.rawValue, forKey: "motionLevel")
+    }
+}

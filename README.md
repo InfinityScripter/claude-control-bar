@@ -44,13 +44,13 @@ Pick one install channel. With both installed every hook runs twice; the app res
 
 ## First launch
 
-The app has no window and no Dock icon — it lives in the **menu bar**, in the top-right corner of the screen, next to the clock. You don't open it yourself: it starts with the first Claude Code session and quits when the last one ends.
+The app lives in the **menu bar**, in the top-right corner of the screen, next to the clock. It has no Dock icon and no window of its own apart from Settings (⌘,) — while that window is open the app appears in the Dock like any other, and goes back to icon-only when you close it. You don't open it yourself: it starts with the first Claude Code session and quits when the last one ends.
 
 After installing:
 
 1. **Start a new Claude Code session** — `claude` in a terminal, or a Code session in the desktop app. Sessions that were already open before the install show up only after their next prompt or tool call.
 2. **Plugin channel: wait out the first build.** The first session start compiles the app from source, which takes a minute or three; the icon appears when the build finishes. If it never does, look in `~/.claude/control-bar/problems.log`.
-3. **Find the crab in the menu bar.** With no session working it sleeps; it walks while Claude works, and a yellow dot means a session waits for your permission. Click the icon — sessions, MCP switches, limits and Options all live in that menu.
+3. **Find the crab in the menu bar.** With no session working it sleeps; it walks while Claude works, and a yellow dot means a session waits for your permission. Click the icon — sessions, MCP switches and limits all live in that menu; the settings have a window of their own.
 
 No icon?
 
@@ -60,7 +60,7 @@ No icon?
 
 ## Usage
 
-Sessions, limits, MCP switches and Options all live in the menu bar icon; the app starts and quits on its own, as described above.
+Sessions, limits and MCP switches live in the menu bar icon, the settings in a window of their own; the app starts and quits on its own, as described above.
 
 ### Crab mascot
 
@@ -88,17 +88,26 @@ The sprite is lit from the top left — a lighter rim on top, a darker one under
 
 Server and tool switches apply to new sessions: Claude Code assembles the tool list at session start, so sessions that are already open keep their old set.
 
-### Options
+### Settings
 
-Everything under **Options** in the menu:
+**Settings…** in the menu, or ⌘, — a window with four pages.
+
+**General**
 
 - **Timer in menu bar** — the running turn's elapsed time next to the icon. The session rows always show theirs.
 - **Thinking words** — one of Claude Code's own spinner verbs ("Manifesting…") in place of "Thinking…".
 - **Limits via Anthropic API** — the usage poll behind the 5h/7d bars; off means the request never happens (see [PRIVACY.md](PRIVACY.md)).
+
+**Appearance**
+
 - **Animation** — Crab Walking (default), Claude Spark, or Claude Code, the terminal glyph spinner.
 - **Color** — Orange, or System for an adaptive black/white icon.
-- **Sounds** — two events. *When a turn finishes*: off (default), every turn, or only turns longer than 1, 5 or 15 minutes. *When Claude needs you*: a short macOS alert sound the moment a session starts waiting for your permission — Tink by default, or Purr, Ping, Glass, Hero, Submarine; picking one plays it. It stays quiet when the terminal or app hosting that session is already in front: the prompt is on your screen and you don't need to hear about it.
-- **Check MCP now** (⌘R) and **Open settings.json** — run the MCP check on demand; every server and tool switch is written to `~/.claude/settings.json`.
+
+**Motion** — how much the menu itself moves. *Off* stops every animation; *Subtle* (default) moves the cards, gauges and switches; *Expressive* adds a staggered entrance for the rows that have a view of their own. macOS's own Reduce Motion is honoured on top of the choice: movement becomes a crossfade rather than nothing at all, so a change of state is still visible.
+
+**Sounds** — two events. *When a turn finishes*: off (default), every turn, or only turns longer than 1, 5 or 15 minutes. *When Claude needs you*: a short macOS alert sound the moment a session starts waiting for your permission — Tink by default, or Purr, Ping, Glass, Hero, Submarine; picking one plays it. It stays quiet when the terminal or app hosting that session is already in front: the prompt is on your screen and you don't need to hear about it.
+
+**Check MCP now** (⌘R) and **Open settings.json** stay in the menu rather than moving here — they are actions, not settings. Every server and tool switch is written to `~/.claude/settings.json`.
 
 The app also posts a macOS notification when an MCP server goes down or comes back. If you declined notifications, a *Notifications are off* row in the menu opens the right System Settings pane.
 
@@ -111,11 +120,11 @@ The plugin adds two commands inside Claude Code:
 
 Layout knobs, `defaults write` switches and the diagnostic modes are listed in [TROUBLESHOOTING.md](TROUBLESHOOTING.md#knobs-and-diagnostics).
 
-The limit figures come from the same Anthropic usage endpoint that the `/usage` command asks. The app polls it with the OAuth token Claude Code keeps in your Keychain and sends it to `api.anthropic.com` only. The poll has an off switch in Options. [PRIVACY.md](PRIVACY.md) lists every file the app writes and every request it makes.
+The limit figures come from the same Anthropic usage endpoint that the `/usage` command asks. The app polls it with the OAuth token Claude Code keeps in your Keychain and sends it to `api.anthropic.com` only. The poll has an off switch in Settings → General. [PRIVACY.md](PRIVACY.md) lists every file the app writes and every request it makes.
 
 ## Requirements
 
-- macOS 12+
+- macOS 13+
 - [Claude Code](https://claude.com/claude-code) (CLI or Desktop app)
 - Node.js and the system `/usr/bin/python3`
 - Xcode Command Line Tools for the plugin channel (it compiles the app locally); the DMG doesn't need them

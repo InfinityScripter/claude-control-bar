@@ -7,6 +7,35 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [0.12.0] - 2026-09-09
+
+### Added
+- **A Settings window, opened with ⌘, or from the menu.** Everything that used to sit under
+  *Options* now lives in a window of its own, with a sidebar of four pages — General, Appearance,
+  Motion and Sounds — leaving the menu to what it is actually read for: which sessions are
+  running, which servers answered, how much of the limit is gone. It is an ordinary window: it
+  takes the keyboard, ⌘W closes it, and the app goes back to being icon-only the moment it does.
+- **Motion, a new setting.** *Off*, *Subtle* (the default) or *Expressive*, under Settings →
+  Motion. macOS's own Reduce Motion is honoured on top of the choice: movement is replaced by a
+  crossfade rather than dropped, so a change of state stays visible either way.
+- **The menu moves.** The hover card grows out of the row it belongs to and fades out instead of
+  vanishing, its blocks arriving in reading order; the limit and context bars run up from zero;
+  the row highlight fades out; the chevron leans toward its submenu and the switch knob stretches
+  as it travels. All of it is one-shot Core Animation, committed once and then interpolated by the
+  render server — the app does no work per frame, and none at all while the menu is closed.
+- **A progress bar on the update card.** "Downloading… 43%" only changed when a new figure landed,
+  so a slow network read as a hang; the bar keeps moving between the figures.
+
+### Changed
+- **macOS 13 is now the minimum, up from macOS 12.** The Settings window is built on
+  `NavigationSplitView` and the grouped form style, and both start at 13. The build stays
+  universal — Apple Silicon and Intel alike.
+- The *Options* block is gone from the menu, replaced by a single **Settings…** row. **Check MCP
+  now** (⌘R) and **Open settings.json** stay where they were: those are actions, not settings.
+- The limit bars are drawn as layers instead of repainted paths. The width still comes from the
+  same `Gauge.fillWidth` the strip beside the menu bar icon uses, one-device-pixel floor included,
+  so the two still agree about what a small value looks like.
+
 ## [0.11.0] - 2026-09-08
 
 ### Added
@@ -1017,6 +1046,7 @@ reports on Claude Code — it switches parts of it off.
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[0.12.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.12.0
 [0.11.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.11.0
 [0.10.1]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.10.1
 [0.10.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.10.0

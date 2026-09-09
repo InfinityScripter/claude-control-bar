@@ -9,7 +9,7 @@ Claude Control Bar collects no data and has no servers. Everything it does happe
   same numbers `/usage` shows — and nothing else is asked for or stored. The token is sent to
   Anthropic and to no other host: the request refuses redirects outright, so a `30x` answer from
   the endpoint, a proxy or a future move of the API cannot carry the token to another origin —
-  it is reported as a failed poll instead. Switch **Limits via Anthropic API** off in Options and
+  it is reported as a failed poll instead. Switch **Limits via Anthropic API** off in Settings → General and
   this request never happens.
 - **One update check a day**: a request to GitHub's public releases API for the latest tag, and
   one to Homebrew's public formulae API for the current cask version. Both only decide whether
@@ -64,7 +64,7 @@ Mac, and all of it is listed here rather than left to be discovered.
 - **Claude desktop's session cache** (`~/Library/Application Support/Claude/claude-code-sessions`),
   for the tool list of your claude.ai connectors: they report nothing at startup, so this is the
   only place their schemas exist locally.
-- **Your Claude Code OAuth token**, if the Anthropic limits poll is switched on (Options → "Limits
+- **Your Claude Code OAuth token**, if the Anthropic limits poll is switched on (Settings → General → "Limits
   via Anthropic API"). Read from the login Keychain entry, or from `~/.claude/.credentials.json`
   where there is no Keychain. It is sent to `api.anthropic.com` and nowhere else, is never
   written to disk by this app, and never appears in a log. Switch the option off and it is not

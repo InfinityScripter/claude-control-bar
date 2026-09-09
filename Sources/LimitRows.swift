@@ -18,18 +18,30 @@ final class LimitRowView: NSView {
     private let badge = NSTextField(labelWithString: "")
     private let percent = NSTextField(labelWithString: "")
     private let reset = NSTextField(labelWithString: "")
+    private let bar: MotionBar
     private let value: Double
-    private let accent: NSColor?
 
     /// `accent` is the neutral fill. nil draws label ink like the menu bar gauge; the Fable row
     /// hands in a tint so the model's window is told apart from the account's two at a glance.
     /// A warning level (75%, 90%) overrides it for every row: the colour of "nearly out" has to
     /// mean one thing across the section.
     init(title text: String, badge tag: String?, used: Int, resets: String?, accent: NSColor?, width: CGFloat) {
-        value = Double(used) / 100
-        self.accent = accent
+        let fraction = Double(used) / 100
+        value = fraction
+        // Built before super.init, so the colours are picked from the parameters rather than from
+        // self: a warning level outranks the row's own tint at 75% and again at 90%, because the
+        // colour of "nearly out" has to mean one thing across the whole section.
+        bar = MotionBar(value: fraction,
+                        fill: Gauge.level(fraction) ?? accent
+                            ?? NSColor.labelColor.withAlphaComponent(0.85),
+                        track: NSColor.labelColor.withAlphaComponent(0.12),
+                        height: Self.barH, width: max(1, width - Self.pad * 2))
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: Self.rowH))
         autoresizingMask = [.width]
+        // The row already reads as one sentence for VoiceOver; a second element inside it would
+        // make the same figure be announced twice.
+        bar.setAccessibilityElement(false)
+        addSubview(bar)
 
         let level = Gauge.level(value)
         title.stringValue = text
@@ -83,24 +95,28 @@ final class LimitRowView: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override func draw(_ dirtyRect: NSRect) {
+    /// How long this row waits before its bar runs up. The section sets it per row: three bars
+    /// that fill at once read as one event, and the reason to draw three instead of printing
+    /// three numbers is that they are meant to be compared with each other.
+    var revealDelay: Double {
+        get { bar.revealDelay }
+        set { bar.revealDelay = newValue }
+    }
+
+    // The fill was drawn by hand here until it had to move. A path redrawn on every frame is
+    // main-thread work per frame; a solid layer's width is interpolated by the render server for
+    // free. The geometry below is the same the old draw(_:) computed, Gauge.fillWidth included.
+    override func layout() {
+        super.layout()
         // The bar stops short of the reset time when there is one; a window with no known
         // reset takes the whole width rather than leaving a gap that reads as a missing label.
         let trailing = reset.stringValue.isEmpty ? 0 : Self.resetW + 8
-        let x = Self.pad, w = bounds.width - Self.pad * 2 - trailing
-        let y = Self.barY - Self.barH / 2 + 2
-        let radius = Self.barH / 2
-        let track = NSBezierPath(roundedRect: NSRect(x: x, y: y, width: w, height: Self.barH),
-                                 xRadius: radius, yRadius: radius)
-        NSColor.labelColor.withAlphaComponent(0.12).setFill()
-        track.fill()
-        let scale = window?.backingScaleFactor ?? 2
-        let filled = Gauge.fillWidth(value, trackWidth: w, scale: scale)
-        guard filled > 0 else { return }
-        NSGraphicsContext.current?.saveGraphicsState()
-        track.setClip()
-        (Gauge.level(value) ?? accent ?? NSColor.labelColor.withAlphaComponent(0.85)).setFill()
-        NSRect(x: x, y: y, width: filled, height: Self.barH).fill()
-        NSGraphicsContext.current?.restoreGraphicsState()
+        bar.frame = NSRect(x: Self.pad, y: Self.barY - Self.barH / 2 + 2,
+                           width: max(1, bounds.width - Self.pad * 2 - trailing), height: Self.barH)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { Motion.enterMenu(self) }
     }
 }
