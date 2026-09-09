@@ -7,7 +7,7 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
-## [Unreleased]
+## [0.13.0] - 2026-09-09
 
 ### Changed
 - **The dropdown is a panel now, not a menu.** Clicking the icon drops a window of the app's own
@@ -1091,6 +1091,7 @@ reports on Claude Code — it switches parts of it off.
 - Signed and notarized DMG so it opens without a Gatekeeper warning.
 - Claude Code plugin marketplace manifest for the plugin install path.
 
+[0.13.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.13.0
 [0.12.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.12.0
 [0.11.0]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.11.0
 [0.10.1]: https://github.com/InfinityScripter/claude-control-bar/releases/tag/v0.10.1
