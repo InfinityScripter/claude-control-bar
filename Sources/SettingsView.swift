@@ -2,12 +2,12 @@ import SwiftUI
 
 /// The pages of the Settings window.
 ///
-/// A flat list, not the sectioned and searchable sidebar a large app needs: there are four pages,
-/// and a search field over four rows is furniture rather than navigation. The shape is here to
+/// A flat list, not the sectioned and searchable sidebar a large app needs: there are five pages,
+/// and a search field over five rows is furniture rather than navigation. The shape is here to
 /// grow into — a case added here shows up in the sidebar and in the switch below, and nowhere
 /// else has to be told about it.
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case general, appearance, motion, sounds
+    case general, appearance, motion, sounds, about
 
     /// The page itself, so the sidebar's selection is a page rather than a raw string.
     var id: SettingsPage { self }
@@ -18,6 +18,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .appearance: return "Appearance"
         case .motion:     return "Motion"
         case .sounds:     return "Sounds"
+        case .about:      return "About"
         }
     }
 
@@ -27,13 +28,15 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .appearance: return "paintbrush"
         case .motion:     return "wand.and.rays"
         case .sounds:     return "speaker.wave.2"
+        case .about:      return "info.circle"
         }
     }
 }
 
-/// Everything that used to sit under Options in the dropdown. It moved out because a menu that is
-/// read at a glance — which sessions are running, which servers answered, how much of the limit is
-/// gone — should not also be where an animation style gets picked.
+/// Everything that used to sit under Options in the dropdown, plus the version line and the
+/// release notes. They moved out for the same reason: a panel read at a glance — which sessions
+/// are running, which servers answered, how much of the limit is gone — should not also be where
+/// an animation style gets picked or a version number is parked.
 struct SettingsView: View {
     @ObservedObject var store: SettingsStore
     @State private var page: SettingsPage? = .general
@@ -64,6 +67,7 @@ struct SettingsView: View {
         case .appearance: AppearanceSettings(store: store)
         case .motion:     MotionSettings(store: store)
         case .sounds:     SoundsSettings(store: store)
+        case .about:      AboutSettings(store: store)
         }
     }
 }
@@ -132,7 +136,7 @@ private struct MotionSettings: View {
                     }
                 }
             } header: {
-                Text("Animation in the menu")
+                Text("Animation in the panel")
             } footer: {
                 Text(store.motionLevel.wrappedValue.detail)
             }
@@ -182,6 +186,47 @@ private struct SoundsSettings: View {
             } footer: {
                 Text("Picking a sound plays it once. Nothing is played when the session's own "
                      + "window is already the one you are looking at.")
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+/// Where this copy stands. It is here rather than in the panel because a version number is looked
+/// up once in a while and read never — the panel says something is out of date when it is, and
+/// that banner is the only thing about updating that belongs in a glance.
+private struct AboutSettings: View {
+    @ObservedObject var store: SettingsStore
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Version", value: store.version)
+                Button("What\u{2019}s new in \(store.version)") { store.showWhatsNew() }
+            } header: {
+                Text(store.appName)
+            }
+            Section {
+                if let newer = store.newerVersion {
+                    LabeledContent("Latest release", value: newer)
+                    Button("What\u{2019}s new in \(newer)") { store.showLatestNotes() }
+                    // Homebrew owns the bundle, and a DMG swapped under it would be undone by the
+                    // next `brew upgrade` — so the command is handed over rather than performed.
+                    if store.brewManaged {
+                        LabeledContent("Update with", value: store.brewUpgradeCommand)
+                            .textSelection(.enabled)
+                    }
+                } else {
+                    Label("This copy is up to date", systemImage: "checkmark.circle")
+                        .foregroundStyle(.secondary)
+                }
+                Button("Check now") { store.checkForUpdate() }
+            } header: {
+                Text("Updates")
+            } footer: {
+                Text("Checked once a day against the project\u{2019}s GitHub releases and the "
+                     + "Homebrew cask. Nothing about this machine is sent anywhere \u{2014} both "
+                     + "are plain public reads.")
             }
         }
         .formStyle(.grouped)

@@ -8,7 +8,7 @@ A macOS menu bar app for **Claude Code**. It shows what Claude is doing and lets
 
 - **Sessions.** An animated icon while Claude works, a yellow dot when it waits for your permission, a turn timer and context-window usage for each session. Click a session to focus the terminal or editor it runs in.
 - **MCP.** Every server and every tool has its own switch. A muted tool disappears from Claude's context at the next session start.
-- **Limits.** 5-hour and 7-day usage as bars in the menu bar; the menu lists them with reset times, plus Fable's weekly window on plans that have one.
+- **Limits.** 5-hour and 7-day usage as bars in the menu bar; the panel lists them with reset times, plus Fable's weekly window on plans that have one.
 
 ## Install
 
@@ -34,7 +34,7 @@ The app compiles from source on your Mac at the next session start, so you need 
 > The DMG is not notarized, so macOS blocks the first launch. Open **System Settings → Privacy & Security** and press **Open Anyway**, or run
 > `xattr -dr com.apple.quarantine "/Applications/Claude Control Bar.app"`.
 
-Updates for the DMG install are one click: when a newer release is out, the menu opens with an
+Updates for the DMG install are one click: when a newer release is out, the panel opens with an
 **Update available** card. Click it to read what changed, then **Download and install** — the
 app fetches the release DMG, checks its size and SHA-256 against what GitHub advertises, swaps
 itself in place and restarts. No Gatekeeper prompt the second time: the app clears the quarantine
@@ -44,13 +44,13 @@ Pick one install channel. With both installed every hook runs twice; the app res
 
 ## First launch
 
-The app lives in the **menu bar**, in the top-right corner of the screen, next to the clock. It has no Dock icon and no window of its own apart from Settings (⌘,) — while that window is open the app appears in the Dock like any other, and goes back to icon-only when you close it. You don't open it yourself: it starts with the first Claude Code session and quits when the last one ends.
+The app lives in the **menu bar**, in the top-right corner of the screen, next to the clock. It has no Dock icon. Clicking the icon drops a panel under it; Settings (⌘,) opens a window of its own, and while that window is open the app appears in the Dock like any other, going back to icon-only when you close it. You don't open it yourself: it starts with the first Claude Code session and quits when the last one ends.
 
 After installing:
 
 1. **Start a new Claude Code session** — `claude` in a terminal, or a Code session in the desktop app. Sessions that were already open before the install show up only after their next prompt or tool call.
 2. **Plugin channel: wait out the first build.** The first session start compiles the app from source, which takes a minute or three; the icon appears when the build finishes. If it never does, look in `~/.claude/control-bar/problems.log`.
-3. **Find the crab in the menu bar.** With no session working it sleeps; it walks while Claude works, and a yellow dot means a session waits for your permission. Click the icon — sessions, MCP switches and limits all live in that menu; the settings have a window of their own.
+3. **Find the crab in the menu bar.** With no session working it sleeps; it walks while Claude works, and a yellow dot means a session waits for your permission. Click the icon — the panel has two tabs, **Sessions** and **MCP**, with the usage limits pinned above both; the settings have a window of their own.
 
 No icon?
 
@@ -60,7 +60,7 @@ No icon?
 
 ## Usage
 
-Sessions, limits and MCP switches live in the menu bar icon, the settings in a window of their own; the app starts and quits on its own, as described above.
+Sessions, limits and MCP switches live in the panel under the menu bar icon, the settings in a window of their own; the app starts and quits on its own, as described above.
 
 ### Crab mascot
 
@@ -90,7 +90,7 @@ Server and tool switches apply to new sessions: Claude Code assembles the tool l
 
 ### Settings
 
-**Settings…** in the menu, or ⌘, — a window with four pages.
+**Settings** at the bottom of the panel, or ⌘, — a window with five pages.
 
 **General**
 
@@ -103,13 +103,13 @@ Server and tool switches apply to new sessions: Claude Code assembles the tool l
 - **Animation** — Crab Walking (default), Claude Spark, or Claude Code, the terminal glyph spinner.
 - **Color** — Orange, or System for an adaptive black/white icon.
 
-**Motion** — how much the menu itself moves. *Off* stops every animation; *Subtle* (default) moves the cards, gauges and switches; *Expressive* adds a staggered entrance for the rows that have a view of their own. macOS's own Reduce Motion is honoured on top of the choice: movement becomes a crossfade rather than nothing at all, so a change of state is still visible.
+**Motion** — how much the panel itself moves. *Off* stops every animation; *Subtle* (default) moves the panel, its cards and its switches; *Expressive* adds a staggered entrance for the rows in a list. macOS's own Reduce Motion is honoured on top of the choice: movement becomes a crossfade rather than nothing at all, so a change of state is still visible.
 
 **Sounds** — two events. *When a turn finishes*: off (default), every turn, or only turns longer than 1, 5 or 15 minutes. *When Claude needs you*: a short macOS alert sound the moment a session starts waiting for your permission — Tink by default, or Purr, Ping, Glass, Hero, Submarine; picking one plays it. It stays quiet when the terminal or app hosting that session is already in front: the prompt is on your screen and you don't need to hear about it.
 
-**Check MCP now** (⌘R) and **Open settings.json** stay in the menu rather than moving here — they are actions, not settings. Every server and tool switch is written to `~/.claude/settings.json`.
+**Check MCP now** (⌘R) and **Open settings.json** are the two glyphs in the MCP tab's header rather than settings here — they are actions, not settings. Every server and tool switch is written to `~/.claude/settings.json`.
 
-The app also posts a macOS notification when an MCP server goes down or comes back. If you declined notifications, a *Notifications are off* row in the menu opens the right System Settings pane.
+The app also posts a macOS notification when an MCP server goes down or comes back. If you declined notifications, a *Notifications are off* row in the panel opens the right System Settings pane.
 
 ### Slash commands
 

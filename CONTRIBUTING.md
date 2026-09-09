@@ -57,7 +57,11 @@ destroys an installed copy.
 CI runs the Python, Node and Swift suites plus a build and identity checks — `git push` tells
 you most of it. But before a PR, run the app: both surfaces (desktop app and terminal CLI)
 behave differently, and say which terminal you used. For visual changes attach a screenshot;
-`CONTROL_BAR_DUMP_MENU=1` prints the menu as text.
+`CONTROL_BAR_DUMP_MENU=1` prints the panel as text.
+
+The panel's layout is drawn out at full size in `docs/panel-design.html`, and the two directions
+it was chosen over are in `docs/panel-directions.html` — open either in a browser. Motion has its
+own spec in `docs/motion.md`.
 
 ## Commits
 

@@ -22,7 +22,9 @@ alwaysApply: false
 - `limits.json` — файл с двумя писателями (`capture_limits` в `hooks/statusline.py` и команда `limits` в `scripts/mcpbar.py`) и `model-windows.json` — тоже с двумя (`hooks/statusline.py` и `scripts/mcpbar.py`; `hooks/update.js` его только читает); формат между писателями согласован намеренно, оба должны сохранять совместимость при правке.
 - `uiconfig.json` правит только пользователь вручную — в кодовой базе писателя нет, только чтение в `main.swift`. Не добавлять код, который пишет в этот файл.
 - Хуки (Node, Python) хардкодят identity-значения (bundle id, exec, app name) намеренно, а не читают `identity.env` — после копирования хуков в целевой проект `identity.env` недоступен. Это гвардит CI (`ci.yml:62-95`), не забытая интеграция.
-- Внутри Swift-слоя: `main.swift` — единственный владелец путей и жизненного цикла приложения. Модели (`MCPModel`, `Sessions`, `DesktopSessions`, `RunningProcesses`, `Changelog`) — чистые структуры/парсеры без побочных эффектов на файловую систему помимо своего файла. `MCPMenu` — вьюха поверх `MCPModel`, не источник данных.
+- Внутри Swift-слоя: `main.swift` — единственный владелец путей и жизненного цикла приложения. Модели (`MCPModel`, `Sessions`, `DesktopSessions`, `RunningProcesses`, `Changelog`) — чистые структуры/парсеры без побочных эффектов на файловую систему помимо своего файла.
+- Панель (`PanelView`, `PanelTabs`) читает только `PanelStore`, а тот — только снимок, собранный в `PanelData.swift` из `StatusController`. SwiftUI-вьюхи не обращаются к `MCPModel`, `Sessions` и файлам состояния напрямую: односторонний поток «файлы → StatusController → снимок → вьюха» и есть причина, по которой панель можно перерисовывать 2.5 раза в секунду, не боясь, что она сама что-то поменяет.
+- Обратное направление — только через методы `PanelStore` (`setServer`, `setTool`, `openSession`, …), которые зовут `StatusController`. Вьюха не запускает `Process` и не пишет файлы.
 
 ## Контракты файлов состояния
 
