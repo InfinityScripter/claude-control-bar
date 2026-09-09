@@ -115,7 +115,7 @@ The limit figures come from the same Anthropic usage endpoint that the `/usage` 
 
 ## Requirements
 
-- macOS 12+
+- macOS 13+
 - [Claude Code](https://claude.com/claude-code) (CLI or Desktop app)
 - Node.js and the system `/usr/bin/python3`
 - Xcode Command Line Tools for the plugin channel (it compiles the app locally); the DMG doesn't need them

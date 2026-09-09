@@ -136,102 +136,15 @@ extension StatusController {
         addMCPSection(to: menu)
 
         menu.addItem(.separator())
-        menu.addItem(header("Options"))
-        // "in menu bar", because the dropdown rows keep their own timers regardless: a switch
-        // that reads "Show timer" and leaves timers visible reads as broken.
-        menu.addItem(toggleRow(title: "Timer in menu bar", isOn: showTimer) { [weak self] on in
-            self?.showTimer = on
-            UserDefaults.standard.set(on, forKey: "showTimer")
-            self?.applyTitle()
-        })
-        menu.addItem(toggleRow(title: "Thinking words", isOn: useThinkingWords) { [weak self] on in
-            self?.useThinkingWords = on
-            UserDefaults.standard.set(on, forKey: "thinkingWords")
-            self?.evaluate()   // re-render the bar label immediately with/without the rotating word
-        })
-        // Off is a real choice here, not decoration: the poll authenticates with the user's own
-        // Claude OAuth token (sent to api.anthropic.com and nowhere else). Switching it back on
-        // polls immediately — waiting up to five minutes to see the effect of a click reads as
-        // the click having failed.
-        menu.addItem(toggleRow(title: "Limits via Anthropic API", isOn: oauthLimits) { [weak self] on in
-            self?.oauthLimits = on
-            UserDefaults.standard.set(on, forKey: "oauthLimits")
-            // The parse gate would otherwise keep the pre-toggle figures until the file's next
-            // rewrite: off must drop oauth-sourced numbers on the next tick, on must re-adopt them.
-            self?.limitsMTime = nil
-            if on { self?.pollLimits() }
-        })
-
-        let animParent = NSMenuItem(title: "Animation", action: nil, keyEquivalent: "")
-        let animSub = NSMenu()
-        for (style, name) in [(AnimStyle.web, "Claude Spark"), (AnimStyle.code, "Claude Code"), (AnimStyle.crab, "Crab Walking")] {
-            let it = NSMenuItem(title: name, action: #selector(chooseStyle(_:)), keyEquivalent: "")
-            it.target = self
-            it.representedObject = style.rawValue
-            it.state = animStyle == style ? .on : .off
-            animSub.addItem(it)
-        }
-        animParent.submenu = animSub
-        menu.addItem(animParent)
-
-        let colorParent = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
-        let colorSub = NSMenu()
-        for (sys, name) in [(false, "Orange"), (true, "System")] {
-            let it = NSMenuItem(title: name, action: #selector(chooseColor(_:)), keyEquivalent: "")
-            it.target = self
-            it.representedObject = sys
-            it.state = iconSystem == sys ? .on : .off
-            colorSub.addItem(it)
-        }
-        colorParent.submenu = colorSub
-        menu.addItem(colorParent)
-
-        // Two events, one submenu. The needs-you list doubles as the picker: choosing a sound
-        // plays it once, so there is no separate preview control to build.
-        let soundParent = NSMenuItem(title: "Sounds", action: nil, keyEquivalent: "")
-        let soundSub = NSMenu()
-        soundSub.addItem(header("When a turn finishes"))
-        for (secs, name) in [(0.0, "Off"), (0.1, "Every turn"), (60.0, "1 min+"), (300.0, "5 min+"), (900.0, "15 min+")] {
-            let it = NSMenuItem(title: name, action: #selector(chooseSound(_:)), keyEquivalent: "")
-            it.target = self
-            it.representedObject = NSNumber(value: secs)
-            it.state = soundThreshold == secs ? .on : .off
-            soundSub.addItem(it)
-        }
-        soundSub.addItem(.separator())
-        soundSub.addItem(header("When Claude needs you"))
-        for name in [""] + NeedsYouSound.choices {
-            let it = NSMenuItem(title: name.isEmpty ? "Off" : name,
-                                action: #selector(chooseNeedsYouSound(_:)), keyEquivalent: "")
-            it.target = self
-            it.representedObject = name
-            it.state = needsYouSound == name ? .on : .off
-            soundSub.addItem(it)
-        }
-        soundParent.submenu = soundSub
-        menu.addItem(soundParent)
-
-        // A fourth submenu in a block that already has three, so the setting arrives in a shape
-        // the menu has already taught. Off is the option that has to exist: motion is a matter of
-        // taste and of hardware, and a menu bar app is not the place to argue about either.
-        let motionParent = NSMenuItem(title: "Motion", action: nil, keyEquivalent: "")
-        let motionSub = NSMenu()
-        for level in Motion.Level.allCases {
-            let it = NSMenuItem(title: level.title, action: #selector(chooseMotion(_:)), keyEquivalent: "")
-            it.target = self
-            it.representedObject = level.rawValue
-            it.state = Motion.level == level ? .on : .off
-            it.toolTip = level.detail
-            motionSub.addItem(it)
-        }
-        // Said here rather than left as a mystery: with Reduce Motion on, picking Expressive
-        // changes very little, and a setting that visibly does nothing reads as broken.
-        if Motion.systemReducesMotion {
-            motionSub.addItem(.separator())
-            motionSub.addItem(header("Reduce Motion is on — movement is crossfaded"))
-        }
-        motionParent.submenu = motionSub
-        menu.addItem(motionParent)
+        // One row where seven used to be. Everything that stood under Options now lives in a
+        // window of its own: a menu read at a glance — which sessions are running, which servers
+        // answered, how much of the limit is gone — should not also be where an animation style
+        // gets picked.
+        let prefs = NSMenuItem(title: "Settings\u{2026}", action: #selector(openSettingsWindow),
+                               keyEquivalent: ",")
+        prefs.keyEquivalentModifierMask = [.command]
+        prefs.target = self
+        menu.addItem(prefs)
 
         menu.addItem(.separator())
         // A nil action while a check runs is what actually greys the row out: the menu keeps the
@@ -352,33 +265,6 @@ extension StatusController {
         return it
     }
 
-    func toggleRow(title: String, isOn: Bool, onToggle: @escaping (Bool) -> Void) -> NSMenuItem {
-        let width = boxWidth, height: CGFloat = 24, leftInset: CGFloat = 14, rightInset: CGFloat = 12
-        let row = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
-        row.autoresizingMask = [.width]
-
-        let labelFont = NSFont.menuFont(ofSize: 0)
-        let label = NSTextField(labelWithString: title)
-        label.font = labelFont
-        label.textColor = .labelColor
-        label.sizeToFit()
-        label.setFrameOrigin(NSPoint(x: leftInset, y: (height - label.frame.height) / 2))
-        label.autoresizingMask = [.maxXMargin]
-        row.addSubview(label)
-
-        let toggle = ToggleView(isOn: isOn)
-        toggle.onToggle = onToggle
-        let toggleX = width - toggle.frame.width - rightInset
-        toggle.setFrameOrigin(NSPoint(x: toggleX, y: (height - toggle.frame.height) / 2))
-        toggle.autoresizingMask = [.minXMargin]
-        row.addSubview(toggle)
-
-        let item = NSMenuItem()
-        item.title = title   // the accessible name: VoiceOver and CONTROL_BAR_DUMP_MENU read it, the view hides it
-        item.view = row
-        return item
-    }
-
 
     @objc func quit() {
         // NSApp.terminate tears down our threads but NOT the spawned build — bash and its
@@ -460,43 +346,5 @@ extension StatusController {
               let types = Bundle(url: appURL)?.infoDictionary?["CFBundleURLTypes"] as? [[String: Any]]
         else { return nil }
         return types.compactMap { ($0["CFBundleURLSchemes"] as? [String])?.first }.first
-    }
-
-    @objc func chooseColor(_ sender: NSMenuItem) {
-        guard let sys = sender.representedObject as? Bool else { return }
-        iconSystem = sys
-        UserDefaults.standard.set(iconSystem, forKey: "iconSystem")
-        evaluate() // re-render the current state in the new color
-    }
-
-    @objc func chooseSound(_ sender: NSMenuItem) {
-        guard let n = sender.representedObject as? NSNumber else { return }
-        soundThreshold = n.doubleValue
-        UserDefaults.standard.set(soundThreshold, forKey: "soundThreshold")
-    }
-
-    @objc func chooseNeedsYouSound(_ sender: NSMenuItem) {
-        guard let name = sender.representedObject as? String else { return }
-        needsYouSound = name
-        UserDefaults.standard.set(name, forKey: "needsYouSound")
-        playNeedsYou()   // the pick is its own preview
-    }
-
-    @objc func chooseMotion(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let level = Motion.Level(rawValue: raw) else { return }
-        Motion.level = level
-        UserDefaults.standard.set(raw, forKey: "motionLevel")
-        // Nothing to re-render: the menu is rebuilt on every open, and the level is read at the
-        // moment each animation is committed rather than baked into the views.
-    }
-
-    @objc func chooseStyle(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let st = AnimStyle(rawValue: raw) else { return }
-        animStyle = st
-        UserDefaults.standard.set(raw, forKey: "animStyle")
-        animTimer?.invalidate(); animTimer = nil // recreate at the new style's fps
-        frameIdx = 0
-        evaluate()
     }
 }

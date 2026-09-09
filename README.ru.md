@@ -109,7 +109,7 @@ https://github.com/user-attachments/assets/39381f85-c8ce-4d32-8baa-dce67d39ee7e
 
 ## Требования
 
-- macOS 12+
+- macOS 13+
 - [Claude Code](https://claude.com/claude-code) (CLI или Desktop-приложение)
 - Node.js и системный `/usr/bin/python3`
 - Xcode Command Line Tools нужны только плагину (он собирает приложение локально), для DMG не нужны

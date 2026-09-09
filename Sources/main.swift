@@ -1,7 +1,7 @@
 import Cocoa
 import UserNotifications
 
-final class StatusController: NSObject, NSMenuDelegate {
+final class StatusController: NSObject, NSMenuDelegate, NSWindowDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let root = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar")
     let stateDir = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/control-bar/state.d")
@@ -42,6 +42,11 @@ final class StatusController: NSObject, NSMenuDelegate {
 
     var pollTimer: Timer?
     var animTimer: Timer?
+    /// Kept between opens rather than rebuilt: it holds the sidebar's selection and whatever size
+    /// the window was dragged to.
+    var settingsWindow: NSWindow?
+    /// Built on the first open. It stores nothing itself — only bindings back to this object.
+    lazy var settingsStore = SettingsStore(controller: self)
     var frameIdx = 0
 
     let launchedAt = Date()
@@ -144,7 +149,19 @@ final class StatusController: NSObject, NSMenuDelegate {
     let frames: [NSImage] = StatusController.loadFrames()
     let spriteFPS: Double = 9 // tune: 8 frames per loop -> ~0.9s/cycle
 
-    enum AnimStyle: String { case web, code, crab }
+    enum AnimStyle: String, CaseIterable {
+        case web, code, crab
+
+        /// What the Settings picker calls each one. Kept beside the cases so a style cannot be
+        /// added without deciding what it is named.
+        var title: String {
+            switch self {
+            case .web:  return "Claude Spark"
+            case .code: return "Claude Code"
+            case .crab: return "Crab Walking"
+            }
+        }
+    }
     var animStyle: AnimStyle = .crab
     var showTimer = false
     var iconSystem = false // false = brand Orange; true = adaptive black/white (template image)
@@ -1039,6 +1056,12 @@ final class StatusController: NSObject, NSMenuDelegate {
     func checkLifecycle() {
         let now = Date()
         if now.timeIntervalSince(launchedAt) < launchGrace { return }
+        // An open Settings window is someone using the app right now. Without this the idle quit
+        // fires three seconds after the last session ends and closes the window under their hands.
+        if settingsWindow?.isVisible == true {
+            notNeededSince = nil
+            return
+        }
         if sessionCount() > 0 || desktopRunning {
             notNeededSince = nil
             return

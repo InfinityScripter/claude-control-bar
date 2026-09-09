@@ -43,8 +43,8 @@ echo "Compiling universal binary (arm64 + x86_64)…"
 # with the build machine's OS and it refuses to launch on older systems despite LSMinimumSystemVersion.
 # Sources/Model/ is the UI-free half (parsers, state machines, frame data) that CI also compiles
 # on its own against tests/model/main.swift; Sources/ proper is the app.
-swiftc -O -target arm64-apple-macos12.0  Sources/*.swift Sources/Model/*.swift -o "$BIN.arm64"  -framework Cocoa
-swiftc -O -target x86_64-apple-macos12.0 Sources/*.swift Sources/Model/*.swift -o "$BIN.x86_64" -framework Cocoa
+swiftc -O -target arm64-apple-macos13.0  Sources/*.swift Sources/Model/*.swift -o "$BIN.arm64"  -framework Cocoa -framework SwiftUI
+swiftc -O -target x86_64-apple-macos13.0 Sources/*.swift Sources/Model/*.swift -o "$BIN.x86_64" -framework Cocoa -framework SwiftUI
 lipo -create "$BIN.arm64" "$BIN.x86_64" -output "$BIN"
 rm -f "$BIN.arm64" "$BIN.x86_64"
 
@@ -60,7 +60,7 @@ cat > "$STAGE_APP/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>LSMinimumSystemVersion</key><string>12.0</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>CFBundleIconFile</key><string>AppIcon</string>
 </dict>
