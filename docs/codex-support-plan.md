@@ -3,7 +3,12 @@
 Цель — тот же набор функций, что уже есть для Claude Code, но для Codex: живые сессии
 с состоянием (думает / инструмент / ждёт разрешения / idle), таймер хода и заполненность
 контекста, клик по строке фокусирует терминал, «нужен ты» со звуком и жёлтой точкой,
-лимиты аккаунта (5 часов / неделя) с временем сброса, и уведомление о сбросе.
+лимиты аккаунта (5 часов / неделя) с временем сброса, уведомление о сбросе, и MCP-серверы
+Codex с переключателями серверов и отдельных инструментов.
+
+**Дизайн-макет** (панель: Sessions, MCP, Settings и три варианта полоски лимитов):
+https://claude.ai/code/artifact/d6343b03-5742-40ae-b758-9e1588111b37 — утверждается до
+начала кода (см. шаг «Д» в §3).
 
 Факты про Codex ниже сверены с исходниками `openai/codex` (коммит `9469737`, 2026-09-10,
 crates `codex-rs/hooks`, `codex-rs/rollout`, `codex-rs/protocol`, `codex-rs/backend-client`,
@@ -132,6 +137,34 @@ app-server как запасной путь, если эндпоинт окаж�
 `.git/HEAD`. Открывать только на чтение (`sqlite3` в системном Python есть); номер в имени
 файла (`state_5`) — версия схемы, при переименовании молча деградировать до rollout.
 Живость и состояние из индекса не берутся — только из хуков и pid.
+
+### 0.3b MCP-серверы Codex
+
+- **Где живут.** `~/.codex/config.toml`, таблица `[mcp_servers.<name>]`: транспорт
+  (`command`/`args`/`env` для stdio, `url` для streamable HTTP), `enabled = true|false`,
+  `enabled_tools = [...]` (allow-list), `disabled_tools = [...]` (deny-list, применяется после
+  allow-list), `startup_timeout_sec`, per-tool политики. Плагины Codex добавляют свои серверы,
+  а пользовательский `[plugins.<id>.mcp_servers.<name>]` несёт те же `enabled` /
+  `enabled_tools` / `disabled_tools` поверх них. Проектный `.codex/config.toml` — второй слой.
+- **Чтение.** `codex mcp list --json` (поля `name`, `enabled`, транспорт, `auth_status`) и
+  `codex mcp get <name> --json` (`enabled`, `enabled_tools`, `disabled_tools`). Живой статус и
+  список инструментов — app-server `mcpServerStatus/list` (`runtime_status`, `tools{}`,
+  `tools_error`, `auth_status`, `plugin_id`). Это аналог `claude mcp list` + JSON-RPC-опроса
+  `ask_server_for_tools` в `mcpbar.py`, только Codex сам поднимает серверы — нам их
+  запускать не надо.
+- **Запись.** Системный `/usr/bin/python3` на macOS — 3.9, `tomllib` в нём нет, а писать TOML
+  руками (сохраняя комментарии и чужие таблицы) — ровно та ошибка, которую `mcpbar.py`
+  избегает для `settings.json` бэкапами и локом. Поэтому переключатели пишут через сам Codex:
+  app-server `config/batchWrite` (`key_path` = `mcp_servers.<name>.enabled` или
+  `mcp_servers.<name>.disabled_tools`, `merge_strategy: upsert`) — тот же механизм, которым
+  TUI сохраняет доверие хуков. Так формат файла остаётся за Codex. Запасной вариант —
+  `config/value/write`.
+- **Имена инструментов** в хуках и транскриптах: `mcp__<server>__<tool>` — тот же префикс,
+  что у Claude, значит `tool_prefix()`/`TOOL_LABELS` работают без правок.
+- **OAuth-серверы**: `auth_status` ≠ authorized → строка показывает `codex mcp login` вместо
+  счётчика инструментов (макет, вкладка MCP).
+- **Применение**: как и у Claude, набор серверов строится на старте сессии — заголовок группы
+  честно говорит «applies next session».
 
 ### 0.4 Процесс и surface
 
@@ -262,8 +295,12 @@ resets_at}]`, панель рисует их как строку «Fable · 7d»
   `initialize` → `account/rateLimits/read` → exit; таймаут 20 с.
 - `report`/`doctor`: секция Codex (версия `codex`, наличие `hooks.json`, статус доверия по
   `hooks.state` в `config.toml` — только чтение, число живых сессий).
-- MCP-серверы Codex (`[mcp_servers]` в `config.toml`) — **вне этого плана**: отдельная
-  вкладка и переключатели — следующая итерация после сессий и лимитов.
+- Команда `codex-mcp refresh`: `codex mcp list --json` + `mcpServerStatus/list` через
+  app-server → `codex/mcp.json` той же формы, что `mcp.json` (сервер: `state`, `tools[]` с
+  `enabled`, `auth`, `plugin`), чтобы `MCPModel` читал оба файла одним парсером.
+  `codex-mcp toggle-server <name> --off` и `toggle-tool --server <s> --tool <t> --off` —
+  через `config/batchWrite` (§0.3b); после записи — `refresh`, не ручная правка `codex/mcp.json`.
+  Лок и бэкап `config.toml` перед первой записью — как `backup_settings()`.
 
 ### 2.4 Слой Swift
 
@@ -294,33 +331,44 @@ resets_at}]`, панель рисует их как строку «Fable · 7d»
   `UNUserNotification` «Codex: 5-часовое окно сброшено». Тумблер в Settings, по умолчанию
   выключен.
 - `CrabMood`: считает работающие сессии всех провайдеров вместе (краб один).
+- Вкладка MCP: `MCPModel` получает второй путь (`codex/mcp.json`) и поле `provider` у
+  сервера; `PanelData.panelServer` группирует «Claude · Local config / From plugins /
+  connectors» и «Codex · config.toml / plugins». `PanelStore.setServer/setTool` маршрутизируют
+  по провайдеру в `mcpbar.py toggle-*` или `codex-mcp toggle-*`. Иконка «открыть конфиг» в
+  заголовке открывает `settings.json` или `config.toml` по последней раскрытой группе.
+  Счётчик на вкладке и строка «N of M connected» — суммарные по обоим провайдерам.
 
 ### 2.5 Настройки
 
-Settings → General: «Отслеживать Codex» (устанавливает/снимает хуки, скрывает секцию),
-«Опрашивать usage Codex» (аналог `oauthLimits`), «Уведомлять о сбросе лимитов».
-Ключи UserDefaults: `codexEnabled`, `codexLimitsPoll`, `limitResetNotify`.
+Settings → General, две новые секции (макет «Settings»): **Codex** — «Track Codex sessions»
+(ставит/снимает хуки), «Poll Codex usage» (аналог `oauthLimits`), «Manage Codex MCP servers»;
+**Limits** — «Windows in the menu bar icon: Claude / Codex / Lead», «Notify when a window
+resets». Ключи UserDefaults: `codexEnabled`, `codexLimitsPoll`, `codexMCP`, `iconLimits`,
+`limitResetNotify`.
 
 ## 3. Порядок работ и оценка
 
 | # | Шаг | Результат | Оценка |
 |---|---|---|---|
-| 0 | Фаза 0: проверка на Mac | фикстуры, уточнённый §0, минимальная версия Codex | 1 д |
+| Д | Утвердить дизайн по макету: вариант полоски лимитов (A/B/C), группировка сессий по провайдеру, группа Codex в MCP | решения зафиксированы в `docs/` рядом с `panel-design.html` | 0.5 д |
+| 0 | Фаза 0: проверка на Mac | фикстуры, уточнённый §0, минимальная версия Codex; плюс `codex mcp list --json` и `config/batchWrite` на живом конфиге | 1.5 д |
 | 1 | `update.js`/`lifecycle.js` с `--provider codex`, парсер `token_count`, `codex/limits.json` | Codex-сессии появляются в `codex/state.d/` | 2 д |
 | 2 | Установщик/деинсталлятор хуков Codex, `owner.json`, вызов из `bootstrap.py` | `codex` показывает экран доверия один раз, хуки живут | 1 д |
 | 3 | Swift: `provider` в `Session`, второй каталог, ключ `provider:id`, lifecycle по двум процессам, пилюля провайдера | строки Codex в панели, «нужен ты», таймер, контекст | 2 д |
 | 4 | Swift: `LimitsSet`, панель лимитов на два провайдера, Gauge по правилу ведущей сессии | лимиты Codex со сбросами в панели и значке | 2 д |
 | 5 | Python: `codex-limits` (эндпоинт + app-server), `report`/`doctor` | лимиты без открытой сессии | 1–2 д |
 | 6 | Уведомление о сбросе лимита (оба провайдера), тумблеры в Settings | — | 1 д |
-| 7 | Тесты: node (фикстуры Codex, merge в `hooks.json`), python (маппер usage, tail rollout), Swift model-check (`provider`, `LimitsSet`), CI-гварды | зелёный CI | 2 д |
+| 6а | Python: `codex-mcp refresh/toggle-*` через `codex mcp` и app-server, `codex/mcp.json` | серверы и инструменты Codex читаются и переключаются | 2 д |
+| 6б | Swift: `provider` в `MCPModel`, группы Codex во вкладке MCP, маршрутизация переключателей, открытие `config.toml` | вкладка MCP из макета | 2 д |
+| 7 | Тесты: node (фикстуры Codex, merge в `hooks.json`), python (маппер usage, tail rollout, `codex-mcp` на фикстурах JSON), Swift model-check (`provider`, `LimitsSet`, MCP-группы), CI-гварды | зелёный CI | 2.5 д |
 | 8 | Документация: README/README.ru, PRIVACY (чтение `auth.json` и `sessions/`), TROUBLESHOOTING (экран доверия, «хуки не запускаются» = не подтверждены), CHANGELOG, версия в трёх местах, PR-шаблон/CONTRIBUTING | релиз 0.15.0 | 1 д |
 
-Итого ≈ 13–14 рабочих дней одной парой рук; шаги 1–2 и 3–4 можно вести параллельно, так как
-границей между ними является только формат файлов из §2.1.
+Итого ≈ 18–19 рабочих дней одной парой рук; шаги 1–2, 3–4 и 6а–6б можно вести
+параллельно, так как границей между ними является только формат файлов из §2.1.
 
-Порядок релизов: 0.15.0 — сессии + «нужен ты» + контекст (шаги 1–3, 7, 8 частично);
-0.16.0 — лимиты и сбросы (4–6). Так первая польза приходит раньше, а самый рискованный
-кусок (эндпоинт) не держит остальное.
+Порядок релизов: 0.15.0 — сессии + «нужен ты» + контекст (Д, 0–3, 7, 8 частично);
+0.16.0 — лимиты и сбросы (4–6); 0.17.0 — MCP Codex (6а–6б). Так первая польза приходит
+раньше, а два самых рискованных куска (эндпоинт и запись `config.toml`) не держат остальное.
 
 ## 4. Риски и как их гасим
 
@@ -341,6 +389,10 @@ Settings → General: «Отслеживать Codex» (устанавливае
 - **Privacy.** Хук читает `transcript_path` (только хвост, только числовые поля) и
   `auth.json` (только для запроса к OpenAI, только при включённом тумблере). Записать это в
   PRIVACY.md в той же формулировке, что уже есть для Claude.
+- **Запись `config.toml`.** Только через app-server `config/batchWrite`; если фаза 0 покажет,
+  что метод нестабилен, переключатели MCP Codex деградируют до «только чтение» с кнопкой
+  «открыть config.toml» — не до ручного TOML-писателя. Запуск `codex app-server` на каждый
+  переключатель — секунды; кэшировать процесс не пытаемся, это уже оптимизация.
 - **Identity.** Никаких новых bundle id / имён — приложение остаётся одним; хуки Codex
   хардкодят те же identity-значения, что и Claude-хуки (гвард CI на `identity.env`
   расширить на новые файлы хуков).
@@ -361,7 +413,6 @@ Settings → General: «Отслеживать Codex» (устанавливае
 
 ## 6. Что сознательно не входит
 
-- MCP-серверы Codex (`config.toml [mcp_servers]`) и переключатели инструментов.
 - Стоимость сессии в USD (Codex её не считает; показывать только токены).
 - Поиск/возобновление архивных сессий (`archived_sessions`, `.zst`).
 - Windows/Linux.
