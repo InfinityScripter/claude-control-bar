@@ -12,11 +12,11 @@ import Foundation
 /// bytes that go are separated from the network, the clock and UserDefaults, which live in
 /// Sources/Analytics.swift.
 enum AnalyticsPing {
-    /// Where the ping goes. Empty until the receiver exists — an empty string switches the whole
-    /// feature off (no ping, no Settings row, no notice), so a build made before the Worker in
-    /// tools/analytics is deployed cannot send anything anywhere. The host named here is the one
-    /// PRIVACY.md promises; change both together.
-    static let endpoint = ""
+    /// Where the ping goes: the Cloudflare Worker in tools/analytics. An empty string switches
+    /// the whole feature off (no ping, no Settings row, no notice), which is how a fork or a
+    /// build without a receiver ships. The host named here is the one PRIVACY.md promises;
+    /// change both together.
+    static let endpoint = "https://ccb-ping.infinityscripter.workers.dev/v1/ping"
 
     /// The environment variable that disables the ping regardless of the setting, the way
     /// HOMEBREW_NO_ANALYTICS does for brew: a fleet or a CI runner can switch it off without

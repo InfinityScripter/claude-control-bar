@@ -16,8 +16,7 @@ from, and are kept so the history reads continuously.
   posts a notice and the first ping waits a full day after it, so it can be turned off before
   anything is sent: Settings → General → *Anonymous usage ping*, or `CONTROL_BAR_NO_ANALYTICS`
   in the environment. PRIVACY.md has the exact payload and what the receiver does with it; the
-  receiver itself is `tools/analytics/`. The request is not made at all until the receiver's
-  address is set in `AnalyticsPing.endpoint`.
+  receiver itself is `tools/analytics/`, deployed at `ccb-ping.infinityscripter.workers.dev`.
 
 ## [0.13.0] - 2026-09-09
 

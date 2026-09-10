@@ -31,9 +31,9 @@ reporting and no analytics kit of any kind in the binary.
 Once a day the app tells the project it exists, so there is an answer to "how many people use
 this". That is the entire purpose, and the ping is shaped so it can answer nothing else.
 
-- **What is sent.** One `POST` of exactly this, to the project's own receiver (a Cloudflare
-  Worker whose source is in `tools/analytics/`; the address is the `endpoint` constant in
-  `Sources/Model/AnalyticsPing.swift`):
+- **What is sent.** One `POST` of exactly this, to `ccb-ping.infinityscripter.workers.dev` —
+  the project's own receiver, a Cloudflare Worker whose source is in `tools/analytics/` and
+  whose address is the `endpoint` constant in `Sources/Model/AnalyticsPing.swift`:
 
   ```json
   {"v":1,"app":"0.13.0","os":"15","arch":"arm64","channel":"brew"}
