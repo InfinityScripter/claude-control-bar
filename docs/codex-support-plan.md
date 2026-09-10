@@ -407,9 +407,12 @@ resets». Ключи UserDefaults: `codexEnabled`, `codexLimitsPoll`, `codexMCP`
 | [CodexMonitor](https://github.com/Dimillian/CodexMonitor) | `codex app-server` на workspace: `thread/list`, `thread/resume`, `requestApproval` |
 | [ClaudeBar](https://github.com/tddworks/ClaudeBar) | Мультипровайдерная полоска квот, включая Codex |
 
-Подтверждает выбранный порядок источников: rollout → эндпоинт → app-server. Ни один из них
-не показывает «ждёт разрешения» для чужой TUI-сессии — это делают только хуки, и здесь у нас
-преимущество.
+Подтверждает выбранный порядок источников: rollout → эндпоинт → app-server. «Ждёт
+разрешения» для Codex уже показывают [codex-status-bar](https://github.com/KiwiGaze/codex-status-bar)
+(хуки Codex → файлы состояния, та же схема, что здесь) и
+[so-agentbar](https://sotthang.github.io/so-agentbar/); никто не совмещает это с лимитами двух
+провайдеров и переключателями MCP в одной панели. Полный обзор и UI-идеи для макета —
+`docs/codex-landscape.md`.
 
 ## 6. Что сознательно не входит
 
