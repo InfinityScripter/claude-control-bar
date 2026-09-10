@@ -11,10 +11,10 @@ npx wrangler login
 npx wrangler deploy
 ```
 
-`wrangler deploy` prints the Worker's address, `https://ccb-ping.<account>.workers.dev`. Put
-`https://ccb-ping.<account>.workers.dev/v1/ping` into `AnalyticsPing.endpoint` in
-`Sources/Model/AnalyticsPing.swift`, name the same host in PRIVACY.md, and release. A build
-with the endpoint left empty never sends anything and shows no switch in Settings.
+The project's copy runs at `https://ccb-ping.infinityscripter.workers.dev`, which is what
+`AnalyticsPing.endpoint` in `Sources/Model/AnalyticsPing.swift` and PRIVACY.md name. A fork
+deploys its own, then changes both together; a build with the endpoint left empty never sends
+anything and shows no switch in Settings.
 
 Do not enable Logpush or Workers Logs on this Worker: PRIVACY.md promises the receiver keeps
 no request logs, and both of those are request logs.
