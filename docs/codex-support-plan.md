@@ -1,0 +1,309 @@
+# План: поддержка OpenAI Codex CLI в Control Bar
+
+Цель — тот же набор функций, что уже есть для Claude Code, но для Codex: живые сессии
+с состоянием (думает / инструмент / ждёт разрешения / idle), таймер хода и заполненность
+контекста, клик по строке фокусирует терминал, «нужен ты» со звуком и жёлтой точкой,
+лимиты аккаунта (5 часов / неделя) с временем сброса, и уведомление о сбросе.
+
+Факты про Codex ниже сверены с исходниками `openai/codex` (коммит `9469737`, 2026-09-10,
+crates `codex-rs/hooks`, `codex-rs/rollout`, `codex-rs/protocol`, `codex-rs/backend-client`,
+`codex-rs/app-server-protocol`). Что не проверено на живой машине — помечено «проверить».
+
+## 0. Что даёт Codex (источники данных)
+
+### 0.1 Lifecycle-хуки — основной источник состояния сессии
+
+Codex CLI имеет систему хуков, почти зеркальную Claude Code. Это главная удача: слой
+Node-хуков переиспользуется почти целиком.
+
+- **Где объявляются.** `~/.codex/hooks.json` (пользовательский слой),
+  `<проект>/.codex/hooks.json` (проектный) и секция `[hooks]` в `~/.codex/config.toml`.
+  Формат JSON тот же, что у Claude Code:
+  `{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "…"}]}]}}`,
+  с `matcher`, `timeout` (по умолчанию 600 с), `async`.
+- **События.** `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+  `PermissionRequest`, `Stop`, `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`,
+  `Interrupt`. Событие `Notification` **отсутствует** — «нужен ты» берём из
+  `PermissionRequest`. Бонус, которого нет у Claude: `Interrupt` фиксирует Esc явно, значит
+  «сеть по маркеру прерывания в транскрипте» для Codex не нужна.
+- **Payload на stdin (JSON).** Общие поля: `session_id`, `cwd`, `hook_event_name`, `model`,
+  `permission_mode`, `transcript_path` (nullable), `turn_id`. Инструментные события добавляют
+  `tool_name`, `tool_input`, `tool_use_id`, `tool_response`, а также `agent_id` / `agent_type`
+  (субагенты — их надо игнорировать при расчёте состояния корневой сессии).
+  `SessionStart.source` ∈ `startup | resume | clear | compact`, `SessionEnd.reason`,
+  `Stop.last_assistant_message`, `Stop.stop_hook_active`.
+- **Окружение хука.** Команда запускается через `$SHELL -lc` (login shell, PATH пользователя
+  подхватывается сам — фикс с `/opt/homebrew/bin` в Claude-хуках здесь не критичен, но
+  оставляем для симметрии), `cwd` = cwd сессии, env — **снимок env сессии на старте**, не живой
+  env процесса. `TERM_PROGRAM` и `__CFBundleIdentifier` в снимке есть, значит фокус терминала
+  по клику работает так же.
+- **Доверие (trust) — ключевое отличие.** Хук из пользовательского/проектного слоя
+  исполняется только со статусом `Trusted`: в `config.toml` должна лежать запись
+  `[hooks.state."<key>"] trusted_hash = "<hash>"` с хэшем нормализованного описания хука.
+  При первом запуске TUI показывает экран ревью незнакомых хуков (`startup_hooks_review.rs`),
+  и пользователь подтверждает их один раз; хэш пишется через app-server `config/batchWrite`.
+  Есть флаг `--dangerously-bypass-hook-trust` и `allow_managed_hooks_only` для админов.
+  **Решение:** установщик не подделывает `trusted_hash` (это обход защитного механизма и
+  зависимость от внутреннего алгоритма хэширования), а пишет `hooks.json` и документирует
+  одноразовое подтверждение в Codex. Изменение команды хука (апгрейд плагина) = новый хэш =
+  повторный вопрос — учесть в CHANGELOG/TROUBLESHOOTING.
+- **Legacy `notify`.** Старая опция `notify = ["…"]` в `config.toml` жива
+  (`legacy_notify.rs`), шлёт один JSON-аргумент `{"type":"agent-turn-complete",
+  "thread-id","turn-id","cwd","input-messages","last-assistant-message"}` только по концу хода.
+  Для версий Codex без хуков этого хватит на «idle/готово», но не на «думает» и «ждёт
+  разрешения». Поддерживать как деградированный режим только если проверка (§1) покажет, что
+  у пользователей массово старые версии; иначе — не тратить время.
+
+### 0.2 Rollout-файл (транскрипт) — контекст, лимиты, «стриминг жив»
+
+- Путь: `~/.codex/sessions/YYYY/MM/DD/rollout-<YYYY-MM-DDTHH-MM-SS>-<thread_id>.jsonl`;
+  архив — `~/.codex/archived_sessions/`. Старые файлы могут быть сжаты в `.jsonl.zst`
+  (`compression.rs`) — активный файл всегда plain JSONL, так что хвост читать можно, но
+  «поиск по архиву» в план не входит.
+- Первая строка — `session_meta` (`id`, `session_id`, `timestamp`, `cwd`, `git` с
+  `branch` и `commit_hash`, `originator`, `cli_version`, `source`, `model_provider`,
+  `context_window`; у субагентов — `agent_nickname`/`agent_role`). Дальше `event_msg` записи; в rollout **сохраняются**
+  `token_count`, `turn_started`, `turn_complete`, `turn_aborted`, `user_message`,
+  `agent_message` (`policy.rs::should_persist_event_msg`).
+- `token_count` несёт два нужных блока:
+  - `info` (`TokenUsageInfo`): `total_token_usage` / `last_token_usage` (`input_tokens`,
+    `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`,
+    `reasoning_output_tokens`) и `model_context_window` → процент контекста сессии. Считать так же, как `contextOf()` в `hooks/update.js`: хвост файла, последняя
+    запись, `clamp(round(used / window * 100))`. Окно модели даётся самим Codex — гадать по
+    семейству модели, как для Claude, не придётся.
+  - `rate_limits` (`RateLimitSnapshot`): `primary` и `secondary` окна
+    (`used_percent: f64`, `window_minutes`, `resets_at` epoch-секунды), `credits`
+    (`has_credits`, `unlimited`, `balance`), `plan_type`, `limit_id`/`limit_name`
+    (в т.ч. отдельные квоты моделей), `spend_control_reached`, `rate_limit_reached_type`.
+    Это аналог statusLine-перехвата у Claude, но **без установки statusLine**: любой живой
+    rollout уже содержит свежие лимиты после каждого ответа модели.
+- mtime файла = «модель стримит» — та же сеть проверки живости, что `turnFacts` в
+  `Sessions.swift`, переносится один в один.
+
+### 0.3 Лимиты без сессии — эндпоинт и app-server
+
+Когда ни одна сессия Codex не открыта, rollout не обновляется. Два пути:
+
+1. **Backend-эндпоинт** (`backend-client/src/client.rs::get_rate_limits_many`): ChatGPT-путь
+   `https://chatgpt.com/backend-api/wham/…`, API-путь `…/api/codex/…`; ответ
+   `RateLimitStatusPayload` с `plan_type`, `rate_limit.primary_window/secondary_window`
+   (`used_percent`, `limit_window_seconds`, `reset_at`), `additional_rate_limits[]`
+   (`limit_name`, `metered_feature`), `credits`, `spend_control`. Токен —
+   `~/.codex/auth.json` → `tokens.access_token`, `tokens.account_id` (заголовок
+   `chatgpt-account-id`); тип плана — в claims `id_token` (`chatgpt_plan_type`). Точный путь
+   usage-эндпоинта и заголовки — **проверить** живым запросом (§1).
+2. **`codex app-server`** (JSON-RPC по stdio): метод `account/rateLimits/read`, уведомление
+   `account/rateLimits/updated`, `thread/list`. Не надо реализовывать auth и refresh
+   токена — этим занимается сам Codex. Цена — запуск тяжёлого процесса на каждый опрос.
+
+**Решение:** порядок источников для лимитов Codex — rollout-хвост (бесплатно, всегда) →
+эндпоинт раз в 5 минут (опционально, отдельный тумблер в Settings, как `oauthLimits`) →
+app-server как запасной путь, если эндпоинт окажется нестабильным или сменит форму.
+
+### 0.4 Процесс и surface
+
+- Бинарь называется `codex` (`[[bin]] name = "codex"`; npm-обёртка `codex.js` exec'ает
+  нативный `@openai/codex-darwin-*`). Значит `RunningProcesses.exists(named: "codex")` и
+  `pgrep -x codex` работают как для `claude`.
+- Хук порождается процессом Codex; `process.ppid` в хуке = pid сессии (TUI держит app-server
+  in-process, `AppServerClient::InProcess`). **Проверить** на macOS, что ppid — именно
+  `codex`, а не промежуточный `sh -lc` (login shell может остаться родителем; тогда брать
+  `ppid` родителя или читать `/proc`-аналог через `ps -o ppid=`).
+- Surface: терминал (`TERM_PROGRAM`, `__CFBundleIdentifier`), IDE-расширение Codex,
+  desktop-приложение Codex, `codex exec` (неинтерактивный режим — хуки те же, разрешений не
+  спрашивает). Бейдж: `CLI` / `IDE` / `APP` / `EXEC`.
+
+## 1. Фаза 0 — проверка на живой машине (≈1 день)
+
+До кода — на Mac с установленным Codex:
+
+1. `~/.codex/hooks.json` с одним `SessionStart`-хуком `cat > /tmp/codex-hook.json`;
+   запустить `codex`, пройти экран доверия, убедиться, что файл записан. Снять реальные
+   payload'ы всех событий (`UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `Stop`,
+   `Interrupt`, `SessionEnd`) — они станут фикстурами тестов.
+2. Проверить `process.ppid` из хука и имя процесса (`ps -o comm= -p $PPID`).
+3. Открыть rollout сессии, подтвердить строки `token_count` с `rate_limits` и `info`,
+   и первую строку `session_meta`. Зафиксировать реальные имена полей (snake_case,
+   формат `timestamp`).
+4. Один запрос к usage-эндпоинту с токеном из `auth.json` через `curl`: путь, заголовки,
+   форма ответа. Один вызов `codex app-server` с `account/rateLimits/read`.
+5. Проверить `codex --version` → минимальная поддерживаемая версия (та, где появились хуки).
+
+Выход фазы: `tests/fixtures/codex/*.json` и уточнённый §0. Если что-то не сходится —
+править план, не код.
+
+## 2. Архитектура: один app, измерение «provider»
+
+Вариант A (рекомендуется): в том же приложении добавить измерение провайдера. Один значок в
+меню-баре, один жизненный цикл, одна панель. Вариант B — отдельный fork «Codex Control Bar» —
+дублирует 10 тыс. строк ради другого бинаря и заставляет держать два значка.
+
+Примечание: `.github/pull_request_template.md` сейчас объявляет Codex вне скоупа проекта.
+Раз это меняется, шаблон и CONTRIBUTING.md обновить в той же серии PR, иначе внешние
+контрибьюторы будут получать противоречивые сигналы.
+
+### 2.1 Контракт файлов состояния (расширение `.claude/rules/` — слои и владельцы)
+
+Корень остаётся `~/.claude/control-bar/` (единственный владелец путей — `main.swift`).
+Codex получает подкаталог, чтобы не трогать существующие контракты с двумя писателями:
+
+| Файл | Писатель | Аналог для Claude |
+|---|---|---|
+| `codex/state.d/<session_id>.json` | `hooks/update.js --provider codex` | `state.d/` |
+| `codex/context.d/<session_id>.json` | не нужен: контекст берётся из rollout прямо в хуке | `context.d/` (statusline.py) |
+| `codex/limits.json` | `hooks/update.js` (из `token_count.rate_limits`) и `scripts/mcpbar.py codex-limits` (эндпоинт) — двойной писатель, формат согласован | `limits.json` |
+| `codex/owner.json` | `hooks/codex-install.js` | `owner.json` |
+
+Форма `state.d/<id>.json` — та же, что у Claude, плюс `provider: "codex"`, `surface`
+(`cli|ide|app|exec`), `permissionMode`. Значения `state` — те же строки
+`idle|thinking|tool|permission|done`. Так `Session(json:)`, `SessionEngine`,
+`PanelSession` и весь рендер получают Codex-сессии бесплатно.
+
+Форма `codex/limits.json`:
+```json
+{
+  "ts": 1789000000, "source": "rollout",
+  "five_hour": {"used_percentage": 42, "resets_at": 1789012345, "window_minutes": 300},
+  "seven_day": {"used_percentage": 84, "resets_at": 1789500000, "window_minutes": 10080},
+  "plan": "pro", "credits": {"has": true, "unlimited": false, "balance": "9.99"},
+  "reached": null
+}
+```
+`primary` → `five_hour`, `secondary` → `seven_day` **по `window_minutes`, а не по позиции**
+(окна приходят как «первичное/вторичное», их длительность — факт из payload; на планах с
+другими окнами имя строки в панели тоже берётся из `window_minutes`: «5h», «1d», «7d»).
+`used_percentage` — `int(round(...))`, как везде: Swift читает `as? Int`.
+`additional_rate_limits` (квоты отдельных моделей) — в массив `extra: [{name, used_percentage,
+resets_at}]`, панель рисует их как строку «Fable · 7d» у Claude.
+
+### 2.2 Слой Node-хуков
+
+- `hooks/update.js`: аргумент `--provider codex` (позиционный `event` остаётся). Различия
+  внутри одного файла, не второй файл — иначе исправления в одном хуке перестанут попадать во
+  второй, а копирование в `~/.claude/control-bar/` уже устроено под один `update.js`:
+  - карта событий Codex → внутренние: `UserPromptSubmit→prompt`, `PreToolUse→pre`,
+    `PostToolUse→post`, `PermissionRequest→permreq`, `Stop→stop`, `Interrupt→stop`
+    (state `done`), `SubagentStart/Stop` — игнорировать; записи с `agent_id` не корневого
+    агента — игнорировать (иначе субагент «думает» перекроет «ждёт разрешения» родителя);
+  - `TOOL_LABELS` для имён инструментов Codex (по `core/src/tools`: `shell`,
+    `shell_command`, `exec_command`, `write_stdin`, `unified_exec` → «Running command»;
+    `apply_patch` → «Editing»; `read_file` → «Reading»; `web_search` → «Searching web»;
+    `view_image`, `update_plan` → «Planning»; `spawn_agent` → «Delegating»; MCP-инструменты
+    — по префиксу; итоговый список сверить с фикстурами фазы 0);
+  - контекст: `contextOf()` получает второй парсер — последняя строка с `"token_count"`,
+    `info.total_token_usage` и `info.model_context_window`. Окно известно точно →
+    `assumed: false`;
+  - лимиты: из той же записи `rate_limits` → `codex/limits.json` с правилом «не
+    перезаписывать одинаковую запись чаще раза в минуту» (копия логики `capture_limits` из
+    `hooks/statusline.py`);
+  - self-heal: `pgrep -x ClaudeControlBar` + `open -b` — без изменений.
+- `hooks/lifecycle.js --provider codex`: `start`/`end` пишут/чистят `codex/state.d/`,
+  reap по pid тот же.
+- `hooks/codex-install.js` / `codex-uninstall.js` (или ветка в `install.js` по флагу):
+  мерж в `~/.codex/hooks.json` без затирания чужих хуков, владение по пути скрипта (тот же
+  предикат `pointsAt`, что в `install.js`; держать три копии предиката в шаге — теперь
+  четыре). Не трогать `config.toml` — trust пусть выдаёт сам Codex. `bootstrap.py`
+  (SessionStart Claude) вызывает установку Codex-хуков только если `~/.codex/` существует —
+  у пользователя без Codex ничего нового не появляется.
+- Идемпотентность, `try/catch → null`, атомарная запись с `0o600` — по code-conventions без
+  исключений.
+
+### 2.3 Слой Python (`scripts/mcpbar.py`)
+
+- Команда `codex-limits`: токен из `~/.codex/auth.json` (проверка `expires`/refresh не
+  делать — при 401 молчать и не трогать файл, как `fetch_limits`), запрет редиректов
+  (тот же `NoRedirect`), запись `codex/limits.json` с `source: "oauth"`. Маппер
+  `codex_usage_record(payload)` — чистая функция для тестов, по образцу `usage_record`.
+- Запасной путь `codex-limits --app-server`: `codex app-server` как подпроцесс,
+  `initialize` → `account/rateLimits/read` → exit; таймаут 20 с.
+- `report`/`doctor`: секция Codex (версия `codex`, наличие `hooks.json`, статус доверия по
+  `hooks.state` в `config.toml` — только чтение, число живых сессий).
+- MCP-серверы Codex (`[mcp_servers]` в `config.toml`) — **вне этого плана**: отдельная
+  вкладка и переключатели — следующая итерация после сессий и лимитов.
+
+### 2.4 Слой Swift
+
+- `Session`: поле `provider` (строка, `"claude"` по умолчанию для старых файлов), `surface`.
+  `main.swift` сканирует два каталога `state.d/` и `codex/state.d/`; ключ словаря
+  `sessions` — `"<provider>:<id>"`, чтобы одинаковые id не столкнулись.
+- `Limits`: сегодня это три фиксированных окна. Делать `Limits` провайдеро-независимым:
+  `struct LimitsSet { let provider: String; let windows: [LimitWindow]; plan; credits; ts;
+  source }`, где `LimitWindow` получает `title` из `window_minutes`. Существующий парсер
+  Claude превращается в первый адаптер, Codex — второй. Загрузка через тот же mtime-гейт
+  (`loadLimits`).
+- `PanelData.panelLimits`: две группы с заголовком-провайдером; провайдер без данных
+  скрывается целиком, а не рисует пустые бары. Сброс: `resets` уже считается; добавить
+  `resetSoon` (<15 мин) для подсветки.
+- `Gauge` (иконка): сегодня две дуги 5h/7d Claude. Правило: показывать провайдер **ведущей
+  сессии** (та, что даёт состояние иконке); когда сессий нет — тот, чьи данные свежее.
+  Переключатель в Settings «Лимиты в значке: Claude / Codex / ведущей сессии».
+- `SessionLabels.surfaceTag`: Codex-строка получает пилюлю провайдера (маленький глиф
+  рядом с `CLI/IDE/APP/EXEC`), чтобы два `myrepo` из разных агентов различались.
+- `Actions.openSession`: терминальные сессии — без изменений (по `term_bundle`). IDE и
+  desktop-приложение Codex — по результатам фазы 0 (deep link, если есть; иначе просто
+  активировать приложение).
+- `checkLifecycle`: «нужен ли app» — если жив `claude` **или** `codex`; `claudeCodeRunning()`
+  становится `agentRunning()` с двумя именами.
+- «Нужен ты»: `NeedsYouSound.shouldCue` уже работает по `state == "permission"` и
+  `termBundle` — переносится без правок. Уведомление о **сбросе лимита**: новое, для обоих
+  провайдеров — когда окно, бывшее ≥ 90 %, обнуляется (или `resets_at` прошёл), одно
+  `UNUserNotification` «Codex: 5-часовое окно сброшено». Тумблер в Settings, по умолчанию
+  выключен.
+- `CrabMood`: считает работающие сессии всех провайдеров вместе (краб один).
+
+### 2.5 Настройки
+
+Settings → General: «Отслеживать Codex» (устанавливает/снимает хуки, скрывает секцию),
+«Опрашивать usage Codex» (аналог `oauthLimits`), «Уведомлять о сбросе лимитов».
+Ключи UserDefaults: `codexEnabled`, `codexLimitsPoll`, `limitResetNotify`.
+
+## 3. Порядок работ и оценка
+
+| # | Шаг | Результат | Оценка |
+|---|---|---|---|
+| 0 | Фаза 0: проверка на Mac | фикстуры, уточнённый §0, минимальная версия Codex | 1 д |
+| 1 | `update.js`/`lifecycle.js` с `--provider codex`, парсер `token_count`, `codex/limits.json` | Codex-сессии появляются в `codex/state.d/` | 2 д |
+| 2 | Установщик/деинсталлятор хуков Codex, `owner.json`, вызов из `bootstrap.py` | `codex` показывает экран доверия один раз, хуки живут | 1 д |
+| 3 | Swift: `provider` в `Session`, второй каталог, ключ `provider:id`, lifecycle по двум процессам, пилюля провайдера | строки Codex в панели, «нужен ты», таймер, контекст | 2 д |
+| 4 | Swift: `LimitsSet`, панель лимитов на два провайдера, Gauge по правилу ведущей сессии | лимиты Codex со сбросами в панели и значке | 2 д |
+| 5 | Python: `codex-limits` (эндпоинт + app-server), `report`/`doctor` | лимиты без открытой сессии | 1–2 д |
+| 6 | Уведомление о сбросе лимита (оба провайдера), тумблеры в Settings | — | 1 д |
+| 7 | Тесты: node (фикстуры Codex, merge в `hooks.json`), python (маппер usage, tail rollout), Swift model-check (`provider`, `LimitsSet`), CI-гварды | зелёный CI | 2 д |
+| 8 | Документация: README/README.ru, PRIVACY (чтение `auth.json` и `sessions/`), TROUBLESHOOTING (экран доверия, «хуки не запускаются» = не подтверждены), CHANGELOG, версия в трёх местах, PR-шаблон/CONTRIBUTING | релиз 0.15.0 | 1 д |
+
+Итого ≈ 13–14 рабочих дней одной парой рук; шаги 1–2 и 3–4 можно вести параллельно, так как
+границей между ними является только формат файлов из §2.1.
+
+Порядок релизов: 0.15.0 — сессии + «нужен ты» + контекст (шаги 1–3, 7, 8 частично);
+0.16.0 — лимиты и сбросы (4–6). Так первая польза приходит раньше, а самый рискованный
+кусок (эндпоинт) не держит остальное.
+
+## 4. Риски и как их гасим
+
+- **Экран доверия хуков.** Пользователь может нажать «не доверять» — тогда сессий не будет,
+  а приложение будет молчать. `doctor` и панель должны говорить прямо: «хуки Codex не
+  подтверждены — запусти `codex` и подтверди» (читаем `hooks.state` в `config.toml`).
+- **Скорость изменений Codex.** Имена полей rollout и эндпоинта могут дрейфовать. Все парсеры
+  — «неожиданная форма = нет данных», не исключение (правило 6 code-conventions); прошлые
+  цифры в файле не затираются.
+- **ppid не равен процессу `codex`** (если login shell остаётся родителем). Решение в фазе 0;
+  запасной вариант — `session_id` + `ps` один раз на `SessionStart`, дальше pid хранится в
+  файле.
+- **Субагенты** (`agent_id`): их события не должны менять состояние корневой сессии.
+- **`permission_mode` full-auto / `codex exec`**: `PermissionRequest` не придёт никогда —
+  это нормально, состояние живёт на `prompt/pre/post/stop`.
+- **Сжатые rollout'ы (`.zst`)**: активный файл всегда plain; хвост читаем только у файла из
+  `transcript_path` текущей сессии.
+- **Privacy.** Хук читает `transcript_path` (только хвост, только числовые поля) и
+  `auth.json` (только для запроса к OpenAI, только при включённом тумблере). Записать это в
+  PRIVACY.md в той же формулировке, что уже есть для Claude.
+- **Identity.** Никаких новых bundle id / имён — приложение остаётся одним; хуки Codex
+  хардкодят те же identity-значения, что и Claude-хуки (гвард CI на `identity.env`
+  расширить на новые файлы хуков).
+
+## 5. Что сознательно не входит
+
+- MCP-серверы Codex (`config.toml [mcp_servers]`) и переключатели инструментов.
+- Стоимость сессии в USD (Codex её не считает; показывать только токены).
+- Поиск/возобновление архивных сессий (`archived_sessions`, `.zst`).
+- Windows/Linux.
