@@ -30,8 +30,13 @@ Node-хуков переиспользуется почти целиком.
   `permission_mode`, `transcript_path` (nullable), `turn_id`. Инструментные события добавляют
   `tool_name`, `tool_input`, `tool_use_id`, `tool_response`, а также `agent_id` / `agent_type`
   (субагенты — их надо игнорировать при расчёте состояния корневой сессии).
-  `SessionStart.source` ∈ `startup | resume | clear | compact`, `SessionEnd.reason`,
-  `Stop.last_assistant_message`, `Stop.stop_hook_active`.
+  `SessionStart.source` ∈ `startup | resume | clear | compact | fork`, `SessionEnd.reason`,
+  `Stop.last_assistant_message`, `Stop.stop_hook_active`. Хуки включены по умолчанию
+  (`[features] hooks = true`). Официальная документация: https://learn.chatgpt.com/docs/hooks.
+- **Таймауты.** По умолчанию 600 с, но `SessionEnd` и `Interrupt` — **1 с (максимум 3 с)**.
+  Значит `lifecycle.js end` для Codex обязан быть мгновенным: никакого `pgrep`, никакого
+  обхода `state.d` — только удалить свой файл; reap мёртвых сессий переносится на `start`
+  и в приложение (оно и так чистит по pid).
 - **Окружение хука.** Команда запускается через `$SHELL -lc` (login shell, PATH пользователя
   подхватывается сам — фикс с `/opt/homebrew/bin` в Claude-хуках здесь не критичен, но
   оставляем для симметрии), `cwd` = cwd сессии, env — **снимок env сессии на старте**, не живой
@@ -60,11 +65,23 @@ Node-хуков переиспользуется почти целиком.
   архив — `~/.codex/archived_sessions/`. Старые файлы могут быть сжаты в `.jsonl.zst`
   (`compression.rs`) — активный файл всегда plain JSONL, так что хвост читать можно, но
   «поиск по архиву» в план не входит.
+- Строка: `{"timestamp": "<RFC3339>", "type": "<tag>", "payload": {…}}`; `type` ∈
+  `session_meta | response_item | turn_context | event_msg | compacted | …`.
 - Первая строка — `session_meta` (`id`, `session_id`, `timestamp`, `cwd`, `git` с
   `branch` и `commit_hash`, `originator`, `cli_version`, `source`, `model_provider`,
-  `context_window`; у субагентов — `agent_nickname`/`agent_role`). Дальше `event_msg` записи; в rollout **сохраняются**
-  `token_count`, `turn_started`, `turn_complete`, `turn_aborted`, `user_message`,
-  `agent_message` (`policy.rs::should_persist_event_msg`).
+  `context_window`; у субагентов — `agent_nickname`/`agent_role`). `originator` различает
+  surface: `codex_cli_rs` (CLI), `codex_vscode` (IDE-расширение), `codex_work_desktop`
+  (desktop-приложение); `source` у IDE и desktop одинаково `vscode`, у `codex exec` — `exec`.
+- `turn_context` несёт `model`, `approval_policy`, `sandbox_policy`, `cwd` текущего хода —
+  модель сессии брать отсюда, а не из `session_meta`.
+- Дальше `event_msg` записи; в rollout **сохраняются** `token_count`, `task_started`
+  (wire-имя `TurnStarted`; несёт `turn_id`, `started_at`, `model_context_window`),
+  `task_complete` (`last_agent_message`, `duration_ms`), `turn_aborted`, `user_message`,
+  `agent_message` (`policy.rs::should_persist_event_msg`). **Не сохраняются**:
+  `exec_command_begin/end`, `exec_approval_request`, `apply_patch_approval_request`,
+  `request_permissions`. Вывод: «ждёт разрешения» из файла **не читается вообще** — только
+  хук `PermissionRequest`. «Ход идёт» из файла читается: последний `task_started` без
+  парного `task_complete`/`turn_aborted`.
 - `token_count` несёт два нужных блока:
   - `info` (`TokenUsageInfo`): `total_token_usage` / `last_token_usage` (`input_tokens`,
     `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`,
@@ -84,14 +101,20 @@ Node-хуков переиспользуется почти целиком.
 
 Когда ни одна сессия Codex не открыта, rollout не обновляется. Два пути:
 
-1. **Backend-эндпоинт** (`backend-client/src/client.rs::get_rate_limits_many`): ChatGPT-путь
-   `https://chatgpt.com/backend-api/wham/…`, API-путь `…/api/codex/…`; ответ
-   `RateLimitStatusPayload` с `plan_type`, `rate_limit.primary_window/secondary_window`
-   (`used_percent`, `limit_window_seconds`, `reset_at`), `additional_rate_limits[]`
-   (`limit_name`, `metered_feature`), `credits`, `spend_control`. Токен —
-   `~/.codex/auth.json` → `tokens.access_token`, `tokens.account_id` (заголовок
-   `chatgpt-account-id`); тип плана — в claims `id_token` (`chatgpt_plan_type`). Точный путь
-   usage-эндпоинта и заголовки — **проверить** живым запросом (§1).
+1. **Backend-эндпоинт** (`backend-client/src/client.rs::get_rate_limits_many`,
+   `client/rate_limit_resets.rs`): `GET https://chatgpt.com/backend-api/wham/usage`
+   (API-key-вариант `…/api/codex/usage`); сам Codex TUI опрашивает его примерно раз в минуту.
+   Заголовки: `Authorization: Bearer <access_token>`, `ChatGPT-Account-Id: <account_id>`,
+   `User-Agent: codex-cli`. Ответ `RateLimitStatusPayload`: `plan_type`,
+   `rate_limit.primary_window/secondary_window` (`used_percent`, `limit_window_seconds`,
+   `reset_after_seconds`, `reset_at`), `additional_rate_limits[]` (`limit_name`,
+   `metered_feature`), `credits`, `spend_control`, `rate_limit_reached_type`. На Free-плане
+   `secondary_window` может быть `null` — окно пропускать, не рисовать нулём.
+   Токен — `~/.codex/auth.json`: `{"OPENAI_API_KEY", "tokens": {"id_token", "access_token",
+   "refresh_token", "account_id"}, "last_refresh"}`; тип плана — claim `chatgpt_plan_type` в
+   `id_token`. Refresh-токеном **не пользоваться** и в `auth.json` не писать: при 401 молчать,
+   Codex обновит запись сам при следующем запуске (та же политика, что `oauth_token()` для
+   Claude). Форму ответа всё равно **проверить** живым запросом (§1).
 2. **`codex app-server`** (JSON-RPC по stdio): метод `account/rateLimits/read`, уведомление
    `account/rateLimits/updated`, `thread/list`. Не надо реализовывать auth и refresh
    токена — этим занимается сам Codex. Цена — запуск тяжёлого процесса на каждый опрос.
@@ -99,6 +122,16 @@ Node-хуков переиспользуется почти целиком.
 **Решение:** порядок источников для лимитов Codex — rollout-хвост (бесплатно, всегда) →
 эндпоинт раз в 5 минут (опционально, отдельный тумблер в Settings, как `oauthLimits`) →
 app-server как запасной путь, если эндпоинт окажется нестабильным или сменит форму.
+
+### 0.3a Индекс потоков — дешёвый список сессий без разбора JSONL
+
+`~/.codex/state_5.sqlite` (WAL, таблица `threads`: `id`, `rollout_path`, `cwd`, `git_branch`,
+`title`, `name`, `model`, `originator`, `source`, `updated_at_ms`, `archived`, …) и
+`~/.codex/session_index.jsonl` (`{"id", "thread_name", "updated_at"}` — имена потоков).
+Для панели это источник **названия** сессии (у Claude такого нет) и ветки без чтения
+`.git/HEAD`. Открывать только на чтение (`sqlite3` в системном Python есть); номер в имени
+файла (`state_5`) — версия схемы, при переименовании молча деградировать до rollout.
+Живость и состояние из индекса не берутся — только из хуков и pid.
 
 ### 0.4 Процесс и surface
 
@@ -111,7 +144,18 @@ app-server как запасной путь, если эндпоинт окаж�
   `ppid` родителя или читать `/proc`-аналог через `ps -o ppid=`).
 - Surface: терминал (`TERM_PROGRAM`, `__CFBundleIdentifier`), IDE-расширение Codex,
   desktop-приложение Codex, `codex exec` (неинтерактивный режим — хуки те же, разрешений не
-  спрашивает). Бейдж: `CLI` / `IDE` / `APP` / `EXEC`.
+  спрашивает). Бейдж: `CLI` / `IDE` / `APP` / `EXEC` — по `originator` из `session_meta`
+  (или по `source` хука `SessionStart` + `__CFBundleIdentifier`).
+- **Desktop-приложение и IDE-расширение Codex** встраивают тот же app-server и пишут в тот же
+  `~/.codex/` (rollout, `state_5.sqlite`, `auth.json`, `config.toml`, `hooks.json`). Значит
+  одни хуки покрывают все три surface, отдельного хранилища вроде
+  `~/Library/Application Support/Claude/claude-code-sessions` искать не нужно. Deep link для
+  фокуса конкретного потока в desktop-приложении не найден — клик по строке `APP` просто
+  активирует приложение (**проверить** в фазе 0, есть ли URL-схема).
+- При установке через npm родитель `codex` — процесс `node` с `codex.js`; сам процесс сессии
+  всё равно называется `codex`, `pgrep -x codex` не страдает.
+- Дочерним процессам инструментов Codex выставляет `CODEX_SESSION_ID`, `CODEX_THREAD_ID`,
+  `CODEX_SANDBOX`; в env хука их нет — id берётся из payload.
 
 ## 1. Фаза 0 — проверка на живой машине (≈1 день)
 
@@ -301,7 +345,21 @@ Settings → General: «Отслеживать Codex» (устанавливае
   хардкодят те же identity-значения, что и Claude-хуки (гвард CI на `identity.env`
   расширить на новые файлы хуков).
 
-## 5. Что сознательно не входит
+## 5. Готовые инструменты — что у них можно подсмотреть
+
+| Инструмент | Источник данных |
+|---|---|
+| [CodexBar](https://github.com/steipete/CodexBar) (Swift, menu bar) | `auth.json` → `/backend-api/wham/usage`; запасной путь `codex -s read-only -a never app-server` → `account/rateLimits/read`; стоимость из `sessions/**/*.jsonl` |
+| [codex-gnome-extension](https://github.com/Almighty-Shogun/codex-gnome-extension) | Только локально: последний `token_count.rate_limits` из `~/.codex/sessions` раз в 30 с |
+| [ccusage codex](https://ccusage.com/guide/codex/) | `sessions` + `archived_sessions`: `token_count` + `turn_context.model` |
+| [CodexMonitor](https://github.com/Dimillian/CodexMonitor) | `codex app-server` на workspace: `thread/list`, `thread/resume`, `requestApproval` |
+| [ClaudeBar](https://github.com/tddworks/ClaudeBar) | Мультипровайдерная полоска квот, включая Codex |
+
+Подтверждает выбранный порядок источников: rollout → эндпоинт → app-server. Ни один из них
+не показывает «ждёт разрешения» для чужой TUI-сессии — это делают только хуки, и здесь у нас
+преимущество.
+
+## 6. Что сознательно не входит
 
 - MCP-серверы Codex (`config.toml [mcp_servers]`) и переключатели инструментов.
 - Стоимость сессии в USD (Codex её не считает; показывать только токены).
