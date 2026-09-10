@@ -75,6 +75,19 @@ struct SettingsView: View {
 private struct GeneralSettings: View {
     @ObservedObject var store: SettingsStore
 
+    /// The environment variable wins over the switch, and a disabled switch with no explanation
+    /// reads as broken, so the footer says which of the two is in charge.
+    private var analyticsFooter: String {
+        if store.analyticsBlockedByEnvironment {
+            return "Switched off by \(AnalyticsPing.optOutVariable) in this app\u{2019}s environment; "
+                + "the setting here does nothing while it is set."
+        }
+        return "Once a day, so the project can count how many copies are in use: app version, "
+            + "macOS version, chip and install channel, with no identifier of any kind. The first "
+            + "ping waits a day after this switch is first seen. Off means the request never "
+            + "happens. PRIVACY.md has the exact bytes."
+    }
+
     var body: some View {
         Form {
             Section("Menu bar") {
@@ -91,6 +104,16 @@ private struct GeneralSettings: View {
                 Text("Polls Anthropic's usage endpoint with your own Claude OAuth token, which is "
                      + "sent to api.anthropic.com and nowhere else. With this off, the 5h and 7d "
                      + "bars only move when a status line happens to write them.")
+            }
+            if store.analyticsConfigured {
+                Section {
+                    Toggle("Anonymous usage ping", isOn: store.analytics)
+                        .disabled(store.analyticsBlockedByEnvironment)
+                } header: {
+                    Text("Usage")
+                } footer: {
+                    Text(analyticsFooter)
+                }
             }
         }
         .formStyle(.grouped)

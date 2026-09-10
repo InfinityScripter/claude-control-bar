@@ -91,6 +91,7 @@ https://github.com/user-attachments/assets/39381f85-c8ce-4d32-8baa-dce67d39ee7e
 - **Timer in menu bar** — время текущего хода рядом с иконкой. В строках сессий таймер есть всегда.
 - **Thinking words** — вместо «Thinking…» одно из слов-заставок самого Claude Code («Manifesting…»).
 - **Limits via Anthropic API** — опрос, из которого берутся полоски 5-часового и 7-дневного лимитов; выключено — запроса нет вовсе (см. [PRIVACY.md](PRIVACY.md)).
+- **Anonymous usage ping** — раз в день: версия приложения, версия macOS, чип, канал установки и никакого идентификатора, чтобы проект мог посчитать, сколько копий в ходу. Выключено — запроса нет вовсе; `CONTROL_BAR_NO_ANALYTICS=1` в окружении делает то же самое. Точный состав — в [PRIVACY.md](PRIVACY.md).
 
 **Appearance**
 

@@ -43,6 +43,15 @@ final class SettingsStore: ObservableObject {
     var oauthLimits: Binding<Bool> {
         bind({ $0.oauthLimits }, { $0.applyOAuthLimits($1) }, or: true)
     }
+    var analytics: Binding<Bool> {
+        bind({ $0.analytics }, { $0.applyAnalytics($1) }, or: true)
+    }
+    /// Whether the ping row is shown at all: a build with no receiver, or a machine whose
+    /// environment forbids the ping, has nothing to switch. The footer says which.
+    var analyticsConfigured: Bool { AnalyticsPing.configured }
+    var analyticsBlockedByEnvironment: Bool {
+        ProcessInfo.processInfo.environment[AnalyticsPing.optOutVariable] != nil
+    }
     var animStyle: Binding<StatusController.AnimStyle> {
         bind({ $0.animStyle }, { $0.applyAnimStyle($1) }, or: .crab)
     }

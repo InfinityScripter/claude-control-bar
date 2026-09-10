@@ -7,6 +7,18 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [Unreleased]
+
+### Added
+- **An anonymous daily ping, with a switch.** Once a day the app tells the project's own
+  receiver that a copy is alive: app version, macOS major version, chip and install channel,
+  and nothing that names a machine — no install id, no hostname, no IP kept. The first launch
+  posts a notice and the first ping waits a full day after it, so it can be turned off before
+  anything is sent: Settings → General → *Anonymous usage ping*, or `CONTROL_BAR_NO_ANALYTICS`
+  in the environment. PRIVACY.md has the exact payload and what the receiver does with it; the
+  receiver itself is `tools/analytics/`. The request is not made at all until the receiver's
+  address is set in `AnalyticsPing.endpoint`.
+
 ## [0.13.0] - 2026-09-09
 
 ### Changed
