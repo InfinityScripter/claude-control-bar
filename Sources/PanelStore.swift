@@ -80,6 +80,14 @@ final class PanelStore: ObservableObject {
         controller?.setMCPTool(server: server, tool: tool, prefix: prefix, enabled: enabled)
     }
 
+    /// The switcher's pick. Written through the controller like every other setting, so the
+    /// choice is remembered between opens, and republished at once so the strip moves under the
+    /// finger rather than at the next tick.
+    func selectLimitsProvider(_ provider: String) {
+        controller?.applyLimitsProvider(provider)
+        refresh()
+    }
+
     func toggleExpanded(_ id: String) {
         if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
     }
@@ -141,6 +149,66 @@ enum PanelTab: String, CaseIterable, Identifiable {
     var icon: String { self == .sessions ? "terminal" : "powerplug" }
 }
 
+/// How the strip shows more than one provider. A setting rather than a decision taken here
+/// because the two answers are both right and for different people: someone watching two agents
+/// at once wants both rows on screen, someone who mostly uses one wants the figures big and the
+/// other provider one click away. With a single provider the two look identical — there is
+/// nothing to stack and nothing to switch between — so the setting only starts to mean anything
+/// once Codex has figures of its own.
+enum PanelLimitsLayout: String, CaseIterable, Identifiable {
+    case rows, switcher
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .rows:     return "Two rows"
+        case .switcher: return "Switcher"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .rows:
+            return "Both providers at once, one row each. Everything is on screen; the strip is"
+                + " twice as tall."
+        case .switcher:
+            return "One provider at a time, picked at the top of the strip. The figures get the"
+                + " full width; the other provider is one click away."
+        }
+    }
+}
+
+/// One provider's windows, with the two things a header has to say about them: when the first of
+/// them resets, and how old the figures are.
+struct PanelLimitGroup: Equatable, Identifiable {
+    /// "claude" or "codex" — also what the switcher stores, so the pick survives a provider
+    /// having no figures for a while rather than jumping to the other one for good.
+    let provider: String
+    let title: String
+    /// The SF Symbol beside the name. Providers are told apart by glyph everywhere in the panel.
+    let glyph: String
+    let limits: [PanelLimit]
+    /// "2h 10m" until the first of these windows resets; nil when none of them said.
+    let resets: String?
+    /// "just now", "4 min ago" — how old this provider's figures are.
+    let age: String
+    /// The subscription the windows belong to, when the writer knew it. Codex reports one.
+    let plan: String?
+    /// The window that runs out first: what the switcher's tab draws under the provider's name,
+    /// and the only figure a one-line summary of a provider can honestly carry. Chosen in
+    /// PanelData, where the reset times are still numbers — at equal fullness the window that
+    /// comes back sooner is the one that bites, and by here the resets are worded strings.
+    let worst: PanelLimit?
+
+    var id: String { provider }
+
+    /// What the group's tooltip says: who, on what plan, measured when.
+    var tip: String {
+        [title, plan, "measured " + age].compactMap { $0 }.joined(separator: " · ")
+    }
+}
+
 struct PanelSnapshot: Equatable {
     /// The panel's width, still the `boxWidth` knob in uiconfig.json that the menu honoured. It is
     /// read per refresh because the file is meant to be edited while the app runs.
@@ -151,9 +219,15 @@ struct PanelSnapshot: Equatable {
     /// True when there is no live session but the desktop app is up — the panel offers a way back
     /// in rather than showing an empty tab.
     var offerOpenClaude = false
-    var limits: [PanelLimit] = []
+    /// One entry per provider that has figures. A provider with none is absent rather than
+    /// drawn empty: an empty bar reads as "you have not used it", which is not what "no data"
+    /// means.
+    var limitGroups: [PanelLimitGroup] = []
     /// Why the strip is empty, or how old its figures are. One line, always present.
     var limitsNote = ""
+    /// How the strip stacks the groups, and which one the switcher is showing.
+    var limitsLayout: PanelLimitsLayout = .rows
+    var limitsProvider = "claude"
     var mcp = PanelMCP()
     var update: PanelUpdate?
     var notificationsDenied = false
@@ -295,7 +369,9 @@ extension PanelSnapshot {
         contentCap = c.panelContentCap
         sessions = c.panelSessions(now: now)
         offerOpenClaude = sessions.isEmpty && c.desktopRunning
-        (limits, limitsNote) = c.panelLimits(now: now)
+        (limitGroups, limitsNote) = c.panelLimitGroups(now: now)
+        limitsLayout = c.limitsLayout
+        limitsProvider = c.limitsProvider
         self.mcp = mcp
         self.update = update
         notificationsDenied = c.notificationsDenied

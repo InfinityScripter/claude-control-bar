@@ -14,6 +14,7 @@ MCP-картину ведёт этот скрипт (mcp.json), рисует в�
     toggle-tool      выключить/включить отдельный инструмент
     statusline       перехват лимитов: --install / --uninstall / без флага — статус
     limits           спросить лимиты аккаунта у эндпоинта и переписать limits.json
+    codex-limits     снять лимиты Codex со свежего rollout и переписать codex/limits.json
     doctor           проверить окружение и показать, что откуда берётся
 """
 
@@ -154,6 +155,14 @@ STRINGS = {
     "lim.failed": ("poll failed: {e}", "опрос не удался: {e}"),
     "lim.empty": ("the response carried no limit windows", "ответ без единого окна лимитов"),
     "lim.updated": ("updated: {w}", "обновлено: {w}"),
+    "codex.absent": ("no ~/.codex — Codex CLI is not installed here",
+                     "нет ~/.codex — Codex CLI на этой машине не стоит"),
+    "codex.nosnapshot": ("no rollout carries a limits snapshot yet",
+                         "ни в одном rollout ещё нет снимка лимитов"),
+    "codex.empty": ("the snapshot carried no limit windows",
+                    "снимок без единого окна лимитов"),
+    "codex.updated": ("updated: {w}", "обновлено: {w}"),
+    "doc.codex": ("codex rollout", "rollout codex"),
 }
 
 
@@ -1461,6 +1470,143 @@ def fetch_limits():
     return t("lim.updated", w=windows)
 
 
+# ──────────────────────────────────────────────────────────── лимиты Codex
+
+# Codex CLI пишет ход сессии в rollout-файл, и каждый ответ модели кладёт туда снимок
+# лимитов аккаунта — те же 5 часов и неделя, что показывает его `/status`. Читаем только
+# этот файл: ни auth.json, ни сети, ни запуска самого Codex. Цифры уже лежат на диске,
+# и спрашивать за них токен пользователя не за что.
+CODEX = os.path.join(HOME, ".codex")
+# YYYY/MM/DD разложены каталогами; три звёздочки вместо рекурсии — архив сессий лежит
+# в соседнем каталоге и обходить его незачем.
+CODEX_ROLLOUTS = os.path.join(CODEX, "sessions", "*", "*", "*", "rollout-*.jsonl")
+CODEX_ROOT = os.path.join(ROOT, "codex")
+CODEX_LIMITS = os.path.join(CODEX_ROOT, "limits.json")
+
+
+def newest_rollout(pattern=None):
+    """Самый свежий rollout по времени правки, или None.
+
+    Только .jsonl: старые ходы Codex ужимает в .jsonl.zst, а распаковывать архив ради
+    цифр, которые всё равно протухли, незачем — живой файл всегда несжатый.
+    """
+    files = [path for path in glob.glob(pattern or CODEX_ROLLOUTS) if path.endswith(".jsonl")]
+    return max(files, key=mtime) if files else None
+
+
+def codex_window(block, kind, base):
+    """Окно снимка → {kind, window_minutes, used_percentage, resets_at} или None.
+
+    `base` — момент самого снимка: старые сборки Codex сообщают не время сброса, а
+    сколько секунд до него осталось, и отсчитывать их от «сейчас» значило бы двигать
+    сброс вперёд на каждый опрос.
+    """
+    if not isinstance(block, dict):
+        return None
+    used = block.get("used_percent", block.get("used_percentage"))
+    try:
+        pct = int(round(float(used)))
+    # OverflowError — это Infinity: json.loads принимает голый Infinity-токен, и round()
+    # на нём кидает именно его. Одно такое окно не должно уносить второе.
+    except (TypeError, ValueError, OverflowError):
+        return None
+    record = {"kind": kind, "used_percentage": max(0, min(100, pct))}
+    minutes = block.get("window_minutes")
+    # bool — подкласс int, а True в поле длительности окна означает испорченный файл,
+    # не окно длиной в минуту.
+    if isinstance(minutes, (int, float)) and not isinstance(minutes, bool):
+        record["window_minutes"] = int(minutes)
+    resets = parse_reset(block.get("resets_at"))
+    if resets is None:
+        after = block.get("resets_in_seconds", block.get("reset_after_seconds"))
+        if isinstance(after, (int, float)) and not isinstance(after, bool):
+            resets = int(base + after)
+    record["resets_at"] = resets
+    return record
+
+
+def codex_limits_record(snapshot, ts=None, now=None):
+    """rate_limits из rollout → codex/limits.json.
+
+    Наружу идут факты, а не подписи: процент, длительность окна в минутах и момент
+    сброса epoch-секундами. Как назвать окно в панели, решает Swift — у разных планов
+    Codex окна разные, и на Free вторичного окна нет вовсе.
+
+    `ts` — время самой записи, а не время записи файла: снимок может быть недельной
+    давности, и панель обязана показывать возраст цифр честно, иначе «12% за 5 часов»
+    из прошлой среды читается как сегодняшнее.
+    """
+    if not isinstance(snapshot, dict):
+        return None
+    stamp = int(ts if isinstance(ts, (int, float)) and not isinstance(ts, bool)
+                else (now if now is not None else time.time()))
+    windows = []
+    for kind in ("primary", "secondary"):
+        window = codex_window(snapshot.get(kind), kind, base=stamp)
+        if window:
+            windows.append(window)
+    if not windows:
+        return None
+    record = {"ts": stamp, "source": "rollout", "windows": windows}
+    plan = snapshot.get("plan_type")
+    if isinstance(plan, str) and plan.strip():
+        record["plan"] = plan.strip()
+    return record
+
+
+def codex_snapshot(path=None):
+    """Хвост свежего rollout → (rate_limits, время записи) последнего token_count.
+
+    Ищем с конца: в файле таких записей столько же, сколько ответов модели, и нужна
+    последняя. Форма строки — {"timestamp", "type", "payload"}; payload с запасом
+    разбирается и как плоская запись, если Codex однажды перестанет её вкладывать.
+    """
+    path = path or newest_rollout()
+    if not path:
+        return None, None
+    try:
+        lines = tail_lines(path)
+    except OSError:
+        return None, None
+    for raw in reversed(lines):
+        if b'"rate_limits"' not in raw:
+            continue
+        record = read_json_line(raw)
+        if not isinstance(record, dict):
+            continue
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            payload = record
+        snapshot = payload.get("rate_limits")
+        if isinstance(snapshot, dict):
+            return snapshot, parse_reset(record.get("timestamp"))
+    return None, None
+
+
+def fetch_codex_limits():
+    """Один проход: свежий rollout → codex/limits.json. Молчалив при любом сбое."""
+    if not os.path.isdir(CODEX):
+        return t("codex.absent")
+    snapshot, ts = codex_snapshot()
+    if not snapshot:
+        return t("codex.nosnapshot")
+    record = codex_limits_record(snapshot, ts=ts)
+    if not record:
+        return t("codex.empty")
+    # Оба каталога — руками и до записи. `os.makedirs(..., mode=)` ставит права только
+    # последнему каталогу пути, промежуточные рождаются с umask: на свежей машине, где
+    # `codex-limits` оказался первой командой, сам ~/.claude/control-bar остался бы 0755 —
+    # открытым всей группе staff вместе с процентами лимитов аккаунта.
+    for directory in (ROOT, CODEX_ROOT):
+        try:
+            os.makedirs(directory, mode=SECURE_DIR, exist_ok=True)
+        except OSError:
+            pass
+    write_json(CODEX_LIMITS, record)
+    windows = ", ".join(f"{w['kind']} {w['used_percentage']}%" for w in record["windows"])
+    return t("codex.updated", w=windows)
+
+
 # ──────────────────────────────────────────────────────────── контекстное окно
 
 WINDOW_CACHE = os.path.join(ROOT, "model-windows.json")
@@ -1923,6 +2069,7 @@ def doctor():
         (t("doc.off"), str(len(denied_servers()))),
         (t("doc.rules"), str(len(denied_tools()))),
         (t("doc.windows"), str(len(model_windows()))),
+        (t("doc.codex"), newest_rollout() or t("doc.nofile")),
         (t("lang"), LANG),
     ]
     width = max(len(name) for name, _ in checks) + 2
@@ -1959,6 +2106,8 @@ def main(argv):
         print(doctor())
     elif command == "limits":
         print(fetch_limits())
+    elif command == "codex-limits":
+        print(fetch_codex_limits())
     elif command == "statusline":
         if "--install" in rest:
             print(statusline_install())

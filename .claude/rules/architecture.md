@@ -18,7 +18,7 @@ alwaysApply: false
 - Обмен между Node-хуками, Python и Swift — только через JSON-файлы в `~/.claude/control-bar/`. Прямых импортов между слоями нет и быть не должно.
 - Единственный разрешённый межпроцессный вызов — Swift спавнит `mcpbar.py` как процесс и не читает его stdout как источник данных; результат — только через файл `mcp.json`.
 - Python не читает чужой `.mcp.json` проекта (`mcpbar.py:393-395`) — это конфиг Claude Code, а не файл состояния control-bar.
-- Swift не пишет `mcp.json` и `limits.json` напрямую — эти файлы формирует только `mcpbar.py` (и `statusline.py` для `limits.json`). Исключение: Swift удаляет `state.d/*.json` мёртвых процессов в `evaluate()` (`main.swift`, `FileManager.removeItem` при `dead == true`) — это намеренная garbage collection, не запись состояния.
+- Swift не пишет `mcp.json`, `limits.json` и `codex/limits.json` напрямую — эти файлы формирует только `mcpbar.py` (и `statusline.py` для `limits.json`). Исключение: Swift удаляет `state.d/*.json` мёртвых процессов в `evaluate()` (`main.swift`, `FileManager.removeItem` при `dead == true`) — это намеренная garbage collection, не запись состояния.
 - `limits.json` — файл с двумя писателями (`capture_limits` в `hooks/statusline.py` и команда `limits` в `scripts/mcpbar.py`) и `model-windows.json` — тоже с двумя (`hooks/statusline.py` и `scripts/mcpbar.py`; `hooks/update.js` его только читает); формат между писателями согласован намеренно, оба должны сохранять совместимость при правке.
 - `uiconfig.json` правит только пользователь вручную — в кодовой базе писателя нет, только чтение в `main.swift`. Не добавлять код, который пишет в этот файл.
 - Хуки (Node, Python) хардкодят identity-значения (bundle id, exec, app name) намеренно, а не читают `identity.env` — после копирования хуков в целевой проект `identity.env` недоступен. Это гвардит CI (`ci.yml:62-95`), не забытая интеграция.
@@ -33,6 +33,7 @@ alwaysApply: false
 | `state.d/<id>.json` | `hooks/update.js` (Swift только удаляет файлы мёртвых процессов в `evaluate()`, `main.swift`) |
 | `mcp.json` | `scripts/mcpbar.py` (refresh) |
 | `limits.json` | `capture_limits` в `hooks/statusline.py` и команда `limits` в `scripts/mcpbar.py` (двойной писатель, формат согласован) |
+| `codex/limits.json` | `scripts/mcpbar.py` (команда `codex-limits`) — единственный писатель; читает снимок из чужого файла `~/.codex/sessions/**/rollout-*.jsonl` и наружу отдаёт только факты (проценты, длительность окна, момент сброса), а подписи окон собирает Swift |
 | `owner.json` | `hooks/install.js` |
 | quit-intent | Swift: `quit()` и `restartIntoInstalledCopy()` в `main.swift` |
 | `model-windows.json` | `hooks/statusline.py` (`learn_window`) и `scripts/mcpbar.py` (двойной писатель; `hooks/update.js` только читает) |

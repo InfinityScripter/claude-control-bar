@@ -7,6 +7,29 @@ Entries up to and including 0.4.3 belong to
 [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), the project this was forked
 from, and are kept so the history reads continuously.
 
+## [Unreleased]
+
+### Added
+- **Codex limits beside Claude's.** The strip can now show OpenAI Codex's own windows — its
+  5-hour one and its weekly one — next to the Claude figures. Nothing is asked for and nothing
+  is sent: Codex writes how much of its limits is gone into its own session file as it works,
+  and the app reads the newest one. No token, no request. A snapshot older than the window it
+  measures is dropped rather than drawn, so a Codex that has been quiet for a week disappears
+  from the strip instead of quoting last week's percentage, and a provider with no figures is
+  absent rather than shown empty. Off switch in Settings → General → *Codex limits*.
+- **A choice of layout for two providers**, in Settings → Appearance → *Limits strip*. *Two rows*
+  (the default) stacks both providers, each under its own name, plan and next reset. *Switcher*
+  gives one provider the full width and puts the other behind a tab — and every tab carries a
+  hairline bar of its provider's fullest window, so the side you are not looking at still says
+  whether it is about to run out. With one provider the strip is a single row either way, which
+  is what a Claude-only install has always seen.
+
+### Changed
+- **The bars beside the menu bar icon fall back to Codex** when Claude has no figures at all —
+  not signed in, or the poll switched off — and they are labelled with the lengths of the
+  windows they draw rather than a hardcoded 5h/7d. With Claude figures present nothing changes:
+  the icon is still Claude's.
+
 ## [0.14.0] - 2026-09-10
 
 ### Added
