@@ -105,6 +105,19 @@ private struct GeneralSettings: View {
                      + "sent to api.anthropic.com and nowhere else. With this off, the 5h and 7d "
                      + "bars only move when a status line happens to write them.")
             }
+            Section {
+                Toggle("Codex limits", isOn: store.codexLimits)
+            } header: {
+                Text("Codex")
+            } footer: {
+                // Worth spelling out, because "reads your Codex sessions" sounds like more than it
+                // is: the numbers are already on disk, and nothing but them is looked at.
+                Text("Codex records how much of your OpenAI limits is gone into its own session "
+                     + "file as it works. This reads the newest one for those two figures — no "
+                     + "token, no request, nothing sent anywhere. A figure older than the window "
+                     + "it measures is dropped rather than shown, so the row disappears until "
+                     + "Codex runs again.")
+            }
             if store.analyticsConfigured {
                 Section {
                     Toggle("Anonymous usage ping", isOn: store.analytics)
@@ -141,6 +154,21 @@ private struct AppearanceSettings: View {
                 Text("System draws the icon as a template — black on a light menu bar, white on a "
                      + "dark one — the way every other menu bar icon behaves. Orange keeps the "
                      + "brand colour on both.")
+            }
+            Section {
+                Picker("Layout", selection: store.limitsLayout) {
+                    ForEach(PanelLimitsLayout.allCases) { layout in
+                        Text(layout.title).tag(layout)
+                    }
+                }
+            } header: {
+                Text("Limits strip")
+            } footer: {
+                // Said plainly, because with one provider the picker visibly does nothing, and a
+                // setting that appears to do nothing reads as broken.
+                Text(store.limitsLayout.wrappedValue.detail
+                     + " This only changes anything once a second provider has figures: with one, "
+                     + "the strip is a single row either way.")
             }
         }
         .formStyle(.grouped)

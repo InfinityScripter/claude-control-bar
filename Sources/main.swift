@@ -11,6 +11,10 @@ final class StatusController: NSObject, NSWindowDelegate {
     lazy var mcp = MCPModel(
         path: (root as NSString).appendingPathComponent("mcp.json"))
     var limits: Limits?
+    /// Codex's own windows, read from codex/limits.json — the snapshot scripts/mcpbar.py lifts
+    /// out of the newest rollout file that Codex itself wrote. Its own mtime gate below, because
+    /// the two files are rewritten by two separate commands on the same timer.
+    var codexWindows: LimitsSet?
     var mcpBusy = false
     var recheckTimer: Timer?
     /// How often the MCP picture is rebuilt from scratch in the background. Measured at ~34s a
@@ -84,6 +88,10 @@ final class StatusController: NSObject, NSWindowDelegate {
     var notificationsDenied = false     // the one macOS permission this app has; see notify()
     var lastNotifiedChangeAt: Date?     // dedupe: notifyMCPChange runs on every reload, the change lives 45 s
     var limitsMTime: Date?              // limits.json parse gate; nil forces a re-read (see loadLimits)
+    var codexLimitsMTime: Date?         // the same gate for codex/limits.json
+    /// Where Codex keeps the session files its limit figures are read out of. Owned by Codex,
+    /// never written here.
+    let codexSessionsDir = (NSHomeDirectory() as NSString).appendingPathComponent(".codex/sessions")
     var selfUpdating = false            // one update at a time (DMG install or source build)
     var updateBuild: Process?           // the in-flight source build; Quit terminates it (see quit())
     var updateDownload: URLSessionDownloadTask?  // the in-flight DMG download; Quit cancels it
@@ -154,6 +162,11 @@ final class StatusController: NSObject, NSWindowDelegate {
     var iconSystem = false // false = brand Orange; true = adaptive black/white (template image)
     var useThinkingWords = true     // rotate a playful verb ("Manifesting…") in place of "Thinking…"
     var oauthLimits = true          // poll Anthropic's usage endpoint for the 5h/7d/Fable limits
+    var codexLimits = true          // read Codex's own limit snapshot out of ~/.codex/sessions
+    var limitsLayout = PanelLimitsLayout.rows   // how the strip shows two providers at once
+    /// Which provider the switcher layout is showing. Remembered across opens: someone who
+    /// switched to Codex was answering "how much Codex have I got left", not this once.
+    var limitsProvider = "claude"
     var analytics = true            // the anonymous daily ping (Sources/Analytics.swift); env var and endpoint also gate it
     var sessionWord: [String: String] = [:] // id -> current thinking word; re-picked on each entry into "thinking"
     var soundThreshold: Double = 0  // 0 = off; else the min turn length (seconds) that chimes on completion
@@ -232,6 +245,9 @@ final class StatusController: NSObject, NSWindowDelegate {
         if d.object(forKey: "iconSystem") != nil { iconSystem = d.bool(forKey: "iconSystem") }
         if d.object(forKey: "thinkingWords") != nil { useThinkingWords = d.bool(forKey: "thinkingWords") }
         if d.object(forKey: "oauthLimits") != nil { oauthLimits = d.bool(forKey: "oauthLimits") }
+        if d.object(forKey: "codexLimits") != nil { codexLimits = d.bool(forKey: "codexLimits") }
+        if let s = d.string(forKey: "limitsLayout"), let l = PanelLimitsLayout(rawValue: s) { limitsLayout = l }
+        if let s = d.string(forKey: "limitsProvider") { limitsProvider = s }
         if d.object(forKey: "analytics") != nil { analytics = d.bool(forKey: "analytics") }
         if d.object(forKey: "soundThreshold") != nil { soundThreshold = d.double(forKey: "soundThreshold") }
         if let s = d.string(forKey: "needsYouSound") { needsYouSound = s }
@@ -591,18 +607,37 @@ final class StatusController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// One usage poll: mcpbar.py reads the account limits from Anthropic's usage endpoint —
-    /// the same one /usage in Claude Code asks — and rewrites limits.json; the 0.4s tick picks
-    /// the file up. Not routed through runBackend: that toggles mcpBusy and re-reads mcp.json,
-    /// and a limits poll has nothing to say about either. Off switch in Options, because it
-    /// spends the user's own OAuth token, even if only against Anthropic's own API.
+    /// One round of limit figures, one provider at a time. For Claude, mcpbar.py asks Anthropic's
+    /// usage endpoint — the same one /usage in Claude Code asks — and rewrites limits.json; for
+    /// Codex it reads the newest session file Codex left on disk and writes codex/limits.json.
+    /// Either way the 0.4s tick picks the file up.
+    ///
+    /// Each has its own off switch, for different reasons: the Anthropic poll spends the user's
+    /// own OAuth token, and the Codex read opens files that belong to another program.
     func pollLimits() {
-        guard oauthLimits, !backend.script.isEmpty else { return }
+        if oauthLimits { runLimitsCommand("limits") }
+        // Not gated on the switch above, and deliberately: reading Codex's figures costs no token
+        // and no request at all. Codex writes them into its own session file as it goes, and the
+        // command only reads the newest one — so the only thing to opt out of is the reading.
+        //
+        // The stat is worth it: without it a Mac that has never run Codex — most of them — would
+        // spawn a process every five minutes to be told there is nothing to read. Asked afresh
+        // each poll, so installing Codex later is picked up without a restart.
+        if codexLimits, FileManager.default.fileExists(atPath: codexSessionsDir) {
+            runLimitsCommand("codex-limits")
+        }
+    }
+
+    /// Run one backend command for its file and nothing else. Not routed through runBackend:
+    /// that toggles mcpBusy and re-reads mcp.json, and a limits poll has nothing to say about
+    /// either.
+    func runLimitsCommand(_ command: String) {
+        guard !backend.script.isEmpty else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             let task = Process()
             task.executableURL = URL(fileURLWithPath: self.backend.python)
-            task.arguments = [self.backend.script, "limits"]
+            task.arguments = [self.backend.script, command]
             task.standardOutput = FileHandle.nullDevice
             task.standardError = FileHandle.nullDevice
             try? task.run()
@@ -687,6 +722,26 @@ final class StatusController: NSObject, NSWindowDelegate {
         // The parse lives in Sources/Model/Limits.swift so the model check can cover it;
         // a file with no readable window at all reads as "no data", not as zeros.
         limits = Limits(json: root)
+    }
+
+    /// codex/limits.json, on the same stat-per-tick gate as the Claude file above.
+    ///
+    /// Off has to mean the figures go away rather than stop moving, exactly as it does for the
+    /// Anthropic poll: the file survives the switch, so the switch is what decides.
+    func loadCodexLimits() {
+        guard codexLimits else {
+            codexWindows = nil
+            return
+        }
+        let path = (root as NSString).appendingPathComponent("codex/limits.json")
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate])
+            as? Date
+        if let stamp, stamp == codexLimitsMTime { return }
+        guard let data = FileManager.default.contents(atPath: path),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+        codexLimitsMTime = stamp
+        codexWindows = LimitsSet(codex: object)
     }
 
     /// A server falling over is worth interrupting for; a tool count moving is not — that is
@@ -787,6 +842,7 @@ final class StatusController: NSObject, NSWindowDelegate {
         // a stat() per tick, not a parse — the parse happens only when something actually moved.
         if mcp.reloadIfChanged() { notifyMCPChange() }
         loadLimits()
+        loadCodexLimits()
         evaluate()
         // The panel is a live window, not a menu frozen at open time: the per-session clocks, the
         // limit figures and the server states all move under it. The store publishes only when
@@ -804,8 +860,20 @@ final class StatusController: NSObject, NSWindowDelegate {
     }
 
     func currentGauge() -> Gauge {
-        Gauge(fiveHour: limits?.fiveHour?.fraction,
-              sevenDay: limits?.sevenDay?.fraction)
+        if let limits, !limits.isEmpty {
+            return Gauge(fiveHour: limits.fiveHour?.fraction,
+                         sevenDay: limits.sevenDay?.fraction)
+        }
+        // Codex only when Claude has no figures at all. The icon has room for two labelled bars,
+        // and a pair mixed from two accounts would need a provider mark beside each one to mean
+        // anything — so the rule here is the simple one: whoever has numbers gets the bars. Which
+        // provider leads when both do is a setting of its own, and it is not this release.
+        let live = (codexWindows?.live(at: Date().timeIntervalSince1970) ?? [])
+            .filter { $0.shortTitle != nil }.prefix(2)
+        guard let first = live.first else { return Gauge() }
+        let second = live.count > 1 ? live.last : nil
+        return Gauge(fiveHour: first.window.fraction, sevenDay: second?.window.fraction,
+                     labels: (first.shortTitle ?? "", second?.shortTitle ?? ""))
     }
 
     // The .json session files currently in state.d/ (ignores the .tmp files mid-write).

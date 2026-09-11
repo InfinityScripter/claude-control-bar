@@ -1822,5 +1822,149 @@ class SeamContract(unittest.TestCase):
         shutil.copyfile(mcpbar.STATE, os.path.join(seam_dir, "mcp.json"))
 
 
+class CodexLimits(unittest.TestCase):
+    """Лимиты Codex снимаются с rollout-файла — чужого формата, который пишет не наш код.
+
+    Каждый случай здесь — форма, на которой наивный разбор либо врал числом, либо падал.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.saved = {k: getattr(mcpbar, k)
+                      for k in ("CODEX", "CODEX_ROLLOUTS", "CODEX_LIMITS", "CODEX_ROOT")}
+        mcpbar.CODEX = os.path.join(self._dir.name, ".codex")
+        mcpbar.CODEX_ROLLOUTS = os.path.join(mcpbar.CODEX, "sessions", "*", "*", "*", "rollout-*.jsonl")
+        mcpbar.CODEX_ROOT = os.path.join(self._dir.name, "control-bar", "codex")
+        self.root = os.path.join(self._dir.name, "control-bar")
+        mcpbar.CODEX_LIMITS = os.path.join(self.root, "codex", "limits.json")
+        self.saved["ROOT"] = mcpbar.ROOT
+        mcpbar.ROOT = self.root
+
+    def tearDown(self):
+        for key, value in self.saved.items():
+            setattr(mcpbar, key, value)
+        self._dir.cleanup()
+
+    def rollout(self, name, lines, day="11"):
+        path = os.path.join(mcpbar.CODEX, "sessions", "2026", "09", day, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            for line in lines:
+                fh.write((line if isinstance(line, str) else json.dumps(line)) + "\n")
+        return path
+
+    @staticmethod
+    def token_count(primary, secondary=None, stamp="2026-09-11T10:00:00Z", plan=None):
+        limits = {"primary": primary}
+        if secondary is not None:
+            limits["secondary"] = secondary
+        if plan:
+            limits["plan_type"] = plan
+        return {"timestamp": stamp, "type": "event_msg",
+                "payload": {"type": "token_count", "rate_limits": limits,
+                            "info": {"total_token_usage": {"input_tokens": 10}}}}
+
+    def test_окна_снимка_становятся_фактами(self):
+        record = mcpbar.codex_limits_record({
+            "primary": {"used_percent": 12.4, "window_minutes": 300, "resets_at": 1_789_012_345},
+            "secondary": {"used_percent": 58.6, "window_minutes": 10080, "resets_at": 1_789_500_000},
+            "plan_type": "pro",
+        }, ts=1_789_000_000)
+        self.assertEqual(record["source"], "rollout")
+        self.assertEqual(record["ts"], 1_789_000_000)
+        self.assertEqual(record["plan"], "pro")
+        self.assertEqual(record["windows"], [
+            {"kind": "primary", "used_percentage": 12, "window_minutes": 300,
+             "resets_at": 1_789_012_345},
+            {"kind": "secondary", "used_percentage": 59, "window_minutes": 10080,
+             "resets_at": 1_789_500_000},
+        ])
+
+    def test_процент_целый_как_у_claude(self):
+        """Swift читает used_percentage как `as? Int`: дробь молча выключила бы окно."""
+        record = mcpbar.codex_limits_record({"primary": {"used_percent": 0.6}}, ts=1)
+        self.assertIsInstance(record["windows"][0]["used_percentage"], int)
+        self.assertEqual(record["windows"][0]["used_percentage"], 1)
+
+    def test_на_free_плане_второго_окна_нет(self):
+        """secondary_window приходит null — окно пропускается, а не рисуется нулём."""
+        record = mcpbar.codex_limits_record({"primary": {"used_percent": 3}, "secondary": None}, ts=1)
+        self.assertEqual([w["kind"] for w in record["windows"]], ["primary"])
+
+    def test_остаток_секунд_отсчитывается_от_снимка(self):
+        """Старые сборки шлют «через сколько», а не «когда». Отсчёт от `сейчас` двигал бы
+        сброс вперёд на каждый опрос — окно не сбрасывалось бы в панели никогда."""
+        record = mcpbar.codex_limits_record(
+            {"primary": {"used_percent": 5, "resets_in_seconds": 600}}, ts=1_789_000_000)
+        self.assertEqual(record["windows"][0]["resets_at"], 1_789_000_600)
+
+    def test_битое_окно_не_уносит_соседнее(self):
+        record = mcpbar.codex_limits_record({
+            "primary": {"used_percent": None},
+            "secondary": {"used_percent": 40, "window_minutes": 10080},
+        }, ts=1)
+        self.assertEqual([w["kind"] for w in record["windows"]], ["secondary"])
+
+    def test_неожиданная_форма_это_нет_данных(self):
+        self.assertIsNone(mcpbar.codex_limits_record(["primary"], ts=1))
+        self.assertIsNone(mcpbar.codex_limits_record({}, ts=1))
+        self.assertIsNone(mcpbar.codex_limits_record({"primary": "12%"}, ts=1))
+
+    def test_берётся_последняя_запись_файла(self):
+        path = self.rollout("rollout-2026-09-11T10-00-00-aaa.jsonl", [
+            {"timestamp": "2026-09-11T10:00:00Z", "type": "session_meta", "payload": {"cwd": "/x"}},
+            self.token_count({"used_percent": 10, "window_minutes": 300}),
+            "{это не json",
+            self.token_count({"used_percent": 20, "window_minutes": 300},
+                             stamp="2026-09-11T11:00:00Z"),
+        ])
+        snapshot, ts = mcpbar.codex_snapshot(path)
+        self.assertEqual(snapshot["primary"]["used_percent"], 20)
+        # Момент записи, а не время файла: панель показывает возраст цифр, и возраст
+        # недельного снимка должен читаться неделей, а не «только что».
+        self.assertEqual(ts, 1_789_124_400)   # 2026-09-11T11:00:00Z
+
+    def test_свежий_файл_побеждает_а_архив_пропускается(self):
+        old = self.rollout("rollout-2026-09-10T10-00-00-old.jsonl",
+                           [self.token_count({"used_percent": 10})], day="10")
+        new = self.rollout("rollout-2026-09-11T10-00-00-new.jsonl",
+                           [self.token_count({"used_percent": 90})])
+        os.utime(old, (1_000_000, 1_000_000))
+        os.utime(new, (2_000_000, 2_000_000))
+        # Сжатый архив рядом: распаковывать его незачем, живой файл всегда plain.
+        with open(new.replace(".jsonl", ".jsonl.zst"), "wb") as fh:
+            fh.write(b"\x28\xb5\x2f\xfd")
+        self.assertEqual(mcpbar.newest_rollout(), new)
+
+    def test_без_codex_ничего_не_пишется(self):
+        self.assertIn("~/.codex", mcpbar.fetch_codex_limits())
+        self.assertFalse(os.path.exists(mcpbar.CODEX_LIMITS))
+
+    def test_файл_пишется_только_владельцу(self):
+        """Каталог состояния общий для staff-группы: проценты лимитов аккаунта — не для всех."""
+        self.rollout("rollout-2026-09-11T10-00-00-aaa.jsonl", [
+            # Сбросы позже самой записи: снимок с окном, которое уже закрылось, Swift
+            # выбрасывает, и шов проверял бы пустоту вместо разбора.
+            self.token_count({"used_percent": 7, "window_minutes": 300, "resets_at": 1_789_124_400},
+                             {"used_percent": 42, "window_minutes": 10080,
+                              "resets_at": 1_789_700_000}, plan="pro"),
+        ])
+        mcpbar.fetch_codex_limits()
+        with open(mcpbar.CODEX_LIMITS) as fh:
+            written = json.load(fh)
+        self.assertEqual([w["used_percentage"] for w in written["windows"]], [7, 42])
+        self.assertEqual(stat.S_IMODE(os.stat(mcpbar.CODEX_LIMITS).st_mode), 0o600)
+        # И оба каталога до него: makedirs со своим mode закрывает только последний, а
+        # промежуточный ~/.claude/control-bar на свежей машине оставался бы 0755.
+        for directory in (self.root, os.path.dirname(mcpbar.CODEX_LIMITS)):
+            self.assertEqual(stat.S_IMODE(os.stat(directory).st_mode), 0o700, directory)
+
+        # Артефакт для swift-стороны шва: model-проверка парсит ровно этот файл.
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        seam_dir = os.path.join(repo, "build", "seam")
+        os.makedirs(seam_dir, exist_ok=True)
+        shutil.copyfile(mcpbar.CODEX_LIMITS, os.path.join(seam_dir, "codex-limits.json"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

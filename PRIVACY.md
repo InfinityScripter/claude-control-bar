@@ -109,6 +109,13 @@ Mac, and all of it is listed here rather than left to be discovered.
   where there is no Keychain. It is sent to `api.anthropic.com` and nowhere else, is never
   written to disk by this app, and never appears in a log. Switch the option off and it is not
   read at all.
+- **Codex's own session files** (`~/.codex/sessions/**/rollout-*.jsonl`), if the Codex limits
+  option is on (Settings → General → "Codex limits"). Codex records a snapshot of how much of
+  your OpenAI limits is gone every time the model answers, and the newest file is read from its
+  end for exactly that: two percentages, how long each window is, and when each resets. The
+  conversation itself is not parsed, nothing is copied, and no request is made — the figures are
+  already on disk. Switch the option off and the directory is not opened at all. Your
+  `~/.codex/auth.json` is **not** read: this app never asks OpenAI anything on your behalf.
 - **The current directory and git branch** of each session, to label its row.
 
 ## Where it writes
@@ -120,7 +127,8 @@ Everything of its own lives under `~/.claude/control-bar/`. The complete list:
   `context.d/`. Both are deleted with the session.
 - **The MCP picture:** `mcp.json`, the per-server descriptions cache `descriptions.json`, and
   the model-to-context-window table `model-windows.json`.
-- **The limits:** `limits.json`.
+- **The limits:** `limits.json`, and `codex/limits.json` for the Codex windows — percentages,
+  window lengths, reset stamps and the plan name, and nothing else out of the Codex session.
 - **Install bookkeeping:** `owner.json` (which channel owns the hooks), `paths.json` (where the
   backend script and interpreter are), a copy of the hook scripts and the build script, and
   `releases/` with the source archives a plugin-channel update downloaded.
