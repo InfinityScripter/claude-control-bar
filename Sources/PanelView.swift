@@ -78,11 +78,11 @@ struct PanelView: View {
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(PanelTheme.wellFill(scheme)))
         } else if groups.count == 1, let only = groups.first {
-            // One provider is one row of cells and nothing else: there is no second name to tell
-            // it apart from, and nothing to switch between. This is also what a Claude-only
-            // install sees, which is most of them — and it looks exactly as it did before Codex
-            // was a thing the app could read.
-            limitRow(only, named: false)
+            // One provider needs no switcher and no second name to be told apart from — with one
+            // exception. A Claude-only strip is what most installs have always seen and keeps its
+            // bare row of cells; a lone Codex one would otherwise show "5 HOURS" and "7 DAYS"
+            // that read exactly like Claude's, so it keeps its name.
+            limitRow(only, named: only.provider != "claude")
         } else {
             switch store.snapshot.limitsLayout {
             case .rows:

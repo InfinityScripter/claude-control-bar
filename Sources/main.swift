@@ -736,7 +736,15 @@ final class StatusController: NSObject, NSWindowDelegate {
         let path = (root as NSString).appendingPathComponent("codex/limits.json")
         let stamp = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate])
             as? Date
-        if let stamp, stamp == codexLimitsMTime { return }
+        // No file at all is an answer: the figures go, rather than standing until a restart.
+        // A file that is there but unreadable is a half-written rewrite, and the previous parse
+        // is the better of the two things to show for the few milliseconds that lasts.
+        guard let stamp else {
+            codexWindows = nil
+            codexLimitsMTime = nil
+            return
+        }
+        if stamp == codexLimitsMTime { return }
         guard let data = FileManager.default.contents(atPath: path),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }
@@ -860,10 +868,12 @@ final class StatusController: NSObject, NSWindowDelegate {
     }
 
     func currentGauge() -> Gauge {
-        if let limits, !limits.isEmpty {
-            return Gauge(fiveHour: limits.fiveHour?.fraction,
-                         sevenDay: limits.sevenDay?.fraction)
-        }
+        // Built first and tested for emptiness, rather than asking whether Claude has limits at
+        // all: a plan that reports only its Fable window has limits and still draws no bars here,
+        // and that used to leave the icon blank while Codex figures sat unused below.
+        let claude = Gauge(fiveHour: limits?.fiveHour?.fraction,
+                           sevenDay: limits?.sevenDay?.fraction)
+        if !claude.isEmpty { return claude }
         // Codex only when Claude has no figures at all. The icon has room for two labelled bars,
         // and a pair mixed from two accounts would need a provider mark beside each one to mean
         // anything — so the rule here is the simple one: whoever has numbers gets the bars. Which

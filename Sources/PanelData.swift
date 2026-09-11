@@ -104,10 +104,17 @@ extension StatusController {
                            resets: window.window.resets.flatMap { $0 > now ? Self.until($0) : nil })
             }
             let soonest = entry.windows.compactMap { $0.window.resets }.filter { $0 > now }.min()
+            // Picked from the windows rather than from the rows above: the rule breaks a tie on
+            // which window resets first, and a row carries its reset as "2h 10m" by then. Keys
+            // are unique within a provider, so the row it names is unambiguous.
+            let worst = LimitsSet.worst(entry.windows)
+                .flatMap { pick in entry.windows.firstIndex { $0.key == pick.key } }
+                .map { rows[$0] }
             return PanelLimitGroup(provider: entry.set.provider, title: entry.title,
                                    glyph: entry.glyph, limits: rows,
                                    resets: soonest.map { Self.until($0) },
-                                   age: Self.age(of: entry.set.ts, now: now), plan: entry.set.plan)
+                                   age: Self.age(of: entry.set.ts, now: now),
+                                   plan: entry.set.plan, worst: worst)
         }
         // The oldest of them in the one shared line: it is the figure furthest from the truth, and
         // a footer that quotes the fresher of two sources would flatter the staler one.
@@ -119,7 +126,13 @@ extension StatusController {
     /// which says nothing at all.
     static func age(of ts: Double, now: Double) -> String {
         let minutes = (now - ts).clampedInt / 60
-        return minutes < 1 ? "just now" : "\(minutes) min ago"
+        if minutes < 1 { return "just now" }
+        if minutes < 60 { return "\(minutes) min ago" }
+        // Rolled up past an hour for the same reason `until` drops the minutes past a day: a
+        // Codex snapshot is allowed to be days old while its weekly window is still open, and
+        // "8640 min ago" is arithmetic in a line that has to fit beside two buttons.
+        let hours = minutes / 60
+        return hours < 24 ? "\(hours)h ago" : "\(hours / 24)d ago"
     }
 
     /// How long until a window resets. A weekly window is days away, and "76h 12m" is arithmetic

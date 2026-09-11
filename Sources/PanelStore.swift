@@ -195,12 +195,13 @@ struct PanelLimitGroup: Equatable, Identifiable {
     let age: String
     /// The subscription the windows belong to, when the writer knew it. Codex reports one.
     let plan: String?
+    /// The window that runs out first: what the switcher's tab draws under the provider's name,
+    /// and the only figure a one-line summary of a provider can honestly carry. Chosen in
+    /// PanelData, where the reset times are still numbers — at equal fullness the window that
+    /// comes back sooner is the one that bites, and by here the resets are worded strings.
+    let worst: PanelLimit?
 
     var id: String { provider }
-
-    /// The fullest of this provider's windows — the one that runs out first, and the only figure
-    /// a one-line summary of a provider can honestly carry.
-    var worst: PanelLimit? { limits.max { $0.used < $1.used } }
 
     /// What the group's tooltip says: who, on what plan, measured when.
     var tip: String {

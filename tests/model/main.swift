@@ -1250,6 +1250,13 @@ check(NamedWindow(key: "s", title: "7 days", badge: nil, minutes: 10080,
 check(NamedWindow(key: "s", title: "Weekly", badge: nil, minutes: nil,
                   window: LimitWindow(json: ["used_percentage": 1])!).shortTitle == nil,
       "a window of unknown length has no honest short label")
+// Two characters wide: 90 minutes drawn as "1h" is a wrong label rather than a rounded one.
+check(NamedWindow(key: "p", title: "1h 30m", badge: nil, minutes: 90,
+                  window: LimitWindow(json: ["used_percentage": 1])!).shortTitle == nil,
+      "and neither does one that is not a whole number of hours")
+check(NamedWindow(key: "p", title: "45 min", badge: nil, minutes: 45,
+                  window: LimitWindow(json: ["used_percentage": 1])!).shortTitle == "45m",
+      "under an hour it fits as minutes")
 
 // What a one-line summary of a provider says: the window that runs out first.
 check(LimitsSet.worst(claudeSet.windows)?.title == "7 days",

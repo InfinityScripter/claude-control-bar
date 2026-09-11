@@ -80,6 +80,10 @@ struct NamedWindow: Equatable {
         guard let minutes, minutes > 0 else { return nil }
         if minutes < 60 { return "\(minutes)m" }
         if minutes % 1440 == 0 { return "\(minutes / 1440)d" }
+        // Not a whole number of hours, and the label is two characters wide: 90 minutes would
+        // have to be drawn as "1h", which is a wrong label on a real bar rather than a rounded
+        // one. No bar beats a mislabelled bar, and the panel still lists the window in full.
+        guard minutes % 60 == 0 else { return nil }
         return "\(minutes / 60)h"
     }
 

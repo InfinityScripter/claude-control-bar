@@ -144,7 +144,11 @@ extension StatusController {
         // The mtime gate would otherwise hold the pre-toggle figures until the file's next
         // rewrite, which for a quiet Codex install could be days.
         codexLimitsMTime = nil
-        if on { runLimitsCommand("codex-limits") }
+        // The same gate pollLimits applies: switching this on where Codex has never run should
+        // not spawn a process to be told there is nothing to read.
+        if on, FileManager.default.fileExists(atPath: codexSessionsDir) {
+            runLimitsCommand("codex-limits")
+        }
         loadCodexLimits()
         refreshCounts()
     }
